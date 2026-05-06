@@ -1,0 +1,25 @@
+# Core Flask
+flask==2.3.3
+flask-sqlalchemy==3.1.1
+flask-migrate==4.0.5
+flask-cors==4.0.0
+flask-compress==1.14
+werkzeug==2.3.7
+gunicorn==21.2.0
+python-dotenv==1.0.0
+psycopg2-binary==2.9.9
+
+# CAE mesh parsing + FEA mesh generation from STEP
+meshio>=5.3.4
+numpy>=1.24.0
+gmsh>=4.12.0
+
+# STEP geometry (install via conda-forge, not pip)
+# pythonocc-core==7.7.2  →  conda install -c conda-forge pythonocc-core=7.7.2
+trimesh>=4.0.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Optional: faster GLB export
+# trimesh[easy]
