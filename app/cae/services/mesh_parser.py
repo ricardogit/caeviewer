@@ -59,15 +59,21 @@ def parse_mesh(file_path: str) -> dict:
         'min_z': float(pts[:, 2].min()), 'max_z': float(pts[:, 2].max()),
     }
 
-    # Elements
+    # Elements — accumulate blocks of the same type (GMSH emits multiple
+    # CellBlocks per element type when physical groups exist; overwriting
+    # drops all but the last block and breaks surface extraction).
     elements = {}
     element_types = {}
     total_elements = 0
     for cell_block in mesh.cells:
         etype = cell_block.type
         data = cell_block.data.tolist()
-        elements[etype] = data
-        element_types[etype] = len(data)
+        if etype in elements:
+            elements[etype].extend(data)
+            element_types[etype] += len(data)
+        else:
+            elements[etype] = data
+            element_types[etype] = len(data)
         total_elements += len(data)
 
     # Sets
