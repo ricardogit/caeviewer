@@ -30,6 +30,12 @@ def _resolve_header(header_id):
         return None
 
 
+def _get_file_path(header):
+    """Return the STEP file path for a header via its Part relationship."""
+    part = header.part if header else None
+    return part.file_path if part else None
+
+
 @bp.route('/distance', methods=['POST'])
 def calculate_distance():
     """
@@ -185,11 +191,15 @@ def calculate_area():
             return jsonify({'error': 'header_id required'}), 400
 
         # Cargar shape desde archivo STEP
-        header = STEPFileHeader.query.get(header_id)
+        header = _resolve_header(header_id)
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'File path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -242,11 +252,15 @@ def calculate_volume():
         if not header_id:
             return jsonify({'error': 'header_id required'}), 400
 
-        header = STEPFileHeader.query.get(header_id)
+        header = _resolve_header(header_id)
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'File path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -301,11 +315,15 @@ def calculate_bounding_box():
         if not header_id:
             return jsonify({'error': 'header_id required'}), 400
 
-        header = STEPFileHeader.query.get(header_id)
+        header = _resolve_header(header_id)
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'File path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -346,11 +364,15 @@ def calculate_center_of_mass():
         if not header_id:
             return jsonify({'error': 'header_id required'}), 400
 
-        header = STEPFileHeader.query.get(header_id)
+        header = _resolve_header(header_id)
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'File path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -398,11 +420,15 @@ def calculate_moments_of_inertia():
         if not header_id:
             return jsonify({'error': 'header_id required'}), 400
 
-        header = STEPFileHeader.query.get(header_id)
+        header = _resolve_header(header_id)
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'File path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 

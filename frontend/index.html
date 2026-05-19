@@ -20,7 +20,23 @@
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><div style="padding:24px;color:#666;font-family:monospace">Loading CAE Viewer…</div></div>
+    <!-- Diagnostic: show JS errors on-screen so blank-page cause is visible -->
+    <script>
+      (function () {
+        function show(msg) {
+          var el = document.getElementById('root');
+          if (el) el.innerHTML = '<pre style="background:#1a0000;color:#ff6666;padding:24px;font:13px/1.6 monospace;position:fixed;inset:0;overflow:auto;z-index:9999;white-space:pre-wrap">' + msg + '</pre>';
+        }
+        window.addEventListener('error', function (e) {
+          show('JS ERROR\n' + e.message + '\n\nFile: ' + e.filename + '  line ' + e.lineno + '\n\n' + (e.error && e.error.stack ? e.error.stack : ''));
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          show('UNHANDLED PROMISE REJECTION\n' + String(r) + '\n\n' + (r && r.stack ? r.stack : ''));
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

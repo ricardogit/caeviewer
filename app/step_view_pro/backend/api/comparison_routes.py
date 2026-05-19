@@ -50,18 +50,15 @@ def compare_files():
         if not file1_id or not file2_id:
             return jsonify({'error': 'file1_id and file2_id required'}), 400
 
-        # Cargar headers - file1_id and file2_id are INTEGER IDs from step_files table
-        # We need to get STEPFileHeader using legacy_file_id which links to step_files.id
-        # First, verify the files exist
-        step_file1 = Part.query.get(file1_id)
-        step_file2 = Part.query.get(file2_id)
+        # Accept header UUIDs directly, or part_id as fallback
+        def _resolve(fid):
+            h = STEPFileHeader.query.get(fid)
+            if not h:
+                h = STEPFileHeader.query.filter_by(part_id=fid).first()
+            return h
 
-        if not step_file1 or not step_file2:
-            return jsonify({'error': 'One or both files not found'}), 404
-
-        # Get headers using legacy_file_id
-        header1 = STEPFileHeader.query.filter_by(legacy_file_id=file1_id).first()
-        header2 = STEPFileHeader.query.filter_by(legacy_file_id=file2_id).first()
+        header1 = _resolve(file1_id)
+        header2 = _resolve(file2_id)
 
         if not header1 or not header2:
             return jsonify({'error': 'Graph headers not found for one or both files'}), 404
@@ -103,15 +100,18 @@ def compare_files():
         shape1 = None
         shape2 = None
 
-        # Acceder al archivo legacy para obtener la ruta
-        legacy_file1 = header1.legacy_file if hasattr(header1, 'legacy_file') else None
-        legacy_file2 = header2.legacy_file if hasattr(header2, 'legacy_file') else None
+        def _part_path(h):
+            part = h.part if h else None
+            return part.file_path if part else None
 
-        if include_geometry and legacy_file1 and legacy_file2 and legacy_file1.file_path and legacy_file2.file_path:
+        path1 = _part_path(header1)
+        path2 = _part_path(header2)
+
+        if include_geometry and path1 and path2:
             try:
-                from app.step_view_pro.backend.geometry_processor import load_step_shape
-                shape1 = load_step_shape(legacy_file1.file_path, 0)
-                shape2 = load_step_shape(legacy_file2.file_path, 0)
+                from app.step_view_pro.backend.step_processor import load_step_shape as _load
+                shape1 = _load(path1, 0)
+                shape2 = _load(path2, 0)
             except Exception as e:
                 logger.warning(f"Could not load shapes for geometry comparison: {e}")
 
@@ -368,11 +368,16 @@ def calculate_similarity():
         shape1 = None
         shape2 = None
 
-        if include_geometry and header1.file_path and header2.file_path:
+        def _pp(h):
+            part = h.part if h else None
+            return part.file_path if part else None
+
+        p1, p2 = _pp(header1), _pp(header2)
+        if include_geometry and p1 and p2:
             try:
-                shape1 = load_step_shape(header1.file_path, 0)
-                shape2 = load_step_shape(header2.file_path, 0)
-            except:
+                shape1 = load_step_shape(p1, 0)
+                shape2 = load_step_shape(p2, 0)
+            except Exception:
                 pass
 
         similarity = ComparisonTools.calculate_similarity(

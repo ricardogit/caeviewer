@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Box, Typography, CircularProgress, Alert, Slider, Button, Chip,
   Select, MenuItem, FormControl, InputLabel, Paper, Divider,
+  IconButton, Tooltip, ToggleButton, ToggleButtonGroup,
 } from '@mui/material';
+import { GridOn, GpsFixed, Close, PlayArrow, Pause, SkipPrevious, SkipNext, ContentCut, CameraAlt, TableChart, FileDownload } from '@mui/icons-material';
 import axios from 'axios';
 
 // Profile MUST be imported first — registers WebGL rendering classes
@@ -14,31 +16,14 @@ import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWind
 import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
 import vtkInteractorStyleTrackballCamera from '@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera';
 
-import vtkUnstructuredGrid from '@kitware/vtk.js/Common/DataModel/UnstructuredGrid.js';
-import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData.js';
+import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
+import vtkPoints from '@kitware/vtk.js/Common/Core/Points';
+import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkLookupTable from '@kitware/vtk.js/Common/Core/LookupTable';
 
-import vtkPoints from '@kitware/vtk.js/Common/Core/Points.js';
-import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray.js';
-import vtkLookupTable from '@kitware/vtk.js/Common/Core/LookupTable.js';
-
-import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper.js';
-import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor.js';
-
-// meshio element type → VTK cell type constant
-const CELL_TYPE = {
-  vertex: 1,
-  line: 3, line2: 3,
-  triangle: 5, tri: 5, tri3: 5,
-  triangle6: 22,
-  quad: 9, quad4: 9,
-  quad8: 23,
-  tetra: 10, tet4: 10,
-  tetra10: 24,
-  hexahedron: 12, hex8: 12,
-  hexahedron20: 25,
-  wedge: 13, penta6: 13, prism6: 13,
-  pyramid: 14,
-};
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 
 const COLORMAPS = ['viridis', 'rainbow', 'coolwarm', 'jet', 'grayscale'];
 
@@ -51,6 +36,39 @@ const COLORMAP_CSS = {
 };
 
 const RISK_COLOR = { low: 'success', medium: 'warning', high: 'error' };
+
+// ---------------------------------------------------------------------------
+// Statistics helpers
+// ---------------------------------------------------------------------------
+
+function computeHistogram(mags, min, max, bins) {
+  const counts = new Array(bins).fill(0);
+  const range = max - min;
+  if (range === 0) { counts[0] = mags.length; return counts; }
+  for (const v of mags) {
+    const b = Math.min(bins - 1, Math.floor(((v - min) / range) * bins));
+    counts[b]++;
+  }
+  return counts;
+}
+
+function MiniHistogram({ counts }) {
+  const peak = Math.max(...counts, 1);
+  const h = 44;
+  const w = 4;
+  const gap = 1;
+  return (
+    <svg width={counts.length * (w + gap)} height={h} style={{ display: 'block', overflow: 'visible' }}>
+      {counts.map((c, i) => {
+        const bh = (c / peak) * h;
+        return (
+          <rect key={i} x={i * (w + gap)} y={h - bh} width={w} height={bh}
+            fill="#4fc3f7" opacity={0.75} rx={1} />
+        );
+      })}
+    </svg>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // VTK helpers
@@ -75,14 +93,16 @@ function buildLUT(name) {
   return lut;
 }
 
-function buildUG(meshData, fieldData, warpScale = 0) {
-  const ug = vtkUnstructuredGrid.newInstance();
+function buildSurfacePD(meshData, fieldData, warpScale = 0) {
+  const pd = vtkPolyData.newInstance();
   const nodes = meshData.nodes;
+  const triangles = meshData.surface_triangles || [];
   const isVec = fieldData?.values?.length > 0 && Array.isArray(fieldData.values[0]);
 
-  // Node coordinates, optionally warped by displacement
+  // Node coordinates, optionally warped by displacement vector
   const coords = new Float32Array(nodes.length * 3);
-  nodes.forEach(([x, y, z], i) => {
+  for (let i = 0; i < nodes.length; i++) {
+    const [x, y, z] = nodes[i];
     let dx = 0, dy = 0, dz = 0;
     if (warpScale > 0 && isVec) {
       const v = fieldData.values[i];
@@ -91,43 +111,39 @@ function buildUG(meshData, fieldData, warpScale = 0) {
     coords[i * 3]     = x + dx;
     coords[i * 3 + 1] = y + dy;
     coords[i * 3 + 2] = z + dz;
-  });
+  }
   const pts = vtkPoints.newInstance();
   pts.setData(coords, 3);
-  ug.setPoints(pts);
+  pd.setPoints(pts);
 
-  // Cell connectivity
-  const flatCells = [];
-  const cellTypeArr = [];
-  for (const [etype, conns] of Object.entries(meshData.elements || {})) {
-    const vtype = CELL_TYPE[etype];
-    if (vtype == null) continue;
-    for (const conn of conns) {
-      flatCells.push(conn.length, ...conn);
-      cellTypeArr.push(vtype);
-    }
+  // Triangle connectivity: [3, n0, n1, n2, 3, n3, n4, n5, ...]
+  const polys = new Uint32Array(triangles.length * 4);
+  for (let i = 0; i < triangles.length; i++) {
+    const tri = triangles[i];
+    polys[i * 4]     = 3;
+    polys[i * 4 + 1] = tri[0];
+    polys[i * 4 + 2] = tri[1];
+    polys[i * 4 + 3] = tri[2];
   }
-  ug.getCells().setData(new Uint32Array(flatCells));
-  ug.getCellTypes().setData(new Uint8Array(cellTypeArr));
+  pd.getPolys().setData(polys);
 
-  // Scalar field (magnitude for vectors)
+  // Scalar field (magnitude for vectors) — point data only for PolyData rendering
   if (fieldData?.values?.length > 0) {
     const vals = fieldData.values;
     const scalars = new Float32Array(vals.length);
     if (isVec) {
-      vals.forEach((v, i) => { scalars[i] = Math.sqrt(v.reduce((s, c) => s + c * c, 0)); });
+      for (let i = 0; i < vals.length; i++) {
+        const v = vals[i];
+        scalars[i] = Math.sqrt(v.reduce((s, c) => s + c * c, 0));
+      }
     } else {
-      vals.forEach((v, i) => { scalars[i] = v; });
+      for (let i = 0; i < vals.length; i++) scalars[i] = vals[i];
     }
     const da = vtkDataArray.newInstance({ name: 'result', values: scalars, numberOfComponents: 1 });
-    if (fieldData.field_type === 'nodal') {
-      ug.getPointData().setScalars(da);
-    } else {
-      ug.getCellData().setScalars(da);
-    }
+    pd.getPointData().setScalars(da);
   }
 
-  return ug;
+  return pd;
 }
 
 // Builds a vtkPolyData with one vertex cell per hotspot node (rendered as red spheres)
@@ -171,6 +187,60 @@ function buildHotspotActor(meshNodes, hotspotIndices) {
   return { pd, mapper: hMapper, actor: hActor };
 }
 
+// Build a world-space ray from a mouse event using camera math (no vtk.js picker).
+function screenToWorldRay(e, container, renderer) {
+  const rect = container.getBoundingClientRect();
+  const ndcX =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+  const ndcY = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+
+  const camera = renderer.getActiveCamera();
+  const pos    = camera.getPosition();
+  const focal  = camera.getFocalPoint();
+  const viewUp = camera.getViewUp();
+
+  // view direction (−Z of camera space)
+  const vd = [focal[0]-pos[0], focal[1]-pos[1], focal[2]-pos[2]];
+  const vl = Math.sqrt(vd[0]**2+vd[1]**2+vd[2]**2);
+  vd[0]/=vl; vd[1]/=vl; vd[2]/=vl;
+
+  // right = vd × up
+  const r = [
+    vd[1]*viewUp[2]-vd[2]*viewUp[1],
+    vd[2]*viewUp[0]-vd[0]*viewUp[2],
+    vd[0]*viewUp[1]-vd[1]*viewUp[0],
+  ];
+  const rl = Math.sqrt(r[0]**2+r[1]**2+r[2]**2);
+  r[0]/=rl; r[1]/=rl; r[2]/=rl;
+
+  // up = r × vd
+  const u = [r[1]*vd[2]-r[2]*vd[1], r[2]*vd[0]-r[0]*vd[2], r[0]*vd[1]-r[1]*vd[0]];
+
+  const tanH   = Math.tan((camera.getViewAngle() * Math.PI / 180) / 2);
+  const aspect = rect.width / rect.height;
+
+  const dir = [
+    vd[0] + ndcX*tanH*aspect*r[0] + ndcY*tanH*u[0],
+    vd[1] + ndcX*tanH*aspect*r[1] + ndcY*tanH*u[1],
+    vd[2] + ndcX*tanH*aspect*r[2] + ndcY*tanH*u[2],
+  ];
+  const dl = Math.sqrt(dir[0]**2+dir[1]**2+dir[2]**2);
+  return { origin: [...pos], direction: [dir[0]/dl, dir[1]/dl, dir[2]/dl] };
+}
+
+function findNearestNodeToRay(nodes, origin, direction) {
+  let minD = Infinity, idx = -1;
+  for (let i = 0; i < nodes.length; i++) {
+    const [px, py, pz] = nodes[i];
+    const vx = px-origin[0], vy = py-origin[1], vz = pz-origin[2];
+    const t  = vx*direction[0] + vy*direction[1] + vz*direction[2];
+    if (t < 0) continue; // behind camera
+    const cx = origin[0]+t*direction[0], cy = origin[1]+t*direction[1], cz = origin[2]+t*direction[2];
+    const d  = (px-cx)**2 + (py-cy)**2 + (pz-cz)**2;
+    if (d < minD) { minD = d; idx = i; }
+  }
+  return idx;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -191,8 +261,42 @@ export default function CAEViewer({ mesh }) {
   const [analyzing,      setAnalyzing]      = useState(false);
   const [loading,        setLoading]        = useState(false);
   const [error,          setError]          = useState(null);
+  const [wireframe,      setWireframe]      = useState(false);
+  const [pickMode,       setPickMode]       = useState(false);
+  const [pickedNode,     setPickedNode]     = useState(null);
+  const [timeSteps,      setTimeSteps]      = useState([0]);
+  const [currentStep,    setCurrentStep]    = useState(0);
+  const [playing,        setPlaying]        = useState(false);
+  const [clipEnabled,    setClipEnabled]    = useState(false);
+  const [clipAxis,       setClipAxis]       = useState('X');
+  const [clipPos,        setClipPos]        = useState(0.5);
+  const [clipFlip,       setClipFlip]       = useState(false);
+  const [statsOpen,      setStatsOpen]      = useState(false);
+  const [threshold,      setThreshold]      = useState([0, 1]);
+  const pickModeRef  = useRef(false);
+  const mouseDragRef = useRef({ x: 0, y: 0 });
+  const playTimerRef = useRef(null);
 
   const isVector = fieldData != null && Array.isArray(fieldData.values?.[0]);
+
+  const stats = useMemo(() => {
+    if (!fieldData?.values?.length) return null;
+    const vals = fieldData.values;
+    const mags = isVector
+      ? vals.map(v => Math.sqrt(v.reduce((s, c) => s + c * c, 0)))
+      : vals.slice();
+    const n = mags.length;
+    const sorted = [...mags].sort((a, b) => a - b);
+    const mean = mags.reduce((s, v) => s + v, 0) / n;
+    const std  = Math.sqrt(mags.reduce((s, v) => s + (v - mean) ** 2, 0) / n);
+    const pct  = (p) => sorted[Math.min(n - 1, Math.floor(p * n))];
+    return {
+      n, mean, std,
+      min: sorted[0], max: sorted[n - 1],
+      p5: pct(0.05), p25: pct(0.25), p50: pct(0.50), p75: pct(0.75), p95: pct(0.95),
+      histogram: computeHistogram(mags, sorted[0], sorted[n - 1], 24),
+    };
+  }, [fieldData, isVector]);
 
   // ── Data loading ───────────────────────────────────────────────────────────
 
@@ -200,61 +304,56 @@ export default function CAEViewer({ mesh }) {
     if (!mesh) {
       setMeshData(null); setFields([]); setFieldData(null);
       setSelectedField(''); setHotspots(null);
+      setTimeSteps([0]); setCurrentStep(0); setPlaying(false);
       return;
     }
+    const ctrl = new AbortController();
+    setMeshData(null);
     setLoading(true);
     setError(null);
     setFieldData(null);
     setSelectedField('');
     setHotspots(null);
+    setCurrentStep(0);
+    setPlaying(false);
+    setClipEnabled(false);
+    setClipPos(0.5);
+    setClipFlip(false);
     Promise.all([
-      axios.get(`/api/cae/meshes/${mesh.id}`),
-      axios.get(`/api/cae/meshes/${mesh.id}/fields`),
+      axios.get(`/api/cae/meshes/${mesh.id}`,        { signal: ctrl.signal }),
+      axios.get(`/api/cae/meshes/${mesh.id}/fields`,  { signal: ctrl.signal }),
     ]).then(([meshRes, fieldsRes]) => {
       setMeshData(meshRes.data);
+      setTimeSteps(meshRes.data.time_steps || [0]);
       const flds = fieldsRes.data.fields || [];
       setFields(flds);
       if (flds.length > 0) setSelectedField(flds[0].name);
-    }).catch(e => setError(e.response?.data?.error || e.message))
-      .finally(() => setLoading(false));
+    }).catch(e => {
+      if (axios.isCancel(e)) return;
+      setError(e.response?.data?.error || e.message);
+    }).finally(() => setLoading(false));
+    return () => ctrl.abort();
   }, [mesh]);
 
   useEffect(() => {
     if (!mesh || !selectedField) { setFieldData(null); setHotspots(null); return; }
+    const ctrl = new AbortController();
     setHotspots(null);
-    axios.get(`/api/cae/meshes/${mesh.id}/field/${selectedField}`)
+    setThreshold([0, 1]);
+    axios.get(`/api/cae/meshes/${mesh.id}/field/${selectedField}?step=${currentStep}`,
+              { signal: ctrl.signal })
       .then(res => setFieldData(res.data))
-      .catch(e => console.error('Field load error:', e));
-  }, [mesh, selectedField]);
+      .catch(e => { if (!axios.isCancel(e)) console.error('Field load error:', e); });
+    return () => ctrl.abort();
+  }, [mesh, selectedField, currentStep]);
 
   // ── vtk.js lifecycle ───────────────────────────────────────────────────────
 
-  const teardown = useCallback(() => {
-    if (!vtkRef.current) return;
-    const { renderer, interactor, actor, mapper, ug, lut,
-            renderWindow, glWindow, ro,
-            hotspotActor, hotspotMapper, hotspotPd } = vtkRef.current;
-    ro?.disconnect?.();
-    interactor?.unbindEvents?.();
-    interactor?.delete?.();
-    if (hotspotActor) { renderer?.removeActor?.(hotspotActor); hotspotActor.delete(); }
-    hotspotMapper?.delete?.();
-    hotspotPd?.delete?.();
-    actor?.delete?.();
-    mapper?.delete?.();
-    ug?.delete?.();
-    lut?.delete?.();
-    glWindow?.delete?.();
-    renderWindow?.delete?.();
-    vtkRef.current = null;
-  }, []);
-
-  // Build VTK pipeline when mesh geometry arrives
+  // Create WebGL context ONCE on mount — never destroy it between mesh switches.
   useEffect(() => {
-    if (!meshData || !containerRef.current) return;
-    teardown();
-
     const container = containerRef.current;
+    if (!container) return;
+
     const renderWindow = vtkRenderWindow.newInstance();
     const renderer    = vtkRenderer.newInstance({ background: [0.07, 0.07, 0.07] });
     renderWindow.addRenderer(renderer);
@@ -270,9 +369,67 @@ export default function CAEViewer({ mesh }) {
     interactor.initialize();
     interactor.bindEvents(container);
 
-    const ug     = buildUG(meshData, null);
+    const ro = new ResizeObserver(() => {
+      glWindow.setSize(container.offsetWidth, container.offsetHeight);
+      renderWindow.render();
+    });
+    ro.observe(container);
+
+    vtkRef.current = {
+      renderWindow, renderer, glWindow, interactor, ro,
+      pd: null, mapper: null, actor: null, lut: null,
+      hotspotActor: null, hotspotMapper: null, hotspotPd: null,
+    };
+
+    return () => {
+      ro.disconnect();
+      interactor.unbindEvents();
+      interactor.delete();
+      const v = vtkRef.current;
+      if (v) {
+        if (v.hotspotActor) { renderer.removeActor(v.hotspotActor); v.hotspotActor.delete(); }
+        v.hotspotMapper?.delete(); v.hotspotPd?.delete();
+        if (v.actor) { renderer.removeActor(v.actor); v.actor.delete(); }
+        v.mapper?.delete(); v.pd?.delete(); v.lut?.delete();
+      }
+      glWindow.delete();
+      renderWindow.delete();
+      vtkRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Swap geometry when mesh data changes — reuse the existing pipeline.
+  useEffect(() => {
+    if (!vtkRef.current) return;
+    const { renderer, renderWindow } = vtkRef.current;
+
+    // Remove previous geometry actors
+    if (vtkRef.current.hotspotActor) {
+      renderer.removeActor(vtkRef.current.hotspotActor);
+      vtkRef.current.hotspotActor.delete();
+      vtkRef.current.hotspotMapper?.delete();
+      vtkRef.current.hotspotPd?.delete();
+      vtkRef.current.hotspotActor = null;
+      vtkRef.current.hotspotMapper = null;
+      vtkRef.current.hotspotPd = null;
+    }
+    if (vtkRef.current.actor) {
+      renderer.removeActor(vtkRef.current.actor);
+      vtkRef.current.actor.delete();
+      vtkRef.current.mapper?.delete();
+      vtkRef.current.pd?.delete();
+      vtkRef.current.lut?.delete();
+      vtkRef.current.actor = null;
+      vtkRef.current.mapper = null;
+      vtkRef.current.pd = null;
+      vtkRef.current.lut = null;
+    }
+
+    if (!meshData) { renderWindow.render(); return; }
+
+    const pd     = buildSurfacePD(meshData, null);
     const mapper = vtkMapper.newInstance();
-    mapper.setInputData(ug);
+    mapper.setInputData(pd);
     mapper.setScalarVisibility(false);
     const actor  = vtkActor.newInstance();
     actor.setMapper(mapper);
@@ -281,19 +438,9 @@ export default function CAEViewer({ mesh }) {
     renderer.resetCamera();
     renderWindow.render();
 
-    const ro = new ResizeObserver(() => {
-      glWindow.setSize(container.offsetWidth, container.offsetHeight);
-      renderWindow.render();
-    });
-    ro.observe(container);
-
-    vtkRef.current = {
-      renderWindow, renderer, glWindow, interactor,
-      ug, mapper, actor, lut: null, ro,
-      hotspotActor: null, hotspotMapper: null, hotspotPd: null,
-    };
-
-    return teardown;
+    vtkRef.current.pd     = pd;
+    vtkRef.current.mapper = mapper;
+    vtkRef.current.actor  = actor;
   }, [meshData]);
 
   // Colormap change: update LUT only — no mesh rebuild
@@ -307,6 +454,74 @@ export default function CAEViewer({ mesh }) {
     vtkRef.current.lut = lut;
     renderWindow.render();
   }, [colormap]);
+
+  // Wireframe overlay toggle
+  useEffect(() => {
+    if (!vtkRef.current?.actor) return;
+    const { actor, renderWindow } = vtkRef.current;
+    const prop = actor.getProperty();
+    prop.setEdgeVisibility(wireframe);
+    if (wireframe) {
+      prop.setEdgeColor(0.08, 0.08, 0.08);
+      prop.setLineWidth(0.8);
+    }
+    renderWindow.render();
+  }, [wireframe]);
+
+  // Keep ref in sync so the click handler always sees the latest value
+  useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
+
+  // Play animation — advance one step every 300 ms
+  useEffect(() => {
+    if (!playing || timeSteps.length <= 1) return;
+    playTimerRef.current = setInterval(() => {
+      setCurrentStep(s => {
+        const next = s + 1;
+        if (next >= timeSteps.length) { setPlaying(false); return 0; }
+        return next;
+      });
+    }, 300);
+    return () => clearInterval(playTimerRef.current);
+  }, [playing, timeSteps.length]);
+
+  // Section cut — clipping plane on the mapper
+  useEffect(() => {
+    if (!vtkRef.current?.mapper || !meshData?.bounding_box) return;
+    const { mapper, renderWindow } = vtkRef.current;
+    mapper.removeAllClippingPlanes();
+
+    if (clipEnabled) {
+      const b = meshData.bounding_box;
+      const axes = {
+        X: { min: b.min_x, max: b.max_x, normal: [1, 0, 0] },
+        Y: { min: b.min_y, max: b.max_y, normal: [0, 1, 0] },
+        Z: { min: b.min_z, max: b.max_z, normal: [0, 0, 1] },
+      };
+      const { min, max, normal } = axes[clipAxis];
+      const pos = min + clipPos * (max - min);
+      const origin = clipAxis === 'X' ? [pos, 0, 0] : clipAxis === 'Y' ? [0, pos, 0] : [0, 0, pos];
+      const n = clipFlip ? normal.map(v => -v) : normal;
+
+      const plane = vtkPlane.newInstance();
+      plane.setOrigin(...origin);
+      plane.setNormal(...n);
+      mapper.addClippingPlane(plane);
+    }
+
+    renderWindow.render();
+  }, [clipEnabled, clipAxis, clipPos, clipFlip, meshData]);
+
+  // Threshold: remap scalar range on the mapper
+  useEffect(() => {
+    if (!vtkRef.current?.mapper || !fieldData?.values?.length) return;
+    const { mapper, renderWindow } = vtkRef.current;
+    const dMin = fieldData.data_min;
+    const dMax = fieldData.data_max;
+    const lo = dMin + threshold[0] * (dMax - dMin);
+    const hi = dMin + threshold[1] * (dMax - dMin);
+    mapper.setScalarRange(lo === hi ? lo - 1e-10 : lo, hi);
+    renderWindow.render();
+  }, [threshold, fieldData]);
 
   // Field data or warp change: rebuild UG
   useEffect(() => {
@@ -324,10 +539,10 @@ export default function CAEViewer({ mesh }) {
     vtkRef.current.lut?.delete?.();
     vtkRef.current.lut = null;
 
-    const newUg = buildUG(meshData, fieldData, actualWarp);
-    mapper.setInputData(newUg);
-    vtkRef.current.ug?.delete?.();
-    vtkRef.current.ug = newUg;
+    const newPd = buildSurfacePD(meshData, fieldData, actualWarp);
+    mapper.setInputData(newPd);
+    vtkRef.current.pd?.delete?.();
+    vtkRef.current.pd = newPd;
 
     if (fieldData?.values?.length > 0) {
       const lut = buildLUT(colormapRef.current);
@@ -335,11 +550,7 @@ export default function CAEViewer({ mesh }) {
       mapper.setScalarRange(fieldData.data_min, fieldData.data_max);
       mapper.setScalarVisibility(true);
       mapper.setColorByArrayName('result');
-      if (fieldData.field_type === 'nodal') {
-        mapper.setScalarModeToUsePointData();
-      } else {
-        mapper.setScalarModeToUseCellData();
-      }
+      mapper.setScalarModeToUsePointData();
       vtkRef.current.lut = lut;
     } else {
       mapper.setScalarVisibility(false);
@@ -403,34 +614,131 @@ export default function CAEViewer({ mesh }) {
     }
   }, [fieldData]);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Picking ────────────────────────────────────────────────────────────────
 
-  if (!mesh) {
-    return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'text.secondary' }}>
-        <div style={{ textAlign: 'center' }}>
-          <Typography variant="h6" gutterBottom>Modo CAE / FEA</Typography>
-          <Typography variant="body2">Selecciona una malla en el panel izquierdo</Typography>
-          <Typography variant="caption" color="text.disabled" display="block" sx={{ mt: 1 }}>
-            Formatos: VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, MED, Exodus…
-          </Typography>
-        </div>
-      </Box>
-    );
-  }
+  const handleMouseDown = useCallback((e) => {
+    mouseDragRef.current = { x: e.clientX, y: e.clientY };
+  }, []);
+
+  const handleContainerClick = useCallback((e) => {
+    if (!pickModeRef.current || !vtkRef.current || !meshData?.nodes?.length) return;
+    const dx = e.clientX - mouseDragRef.current.x;
+    const dy = e.clientY - mouseDragRef.current.y;
+    if (dx * dx + dy * dy > 25) return; // was a drag, not a click
+
+    const { renderer } = vtkRef.current;
+    const { origin, direction } = screenToWorldRay(e, containerRef.current, renderer);
+    const idx = findNearestNodeToRay(meshData.nodes, origin, direction);
+    if (idx < 0) return;
+
+    const [nx, ny, nz] = meshData.nodes[idx];
+    let value = null;
+    if (fieldData?.values?.[idx] !== undefined) {
+      const v = fieldData.values[idx];
+      value = Array.isArray(v) ? Math.sqrt(v.reduce((s, c) => s + c * c, 0)) : v;
+    }
+    setPickedNode({ idx, x: nx, y: ny, z: nz, value });
+  }, [meshData, fieldData]);
+
+  // ── Export ─────────────────────────────────────────────────────────────────
+
+  const handleScreenshot = useCallback(() => {
+    if (!vtkRef.current?.renderWindow) return;
+    const shots = vtkRef.current.renderWindow.captureImages();
+    if (!shots?.length) return;
+    shots[0].then(dataUrl => {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `${mesh?.original_filename ?? 'view'}.png`;
+      a.click();
+    }).catch(err => console.warn('Screenshot failed:', err));
+  }, [mesh]);
+
+  const handleCsvExport = useCallback(() => {
+    if (!meshData?.nodes?.length) return;
+    const isVec = fieldData && Array.isArray(fieldData.values?.[0]);
+    const headers = ['node_id', 'x', 'y', 'z'];
+    if (fieldData?.values?.length) {
+      if (isVec) headers.push('fx', 'fy', 'fz', 'magnitude');
+      else headers.push(fieldData.field_name || 'value');
+    }
+    const rows = meshData.nodes.map((pt, i) => {
+      const row = [i, pt[0], pt[1], pt[2]];
+      if (fieldData?.values?.[i] !== undefined) {
+        const v = fieldData.values[i];
+        if (Array.isArray(v)) row.push(...v, Math.sqrt(v.reduce((s, c) => s + c * c, 0)));
+        else row.push(v);
+      }
+      return row.join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${mesh?.original_filename ?? 'mesh'}_nodes.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, [mesh, meshData, fieldData]);
+
+  const handleMeshDownload = useCallback(() => {
+    if (!mesh?.id) return;
+    const a = document.createElement('a');
+    a.href = `/api/cae/meshes/${mesh.id}/download`;
+    a.download = mesh.original_filename;
+    a.click();
+  }, [mesh]);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  // The vtk div MUST always be in the DOM so the mount effect ([] deps) can
+  // attach the WebGL context on first render, regardless of whether a mesh is
+  // selected yet. The "no mesh" state is shown as an overlay instead.
 
   return (
     <Box sx={{ height: '100%', position: 'relative', bgcolor: '#111' }}>
 
-      {/* Controls panel */}
-      <Paper sx={{
+      {/* No-mesh placeholder — overlay so the vtk canvas stays mounted */}
+      {!mesh && (
+        <Box sx={{
+          position: 'absolute', inset: 0, zIndex: 20,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          bgcolor: 'background.default', color: 'text.secondary',
+        }}>
+          <div style={{ textAlign: 'center' }}>
+            <Typography variant="h6" gutterBottom>Modo CAE / FEA</Typography>
+            <Typography variant="body2">Selecciona una malla en el panel izquierdo</Typography>
+            <Typography variant="caption" color="text.disabled" display="block" sx={{ mt: 1 }}>
+              Formatos: VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, MED, Exodus…
+            </Typography>
+          </div>
+        </Box>
+      )}
+
+
+      {/* Controls panel — only when a mesh is loaded */}
+      {mesh && <Paper sx={{
         position: 'absolute', top: 16, right: 16, zIndex: 10,
         p: 2, minWidth: 230, maxWidth: 270,
+        maxHeight: 'calc(100vh - 48px)', overflowY: 'auto',
         bgcolor: 'rgba(18,18,18,0.93)', backdropFilter: 'blur(8px)',
       }}>
-        <Typography variant="subtitle2" gutterBottom noWrap sx={{ maxWidth: 220 }}>
-          {mesh.original_filename}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+          <Typography variant="subtitle2" noWrap sx={{ maxWidth: 170 }}>
+            {mesh.original_filename}
+          </Typography>
+          <Box sx={{ display: 'flex' }}>
+            <Tooltip title={wireframe ? 'Ocultar aristas' : 'Mostrar aristas'}>
+              <IconButton size="small" onClick={() => setWireframe(w => !w)}
+                sx={{ color: wireframe ? 'info.main' : 'text.disabled' }}>
+                <GridOn fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={pickMode ? 'Salir del modo pick' : 'Seleccionar nodo'}>
+              <IconButton size="small" onClick={() => { setPickMode(m => !m); setPickedNode(null); }}
+                sx={{ color: pickMode ? 'warning.main' : 'text.disabled' }}>
+                <GpsFixed fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
 
         {meshData && (
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
@@ -491,6 +799,60 @@ export default function CAEViewer({ mesh }) {
           </Box>
         )}
 
+        {/* Field statistics */}
+        {stats && (
+          <>
+            <Button
+              fullWidth size="small" variant="text"
+              onClick={() => setStatsOpen(o => !o)}
+              sx={{ justifyContent: 'space-between', color: 'text.secondary', px: 0, mt: 0.5, mb: statsOpen ? 0.5 : 0 }}
+            >
+              <span>Estadísticas</span>
+              <span style={{ fontSize: '0.7rem' }}>{statsOpen ? '▲' : '▼'}</span>
+            </Button>
+
+            {statsOpen && (
+              <Box sx={{ mb: 1 }}>
+                <Box sx={{ mb: 1 }}>
+                  <MiniHistogram counts={stats.histogram} />
+                </Box>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                  Umbral: [{(stats.min + threshold[0] * (stats.max - stats.min)).toExponential(2)},
+                  {' '}{(stats.min + threshold[1] * (stats.max - stats.min)).toExponential(2)}]
+                </Typography>
+                <Slider
+                  value={threshold}
+                  onChange={(_, v) => setThreshold(v)}
+                  min={0} max={1} step={0.01}
+                  size="small"
+                  sx={{ mb: 1.5, color: 'info.main' }}
+                />
+                {[
+                  ['Min',     stats.min],
+                  ['Max',     stats.max],
+                  ['Media',   stats.mean],
+                  ['Desv.',   stats.std],
+                  ['P5',      stats.p5],
+                  ['P25',     stats.p25],
+                  ['Mediana', stats.p50],
+                  ['P75',     stats.p75],
+                  ['P95',     stats.p95],
+                ].map(([label, val]) => (
+                  <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.2 }}>
+                    <Typography variant="caption" color="text.disabled">{label}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                      {typeof val === 'number' ? val.toExponential(3) : '—'}
+                    </Typography>
+                  </Box>
+                ))}
+                <Typography variant="caption" color="text.disabled" display="block" sx={{ mt: 0.5 }}>
+                  n = {stats.n.toLocaleString()}
+                </Typography>
+              </Box>
+            )}
+          </>
+        )}
+
         {/* Warp deformation — vector fields only */}
         {isVector && (
           <>
@@ -503,6 +865,106 @@ export default function CAEViewer({ mesh }) {
               onChange={(_, v) => setWarp(v)}
               min={0} max={1} step={0.05}
               size="small"
+              sx={{ mb: 1 }}
+            />
+          </>
+        )}
+
+        {/* Section cut */}
+        {meshData && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+              <Typography variant="caption" color={clipEnabled ? 'warning.main' : 'text.secondary'}>
+                Corte
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <ToggleButtonGroup
+                  value={clipAxis}
+                  exclusive
+                  size="small"
+                  onChange={(_, v) => { if (v) setClipAxis(v); }}
+                  sx={{ '& .MuiToggleButton-root': { py: 0, px: 0.7, fontSize: '0.65rem', minWidth: 0 } }}
+                >
+                  {['X', 'Y', 'Z'].map(a => (
+                    <ToggleButton key={a} value={a} disabled={!clipEnabled}>{a}</ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+                <Tooltip title={clipFlip ? 'Invertir lado' : 'Invertir lado'}>
+                  <span>
+                    <IconButton size="small" disabled={!clipEnabled}
+                      onClick={() => setClipFlip(f => !f)}
+                      sx={{ color: clipFlip ? 'warning.main' : 'text.disabled' }}>
+                      <ContentCut sx={{ fontSize: 14, transform: clipFlip ? 'scaleX(-1)' : 'none' }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title={clipEnabled ? 'Desactivar corte' : 'Activar corte'}>
+                  <IconButton size="small" onClick={() => setClipEnabled(c => !c)}
+                    sx={{ color: clipEnabled ? 'warning.main' : 'text.disabled' }}>
+                    <ContentCut sx={{ fontSize: 14 }} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            </Box>
+            <Slider
+              value={clipPos}
+              onChange={(_, v) => setClipPos(v)}
+              min={0} max={1} step={0.01}
+              size="small"
+              disabled={!clipEnabled}
+              sx={{ mb: 0.5, color: clipEnabled ? 'warning.main' : undefined }}
+            />
+          </>
+        )}
+
+        {/* Time steps — always visible; controls disabled for single-step meshes */}
+        {meshData && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+              <Typography variant="caption" color={timeSteps.length > 1 ? 'text.secondary' : 'text.disabled'}>
+                {timeSteps.length > 1
+                  ? `Paso ${currentStep + 1} / ${timeSteps.length}${typeof timeSteps[currentStep] === 'number' && timeSteps[currentStep] !== currentStep ? ` · t=${timeSteps[currentStep].toFixed(3)}` : ''}`
+                  : '1 paso (estático)'}
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 0 }}>
+                <Tooltip title="Primer paso">
+                  <span>
+                    <IconButton size="small" onClick={() => { setPlaying(false); setCurrentStep(0); }}
+                      disabled={timeSteps.length <= 1 || currentStep === 0}>
+                      <SkipPrevious sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title={playing ? 'Pausar' : 'Reproducir'}>
+                  <span>
+                    <IconButton size="small" onClick={() => setPlaying(p => !p)}
+                      disabled={timeSteps.length <= 1}
+                      color={playing ? 'warning' : 'default'}>
+                      {playing ? <Pause sx={{ fontSize: 16 }} /> : <PlayArrow sx={{ fontSize: 16 }} />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Último paso">
+                  <span>
+                    <IconButton size="small" onClick={() => { setPlaying(false); setCurrentStep(timeSteps.length - 1); }}
+                      disabled={timeSteps.length <= 1 || currentStep === timeSteps.length - 1}>
+                      <SkipNext sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Box>
+            </Box>
+            <Slider
+              value={currentStep}
+              onChange={(_, v) => { setPlaying(false); setCurrentStep(v); }}
+              min={0}
+              max={Math.max(1, timeSteps.length - 1)}
+              step={1}
+              size="small"
+              marks={timeSteps.length <= 20}
+              disabled={timeSteps.length <= 1}
               sx={{ mb: 1 }}
             />
           </>
@@ -543,7 +1005,30 @@ export default function CAEViewer({ mesh }) {
             </Typography>
           </Box>
         )}
-      </Paper>
+
+        {/* Export */}
+        <Divider sx={{ my: 1 }} />
+        <Typography variant="caption" color="text.disabled" display="block" sx={{ mb: 0.5 }}>
+          Exportar
+        </Typography>
+        <Box sx={{ display: 'flex', gap: 0.5 }}>
+          <Tooltip title="Captura PNG">
+            <IconButton size="small" onClick={handleScreenshot} sx={{ color: 'text.secondary' }}>
+              <CameraAlt sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={fieldData ? 'Exportar nodos + campo CSV' : 'Exportar nodos CSV'}>
+            <IconButton size="small" onClick={handleCsvExport} disabled={!meshData} sx={{ color: 'text.secondary' }}>
+              <TableChart sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Descargar malla original">
+            <IconButton size="small" onClick={handleMeshDownload} disabled={!mesh} sx={{ color: 'text.secondary' }}>
+              <FileDownload sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      </Paper>}
 
       {loading && (
         <Box sx={{
@@ -561,7 +1046,53 @@ export default function CAEViewer({ mesh }) {
         </Box>
       )}
 
+      {/* Picked node info */}
+      {pickedNode && (
+        <Paper sx={{
+          position: 'absolute', bottom: 16, left: 16, zIndex: 10,
+          p: 1.5, minWidth: 200,
+          bgcolor: 'rgba(18,18,18,0.93)', backdropFilter: 'blur(8px)',
+        }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+            <Typography variant="caption" color="warning.main" fontWeight="bold">
+              Nodo #{pickedNode.idx.toLocaleString()}
+            </Typography>
+            <IconButton size="small" onClick={() => setPickedNode(null)} sx={{ p: 0.25 }}>
+              <Close sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Box>
+          <Typography variant="caption" color="text.secondary" display="block">
+            X: {pickedNode.x.toExponential(4)}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Y: {pickedNode.y.toExponential(4)}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Z: {pickedNode.z.toExponential(4)}
+          </Typography>
+          {pickedNode.value !== null && (
+            <Typography variant="caption" color="info.main" display="block" sx={{ mt: 0.5 }}>
+              Valor: {pickedNode.value.toExponential(4)}
+            </Typography>
+          )}
+        </Paper>
+      )}
+
+      {/* vtk.js canvas — never receives mouse events when overlay is active */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Transparent pick overlay — sits on top so vtk.js interactor never sees the click */}
+      {pickMode && (
+        <div
+          style={{
+            position: 'absolute', inset: 0,
+            cursor: 'crosshair', zIndex: 2,
+            background: 'transparent',
+          }}
+          onMouseDown={handleMouseDown}
+          onClick={handleContainerClick}
+        />
+      )}
     </Box>
   );
 }

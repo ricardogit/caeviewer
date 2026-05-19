@@ -8,7 +8,7 @@ FROM node:18-alpine AS frontend-builder
 WORKDIR /frontend
 
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 
 COPY frontend/ ./
 RUN npm run build
@@ -28,6 +28,21 @@ RUN apt-get update \
         postgresql-client \
         netcat-openbsd \
         curl \
+        libfltk1.3 \
+        libgl1 \
+        libglu1-mesa \
+        libosmesa6 \
+        libxrender1 \
+        libxft2 \
+        libxext6 \
+        libxi6 \
+        libxcursor1 \
+        libxfixes3 \
+        libxrandr2 \
+        libxinerama1 \
+        libxss1 \
+        libfontconfig1 \
+        libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

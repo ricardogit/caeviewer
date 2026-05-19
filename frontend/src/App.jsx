@@ -52,7 +52,7 @@ export default function App() {
   const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
   // ── CAE mode ─────────────────────────────────────────────────────────────
-  const [caeMode, setCaeMode] = useState(false);
+  const [caeMode, setCaeMode] = useState(true);
   const [meshDialogOpen, setMeshDialogOpen] = useState(false);
   const [selectedMesh, setSelectedMesh] = useState(null);
   const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
@@ -221,7 +221,7 @@ export default function App() {
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'text.secondary' }}>
               <div style={{ textAlign: 'center' }}>
                 <h2>CAE Viewer</h2>
-                <p>Select a STEP file or switch to CAE mode to load a mesh</p>
+                <p>Selecciona un archivo STEP en el panel izquierdo</p>
               </div>
             </Box>
           )}

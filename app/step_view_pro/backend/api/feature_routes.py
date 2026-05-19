@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('feature_api', __name__)
 
 
+def _resolve_header(header_id):
+    """Resolve STEPFileHeader by its UUID or by part_id fallback."""
+    header = STEPFileHeader.query.get(header_id)
+    if not header:
+        header = STEPFileHeader.query.filter_by(part_id=header_id).first()
+    return header
+
+
 @bp.route('/<string:header_id>/extract', methods=['POST'])
 def extract_features(header_id):
     """
@@ -49,14 +57,16 @@ def extract_features(header_id):
     logger.info(f"POST /features/{header_id}/extract method={method}")
 
     # Verificar que el header existe
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
     if not header:
         return jsonify({'error': 'Header no encontrado'}), 404
+
+    resolved_id = str(header.id)
 
     # Verificar si ya hay features y no es force_recompute
     if not force_recompute:
         existing_features = STEPEntity.query.filter(
-            STEPEntity.header_id == header_id,
+            STEPEntity.header_id == resolved_id,
             STEPEntity.manufacturing_feature.isnot(None)
         ).count()
 
@@ -66,7 +76,7 @@ def extract_features(header_id):
                 'message': 'Features already extracted',
                 'existing_features': existing_features,
                 'hint': 'Use force_recompute=true to recompute',
-                'features_by_type': {}  # Add empty features list to match expected response structure
+                'features_by_type': {}
             }), 200
 
     # Método geométrico requiere PythonOCC
@@ -77,19 +87,17 @@ def extract_features(header_id):
 
     try:
         # Obtener filepath del archivo STEP original
-        # Find the Part that links to this header
-        step_file = header.part if header else None
-        
-        if not step_file:
+        part = header.part
+        if not part or not part.file_path:
             return jsonify({'error': 'Associated STEP file not found for this header'}), 404
-        
-        if not os.path.exists(step_file.file_path):
+
+        if not os.path.exists(part.file_path):
             return jsonify({'error': 'STEP file not found on disk'}), 404
 
         # Extraer features
         result = extract_features_for_file(
-            header_id=header_id,
-            filepath=step_file.file_path,
+            header_id=resolved_id,
+            filepath=part.file_path,
             method=method
         )
 
@@ -118,9 +126,10 @@ def list_features(header_id):
     logger.info(f"GET /features/{header_id}/list type={feature_type}")
 
     # Validate that header exists
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
     if not header:
         return jsonify({'error': 'Header not found'}), 404
+    header_id = str(header.id)
 
     # Construir query
     query = STEPEntity.query.filter(
@@ -371,14 +380,16 @@ def extract_advanced_features(header_id):
     logger.info(f"POST /features/{header_id}/extract-advanced method={method}")
 
     # Verificar que el header existe
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
     if not header:
         return jsonify({'error': 'Header no encontrado'}), 404
+
+    resolved_id = str(header.id)
 
     # Verificar si ya hay features y no es force_recompute
     if not force_recompute:
         existing_features = STEPEntity.query.filter(
-            STEPEntity.header_id == header_id,
+            STEPEntity.header_id == resolved_id,
             STEPEntity.manufacturing_feature.isnot(None)
         ).count()
 
@@ -388,7 +399,7 @@ def extract_advanced_features(header_id):
                 'message': 'Features already extracted',
                 'existing_features': existing_features,
                 'hint': 'Use force_recompute=true to recompute',
-                'features_by_type': {}  # Add empty features list to match expected response structure
+                'features_by_type': {}
             }), 200
 
     # Método geométrico requiere PythonOCC
@@ -399,18 +410,16 @@ def extract_advanced_features(header_id):
 
     try:
         # Obtener filepath del archivo STEP original
-        # Find the Part that links to this header
-        step_file = header.part if header else None
-        
-        if not step_file:
+        part = header.part
+        if not part or not part.file_path:
             return jsonify({'error': 'Associated STEP file not found for this header'}), 404
-            
-        if not os.path.exists(step_file.file_path):
+
+        if not os.path.exists(part.file_path):
             return jsonify({'error': 'STEP file not found on disk'}), 404
 
         # Extraer features avanzados
         features = extract_advanced_features_for_file(
-            header_id=header_id,
+            header_id=resolved_id,
             method=method
         )
 

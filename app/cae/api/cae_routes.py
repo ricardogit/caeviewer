@@ -170,11 +170,14 @@ def get_mesh(mesh_id):
         'mesh_id': mesh_id,
         'nodes': mesh_data['nodes'],
         'elements': mesh_data['elements'],
+        'surface_triangles': mesh_data.get('surface_triangles', []),
         'node_sets': mesh_data['node_sets'],
         'element_sets': mesh_data['element_sets'],
         'bounding_box': mesh_data['bounding_box'],
         'node_count': mesh_data['node_count'],
         'element_count': mesh_data['element_count'],
+        'surface_triangle_count': mesh_data.get('surface_triangle_count', 0),
+        'time_steps': mesh_data.get('time_steps', [0]),
     }), 200
 
 
@@ -237,6 +240,18 @@ def get_field_data(mesh_id, field_name):
         'data_min': fmin,
         'data_max': fmax,
     }), 200
+
+
+@bp.route('/meshes/<string:mesh_id>/download', methods=['GET'])
+def download_mesh(mesh_id):
+    """Serve the original mesh file as an attachment."""
+    from flask import send_file
+    mesh = CAEMesh.query.filter_by(id=mesh_id).first()
+    if not mesh:
+        return jsonify({'error': 'Mesh not found'}), 404
+    if not os.path.exists(mesh.file_path):
+        return jsonify({'error': 'File not found on disk'}), 404
+    return send_file(mesh.file_path, as_attachment=True, download_name=mesh.original_filename)
 
 
 @bp.route('/meshes/<string:mesh_id>', methods=['DELETE'])

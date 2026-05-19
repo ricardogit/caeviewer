@@ -48,7 +48,8 @@ def mesh_from_step():
       part_id    : str   — UUID of the Part / STEPFile record
       refinement : int   — 1 (coarse) … 5 (fine), default 3
       algorithm  : str   — "hxt" | "delaunay" | "frontal", default "hxt"
-      optimize   : bool  — run Netgen optimiser, default true
+      optimize   : bool  — run Netgen optimiser (only for tetra), default true
+      mesh_type  : str   — "tetra" (default) | "hexa"
     """
     data = request.get_json(force=True, silent=True) or {}
 
@@ -56,10 +57,15 @@ def mesh_from_step():
     if not part_id:
         return jsonify({"error": 'Missing "part_id"'}), 400
 
-    refinement = int(data.get("refinement", 3))
-    refinement = max(1, min(5, refinement))          # clamp 1–5
-    algorithm  = str(data.get("algorithm", "hxt"))
-    optimize   = bool(data.get("optimize", True))
+    refinement  = int(data.get("refinement", 3))
+    refinement  = max(1, min(5, refinement))          # clamp 1–5
+    algorithm   = str(data.get("algorithm", "hxt"))
+    optimize    = bool(data.get("optimize", True))
+    mesh_type   = str(data.get("mesh_type", "tetra")).lower()
+    mesh_family = str(data.get("mesh_family", mesh_type))
+    gmsh_extra  = data.get("gmsh_extra") or {}
+    if mesh_type not in ("tetra", "hexa", "hybrid"):
+        mesh_type = "tetra"
 
     # Resolve STEP file on disk
     try:
@@ -70,7 +76,7 @@ def mesh_from_step():
     # Prepare output path
     stem = os.path.splitext(os.path.basename(step_path))[0]
     ts   = int(time.time())
-    out_filename = f"{stem}_mesh_r{refinement}_{ts}.vtu"
+    out_filename = f"{stem}_mesh_{mesh_type}_r{refinement}_{ts}.vtu"
 
     upload_folder = os.path.join(
         str(current_app.config.get("UPLOAD_FOLDER", "data/uploads")), "cae"
@@ -87,6 +93,8 @@ def mesh_from_step():
             refinement=refinement,
             algorithm=algorithm,
             optimize=optimize,
+            mesh_type=mesh_type,
+            gmsh_extra=gmsh_extra,
         )
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 503     # GMSH not installed
@@ -100,7 +108,7 @@ def mesh_from_step():
     # Register as CAEMesh
     mesh_record = CAEMesh(
         filename=out_filename,
-        original_filename=f"{original_name} (malla FEA, r={refinement})",
+        original_filename=f"{original_name} (malla {mesh_family}, r={refinement})",
         file_path=output_vtu,
         file_format="vtu",
         node_count=result["node_count"],
@@ -109,7 +117,7 @@ def mesh_from_step():
         bounding_box=result["bounding_box"],
         description=(
             f"Generado desde STEP: {original_name} · "
-            f"refinement={refinement} · algorithm={algorithm}"
+            f"type={mesh_type} · refinement={refinement} · algorithm={algorithm}"
         ),
     )
     db.session.add(mesh_record)
@@ -125,4 +133,5 @@ def mesh_from_step():
         "elapsed_s":      result["elapsed_s"],
         "algorithm":      algorithm,
         "refinement":     refinement,
+        "mesh_type":      mesh_type,
     }), 201

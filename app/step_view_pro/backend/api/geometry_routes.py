@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('geometry_api', __name__)
 
 
+def _resolve_header(header_id):
+    h = STEPFileHeader.query.get(header_id)
+    if not h:
+        h = STEPFileHeader.query.filter_by(part_id=header_id).first()
+    return h
+
+
+def _get_part(header):
+    """Return the Part linked to a header, or None."""
+    return header.part if header else None
+
+
 @bp.route('/<string:header_id>', methods=['GET'])
 def get_geometry(header_id):
     """
@@ -59,22 +71,23 @@ def get_geometry(header_id):
     logger.info(f"GET /geometry/{header_id} LOD={lod} force_reprocess={force_reprocess}")
 
     # Buscar header
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
 
     if not header:
         logger.warning(f"Header no encontrado: {header_id}")
         return jsonify({'error': 'STEP file header no encontrado'}), 404
 
-    # Obtener archivo legacy asociado
-    step_file = header.legacy_file
-
-    if not step_file:
-        logger.error(f"No hay archivo legacy asociado al header {header_id}")
+    part = _get_part(header)
+    if not part or not part.file_path:
+        logger.error(f"No hay Part asociado al header {header_id}")
         return jsonify({'error': 'Archivo STEP no encontrado'}), 404
 
+    step_file_path = part.file_path
+    step_file_name = part.name or os.path.basename(step_file_path)
+
     # Verificar que el archivo físico existe
-    if not os.path.exists(step_file.file_path):
-        logger.error(f"Archivo físico no existe: {step_file.file_path}")
+    if not os.path.exists(step_file_path):
+        logger.error(f"Archivo físico no existe: {step_file_path}")
         return jsonify({'error': 'Archivo físico no encontrado'}), 404
 
     try:
@@ -93,7 +106,7 @@ def get_geometry(header_id):
                         'metadata': {
                             'source': 'cache',
                             'header_id': str(header_id),
-                            'filename': step_file.filename,
+                            'filename': step_file_name,
                             'lod': lod,
                             'timestamp': datetime.utcnow().isoformat()
                         }
@@ -103,10 +116,10 @@ def get_geometry(header_id):
                 # Proceed to process without cache
 
         # Cache miss o force_reprocess → procesar archivo
-        logger.info(f"Procesando archivo STEP: {step_file.file_path}")
+        logger.info(f"Procesando archivo STEP: {step_file_path}")
 
         processor = GeometryProcessor()
-        geometry_data = processor.generate_geometry_json(step_file.file_path)
+        geometry_data = processor.generate_geometry_json(step_file_path)
 
         # Guardar en cache
         if cache_manager:
@@ -132,7 +145,7 @@ def get_geometry(header_id):
             'metadata': {
                 'source': 'processed',
                 'header_id': str(header_id),
-                'filename': step_file.filename,
+                'filename': step_file_name,
                 'lod': lod,
                 'processing_time_ms': geometry_data['metadata']['total_processing_time_ms'],
                 'timestamp': datetime.utcnow().isoformat()
@@ -158,15 +171,16 @@ def get_all_lods(header_id):
     """
     logger.info(f"GET /geometry/{header_id}/all-lods")
 
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
 
     if not header:
         return jsonify({'error': 'Header no encontrado'}), 404
 
-    step_file = header.legacy_file
-
-    if not step_file or not os.path.exists(step_file.file_path):
+    part = _get_part(header)
+    if not part or not part.file_path or not os.path.exists(part.file_path):
         return jsonify({'error': 'Archivo STEP no encontrado'}), 404
+
+    part_name = part.name or os.path.basename(part.file_path)
 
     try:
         # Intentar cache
@@ -186,7 +200,7 @@ def get_all_lods(header_id):
                         'metadata': {
                             'source': 'cache',
                             'header_id': str(header_id),
-                            'filename': step_file.filename
+                            'filename': part_name
                         }
                     }), 200
             except Exception as e:
@@ -195,7 +209,7 @@ def get_all_lods(header_id):
 
         # Si no está todo en cache, procesar
         processor = GeometryProcessor()
-        geometry_data = processor.generate_geometry_json(step_file.file_path)
+        geometry_data = processor.generate_geometry_json(part.file_path)
 
         # Guardar en cache
         if cache_manager:
@@ -228,14 +242,13 @@ def get_bounding_box(header_id):
     """
     logger.info(f"GET /geometry/{header_id}/bbox")
 
-    header = STEPFileHeader.query.filter_by(id=header_id).first()
+    header = _resolve_header(header_id)
 
     if not header:
         return jsonify({'error': 'Header no encontrado'}), 404
 
-    step_file = header.legacy_file
-
-    if not step_file:
+    part = _get_part(header)
+    if not part or not part.file_path:
         return jsonify({'error': 'Archivo no encontrado'}), 404
 
     try:
@@ -254,7 +267,7 @@ def get_bounding_box(header_id):
 
         # Si no está en cache, procesar solo para bbox (rápido con LOD bajo)
         processor = GeometryProcessor()
-        shape = processor.parse_step_file(step_file.file_path)
+        shape = processor.parse_step_file(part.file_path)
         bbox = processor.compute_bounding_box(shape)
 
         return jsonify({

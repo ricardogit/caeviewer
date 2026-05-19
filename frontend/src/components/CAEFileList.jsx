@@ -3,10 +3,11 @@ import {
   Box, List, ListItem, ListItemButton, ListItemText,
   Typography, CircularProgress, Chip, Button,
   IconButton, Tooltip, Dialog, DialogTitle,
-  DialogContent, DialogActions, LinearProgress, Alert,
+  DialogContent, DialogActions, LinearProgress, Alert, Divider,
 } from '@mui/material';
-import { UploadFile, Refresh, GridOn, DeleteOutline } from '@mui/icons-material';
+import { UploadFile, Refresh, GridOn, DeleteOutline, Hub, InsertDriveFile } from '@mui/icons-material';
 import axios from 'axios';
+import MeshFromStepDialog from './MeshFromStepDialog';
 
 const SUPPORTED = '.vtu, .vtk, .inp, .bdf, .msh, .med, .exo, .cdb';
 
@@ -23,6 +24,13 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const fileInputRef = useRef();
+
+  // Generate-from-STEP state
+  const [stepPickerOpen, setStepPickerOpen] = useState(false);
+  const [stepFiles, setStepFiles] = useState([]);
+  const [stepFilesLoading, setStepFilesLoading] = useState(false);
+  const [pickedStep, setPickedStep] = useState(null);
+  const [meshDialogOpen, setMeshDialogOpen] = useState(false);
 
   useEffect(() => { loadMeshes(); }, []);
 
@@ -70,6 +78,33 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
     finally { setDeletingId(null); }
   }
 
+  async function openStepPicker() {
+    setStepPickerOpen(true);
+    setPickedStep(null);
+    setStepFilesLoading(true);
+    try {
+      const res = await axios.get('/api/step-view/files');
+      setStepFiles(res.data.files || []);
+    } catch (e) {
+      setStepFiles([]);
+    } finally {
+      setStepFilesLoading(false);
+    }
+  }
+
+  function pickStep(file) {
+    setPickedStep(file);
+    setStepPickerOpen(false);
+    setMeshDialogOpen(true);
+  }
+
+  function handleMeshCreated(mesh) {
+    onSelectMesh(mesh);
+    loadMeshes();
+    setMeshDialogOpen(false);
+    setPickedStep(null);
+  }
+
   if (loading) return <Box sx={{ p: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress /></Box>;
 
   return (
@@ -82,8 +117,11 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
           {meshes.length} malla{meshes.length !== 1 ? 's' : ''} disponible{meshes.length !== 1 ? 's' : ''}
         </Typography>
-        <Button variant="contained" fullWidth size="small" startIcon={<UploadFile />} onClick={() => { setSelectedFile(null); setUploadError(null); setUploadSuccess(null); setUploadProgress(0); setUploadOpen(true); }}>
+        <Button variant="contained" fullWidth size="small" startIcon={<UploadFile />} onClick={() => { setSelectedFile(null); setUploadError(null); setUploadSuccess(null); setUploadProgress(0); setUploadOpen(true); }} sx={{ mb: 1 }}>
           Cargar malla FEA
+        </Button>
+        <Button variant="outlined" fullWidth size="small" startIcon={<Hub />} onClick={openStepPicker} color="info">
+          Generar malla desde STEP
         </Button>
       </Box>
 
@@ -131,6 +169,43 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* STEP file picker */}
+      <Dialog open={stepPickerOpen} onClose={() => setStepPickerOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Selecciona un archivo STEP</DialogTitle>
+        <DialogContent sx={{ minHeight: 160 }}>
+          {stepFilesLoading && <Box sx={{ display: 'flex', justifyContent: 'center', pt: 2 }}><CircularProgress /></Box>}
+          {!stepFilesLoading && stepFiles.length === 0 && (
+            <Typography variant="body2" color="text.secondary" sx={{ pt: 1 }}>
+              No hay archivos STEP cargados. Cambia al modo STEP para subir uno.
+            </Typography>
+          )}
+          <List dense>
+            {stepFiles.map(f => (
+              <ListItem key={f.id} disablePadding>
+                <ListItemButton onClick={() => pickStep(f)}>
+                  <InsertDriveFile sx={{ mr: 1, fontSize: 18, color: 'text.secondary' }} />
+                  <ListItemText
+                    primary={f.original_filename || f.filename}
+                    secondary={f.file_size_mb ? `${f.file_size_mb.toFixed(1)} MB` : undefined}
+                  />
+                </ListItemButton>
+              </ListItem>
+            ))}
+          </List>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setStepPickerOpen(false)}>Cancelar</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Mesh-from-STEP dialog */}
+      <MeshFromStepDialog
+        open={meshDialogOpen}
+        onClose={() => { setMeshDialogOpen(false); setPickedStep(null); }}
+        stepFile={pickedStep}
+        onMeshCreated={handleMeshCreated}
+      />
 
       {/* Upload dialog */}
       <Dialog open={uploadOpen} onClose={() => !uploading && setUploadOpen(false)} maxWidth="sm" fullWidth>

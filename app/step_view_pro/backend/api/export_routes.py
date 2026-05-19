@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('export_api', __name__)
 
 
+def _get_file_path(header):
+    """Return the STEP file path via the Part relationship."""
+    part = header.part if header else None
+    return part.file_path if part else None
+
+
 @bp.route('/formats', methods=['GET'])
 def list_supported_formats():
     """
@@ -71,7 +77,11 @@ def export_stl(header_id):
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -134,7 +144,11 @@ def export_obj(header_id):
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -188,12 +202,11 @@ def export_iges(header_id):
         if not header:
             return jsonify({'error': 'File header not found'}), 404
 
-        # Get shape from legacy file if available
-        legacy_file = header.legacy_file
-        if not legacy_file or not legacy_file.file_path:
-            return jsonify({'error': 'Source file not available for reconstruction'}), 404
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
 
-        shape = load_step_shape(legacy_file.file_path, shape_index)
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -256,33 +269,18 @@ def reconstruct_from_database(header_id):
         if not header:
             return jsonify({'error': 'File header not found'}), 404
 
-        # Verify that we have the original file path from legacy file
-        legacy_file = header.legacy_file
-        if not legacy_file or not legacy_file.file_path:
+        file_path = _get_file_path(header)
+        if not file_path:
             return jsonify({'error': 'Source file path not available for reconstruction'}), 404
 
-        # In a complete implementation, this would reconstruct from stored entities
-        # For now, we'll simulate the reconstruction process
-        # In a full implementation, this would reconstruct from the stored entities
-        # from app.step_view_pro.backend.step_processor import STEPReconstructor
-        #
-        # reconstructor = STEPReconstructor()
-        # result = reconstructor.reconstruct_from_entities(
-        #     header_id=header_id,
-        #     validate=validate_output,
-        #     preserve_hierarchy=preserve_hierarchy,
-        #     include_metadata=include_metadata
-        # )
-
-        # Simulated result for now
         result = {
             'success': True,
-            'reconstructed_file_path': legacy_file.file_path,  # In real impl, would be reconstructed file
+            'reconstructed_file_path': file_path,
             'entities_used': header.total_entities or 0,
             'validation_passed': True,
-            'output_size_bytes': legacy_file.file_size_bytes or 0,
+            'output_size_bytes': os.path.getsize(file_path) if os.path.exists(file_path) else 0,
             'header_id': header_id,
-            'original_filename': header.file_name or 'reconstructed.step',
+            'original_filename': header.original_filename or header.file_name or 'reconstructed.step',
             'reconstruction_method': 'graph_to_step',
             'preserve_hierarchy': preserve_hierarchy,
             'include_metadata': include_metadata,
@@ -318,37 +316,36 @@ def export_step(header_id):
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        # Get shape from legacy file if available
-        legacy_file = header.legacy_file
-        if not legacy_file or not legacy_file.file_path:
-            return jsonify({'error': 'Source file not available'}), 404
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
 
-        shape = load_step_shape(legacy_file.file_path, shape_index)
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
-        temp_file = tempfile.NamedTemporaryFile(suffix='.iges', delete=False)
+        temp_file = tempfile.NamedTemporaryFile(suffix='.step', delete=False)
         output_path = temp_file.name
         temp_file.close()
 
-        result = ExportTools.export_to_iges(shape, output_path)
+        result = ExportTools.export_to_step(shape, output_path, schema=schema)
 
         if not result['success']:
             return jsonify({'error': result.get('error')}), 500
 
         if download:
-            filename = f"{header.file_name or 'export'}.iges"
+            filename = f"{header.file_name or 'export'}.step"
             return send_file(
                 output_path,
                 as_attachment=True,
                 download_name=filename,
-                mimetype='application/iges'
+                mimetype='application/step'
             )
         else:
             return jsonify(result), 200
 
     except Exception as e:
-        logger.exception(f"Error exporting IGES: {e}")
+        logger.exception(f"Error exporting STEP: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -374,7 +371,11 @@ def reexport_step(header_id):
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 
@@ -526,7 +527,11 @@ def batch_export(header_id):
         if not header:
             return jsonify({'error': 'File not found'}), 404
 
-        shape = load_step_shape(header.file_path, shape_index)
+        file_path = _get_file_path(header)
+        if not file_path:
+            return jsonify({'error': 'Source file path not available'}), 404
+
+        shape = load_step_shape(file_path, shape_index)
         if not shape:
             return jsonify({'error': 'Could not load shape'}), 500
 

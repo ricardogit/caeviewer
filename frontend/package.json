@@ -19,7 +19,7 @@
   "dependencies": {
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
-    "@kitware/vtk.js": "^28.13.1",
+    "@kitware/vtk.js": "28.13.1",
     "@mui/icons-material": "^5.15.0",
     "@mui/lab": "^5.0.0-alpha.158",
     "@mui/material": "^5.15.0",
@@ -28,7 +28,6 @@
     "@react-three/drei": "^9.92.4",
     "@react-three/fiber": "^8.15.12",
     "@react-three/postprocessing": "^2.15.11",
-    "@rollup/rollup-win32-x64-msvc": "^4.60.2",
     "axios": "^1.6.2",
     "classnames": "^2.3.2",
     "cytoscape": "^3.28.1",

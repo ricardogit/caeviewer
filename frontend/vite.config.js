@@ -40,11 +40,13 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (id.includes('@kitware/vtk.js')) return 'vendor-vtk';
-          if (id.includes('react-dom') || id.includes('react-router-dom') || /[/\\]react[/\\]/.test(id)) return 'vendor-react';
           if (id.includes('@react-three') || id.includes('/three/')) return 'vendor-three';
-          if (id.includes('@mui/') || id.includes('@emotion/')) return 'vendor-mui';
           if (id.includes('recharts') || id.includes('/d3') || id.includes('d3-')) return 'vendor-charts';
           if (id.includes('axios') || id.includes('zustand') || id.includes('immer') || id.includes('lodash')) return 'vendor-utils';
+          // react / emotion / MUI: NOT manually chunked.
+          // Rollup's auto-chunk algorithm resolves their circular-ESM deps in the
+          // correct init order; forcing them into named chunks breaks that ordering
+          // and causes "Cannot access 'x' before initialization" TDZ errors.
         },
       }
     }

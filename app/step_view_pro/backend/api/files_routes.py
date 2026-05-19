@@ -48,11 +48,13 @@ def list_files():
                 db.session.rollback()
                 entity_count = 0
 
+            display_name = os.path.basename(part.file_path) if part.file_path else part.name
             files.append({
                 'id': str(part.id),
                 'header_id': header_id,
-                'original_filename': os.path.basename(part.file_path) if part.file_path else part.name,
-                'filename': part.name,
+                'original_filename': display_name,
+                'filename': display_name,
+                'file_name': display_name,
                 'entity_count': entity_count,
                 'file_size_mb': file_size_mb,
                 'source': 'upload',
@@ -82,6 +84,7 @@ def list_files():
                     'header_id': fake_id,
                     'original_filename': fname,
                     'filename': fname,
+                    'file_name': fname,
                     'entity_count': 0,
                     'file_size_mb': size_mb,
                     'source': 'disk',
