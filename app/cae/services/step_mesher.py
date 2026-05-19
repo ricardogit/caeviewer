@@ -207,6 +207,9 @@ def mesh_step_file(
                     gmsh.model.mesh.optimize("UntangleMeshGeometry")
 
             # ── Write intermediate .msh ────────────────────────────────────
+            # MSH2 uses contiguous 1-based node IDs; MSH4 can produce
+            # non-contiguous IDs that trip up meshio's cell remapping.
+            gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
             msh_path = output_vtu.replace(".vtu", "_tmp.msh")
             gmsh.write(msh_path)
             elapsed = time.time() - t0
@@ -231,7 +234,20 @@ def mesh_step_file(
         # last resort: anything with ≥4 nodes per element
         cells_out = [c for c in mesh.cells if c.data.shape[1] >= 4]
 
-    mesh_out = meshio.Mesh(points=mesh.points, cells=cells_out)
+    # Squeeze: keep only nodes referenced by the surviving cells and remap
+    # connectivity to 0-based contiguous indices.  Without this, non-contiguous
+    # GMSH node IDs (common after SubdivisionAlgorithm or Frontal-Hex) cause
+    # "index N is out of bounds for axis 0 with size M" inside meshio/VTK.
+    if cells_out:
+        used = np.unique(np.concatenate([c.data.ravel() for c in cells_out]))
+        remap = np.full(mesh.points.shape[0], -1, dtype=np.intp)
+        remap[used] = np.arange(len(used), dtype=np.intp)
+        squeezed_points = mesh.points[used]
+        squeezed_cells  = [meshio.CellBlock(c.type, remap[c.data]) for c in cells_out]
+        mesh_out = meshio.Mesh(points=squeezed_points, cells=squeezed_cells)
+    else:
+        mesh_out = meshio.Mesh(points=mesh.points, cells=[])
+
     meshio.write(output_vtu, mesh_out)
 
     node_count  = len(mesh_out.points)
