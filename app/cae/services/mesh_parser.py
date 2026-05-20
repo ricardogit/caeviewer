@@ -19,6 +19,159 @@ except ImportError:
     logger.warning("meshio not installed — CAE mesh import disabled. Run: pip install meshio numpy")
 
 
+# ---------------------------------------------------------------------------
+# Outward-normal consistency
+# ---------------------------------------------------------------------------
+
+def _ensure_outward_normals(triangles: list, nodes_np) -> list:
+    """Flip surface triangles whose normals point inward (centroid-based check)."""
+    if not triangles or nodes_np is None:
+        return triangles
+    try:
+        import numpy as np
+        tri_arr = np.array(triangles, dtype=np.int32)
+        n_pts = len(nodes_np)
+        valid = np.all((tri_arr >= 0) & (tri_arr < n_pts), axis=1)
+        tri_arr = tri_arr[valid]
+        if len(tri_arr) == 0:
+            return triangles
+        p0 = nodes_np[tri_arr[:, 0]]
+        p1 = nodes_np[tri_arr[:, 1]]
+        p2 = nodes_np[tri_arr[:, 2]]
+        centroid = nodes_np.mean(axis=0)
+        normals = np.cross(p1 - p0, p2 - p0)
+        face_centers = (p0 + p1 + p2) / 3.0
+        dot = np.einsum('ij,ij->i', normals, face_centers - centroid)
+        result = tri_arr.copy()
+        flip = dot < 0
+        result[flip, 1] = tri_arr[flip, 2]
+        result[flip, 2] = tri_arr[flip, 1]
+        return result.tolist()
+    except Exception as exc:
+        logger.warning(f"_ensure_outward_normals failed: {exc}")
+        return triangles
+
+
+# ---------------------------------------------------------------------------
+# Solver recommendations
+# ---------------------------------------------------------------------------
+
+_SOLVER_RULES: dict = {
+    'OpenFOAM':   {'description': 'CFD / FEA estructural, hex/poliédrico óptimo',
+                   'excellent': {'hexahedron', 'hexahedron20', 'wedge', 'pyramid'},
+                   'good':      {'tetra', 'tetra10'}},
+    'CalculiX':   {'description': 'FEA estructural open-source, elementos C3D',
+                   'excellent': {'tetra', 'tetra10', 'hexahedron', 'hexahedron20'},
+                   'good':      {'wedge', 'pyramid', 'triangle', 'quad'}},
+    'Abaqus':     {'description': 'FEA comercial, soporte completo de elementos',
+                   'excellent': {'tetra', 'tetra10', 'hexahedron', 'hexahedron20',
+                                 'wedge', 'pyramid', 'triangle', 'quad'},
+                   'good':      {'line'}},
+    'Code_Aster': {'description': 'FEA open-source (EDF), tet/hex robusto',
+                   'excellent': {'tetra', 'tetra10', 'hexahedron'},
+                   'good':      {'wedge', 'triangle', 'quad'}},
+    'FEniCS':     {'description': 'FEM Python, nativo en mallas tet/tri',
+                   'excellent': {'tetra', 'tetra10', 'triangle'},
+                   'good':      {'hexahedron', 'quad'},
+                   'poor':      {'wedge', 'pyramid'}},
+    'Elmer':      {'description': 'FEM multifísica open-source',
+                   'excellent': {'tetra', 'tetra10', 'hexahedron'},
+                   'good':      {'wedge', 'triangle', 'quad'}},
+    'Star-CCM+':  {'description': 'CFD/FEA comercial, hex/poliédrico',
+                   'excellent': {'hexahedron', 'hexahedron20', 'wedge', 'pyramid'},
+                   'good':      {'tetra', 'tetra10'}},
+    'Fluent':     {'description': 'CFD comercial (ANSYS), hex/tet/mixto',
+                   'excellent': {'hexahedron', 'hexahedron20', 'wedge'},
+                   'good':      {'tetra', 'tetra10', 'pyramid'}},
+    'LS-DYNA':    {'description': 'Dinámica explícita, shell/sólido',
+                   'excellent': {'hexahedron', 'hexahedron20', 'tetra', 'tetra10',
+                                 'triangle', 'quad'},
+                   'good':      {'wedge', 'pyramid'}},
+    'Kratos':     {'description': 'Framework multifísica open-source (CIMNE)',
+                   'excellent': {'tetra', 'tetra10', 'hexahedron', 'triangle', 'quad'},
+                   'good':      {'wedge', 'pyramid'}},
+}
+
+
+def recommend_solvers(element_types: dict) -> list:
+    """Return [{solver, level, confidence, description}] sorted by confidence."""
+    present = set(element_types.keys()) if element_types else set()
+    if not present:
+        return []
+    results = []
+    for solver, rules in _SOLVER_RULES.items():
+        exc_n  = len(present & rules.get('excellent', set()))
+        good_n = len(present & rules.get('good',      set()))
+        poor_n = len(present & rules.get('poor',      set()))
+        score  = (exc_n * 3 + good_n * 2 - poor_n * 2) / (len(present) * 3)
+        score  = round(max(0.0, min(1.0, score)), 2)
+        if score > 0.1:
+            level = 'excellent' if score >= 0.8 else 'good' if score >= 0.5 else 'compatible'
+            results.append({
+                'solver':      solver,
+                'level':       level,
+                'confidence':  score,
+                'description': rules['description'],
+            })
+    results.sort(key=lambda x: -x['confidence'])
+    return results[:6]
+
+
+# ---------------------------------------------------------------------------
+# Mesh quality metrics (vectorised aspect-ratio)
+# ---------------------------------------------------------------------------
+
+_TET_EDGES   = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+_HEX_EDGES   = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
+_WEDGE_EDGES = [(0,1),(1,2),(2,0),(3,4),(4,5),(5,3),(0,3),(1,4),(2,5)]
+_MAX_SAMPLE  = 20_000
+
+
+def compute_mesh_quality(elements: dict, nodes_np) -> dict:
+    """Vectorised aspect-ratio quality metric for tet/hex/wedge elements."""
+    if nodes_np is None:
+        return {}
+    try:
+        import numpy as np
+
+        def _ratios(conns_raw, edge_pairs, n_corner):
+            c = np.array(conns_raw, dtype=np.int32)
+            if len(c) > _MAX_SAMPLE:
+                idx = np.random.default_rng(0).choice(len(c), _MAX_SAMPLE, replace=False)
+                c = c[idx]
+            pts = nodes_np[c[:, :n_corner]]              # (N, K, 3)
+            edges = np.stack([
+                np.linalg.norm(pts[:, b] - pts[:, a], axis=-1)
+                for a, b in edge_pairs
+            ])                                           # (E, N)
+            return edges.max(axis=0) / (edges.min(axis=0) + 1e-30)
+
+        all_ratios = []
+        for etype in ('tetra', 'tetra10'):
+            if elements.get(etype):
+                all_ratios.append(_ratios(elements[etype], _TET_EDGES, 4))
+        for etype in ('hexahedron', 'hexahedron20'):
+            if elements.get(etype):
+                all_ratios.append(_ratios(elements[etype], _HEX_EDGES, 8))
+        for etype in ('wedge', 'wedge15'):
+            if elements.get(etype):
+                all_ratios.append(_ratios(elements[etype], _WEDGE_EDGES, 6))
+
+        if not all_ratios:
+            return {}
+        arr = np.concatenate(all_ratios)
+        return {
+            'aspect_ratio_mean': round(float(arr.mean()), 3),
+            'aspect_ratio_max':  round(float(arr.max()),  3),
+            'aspect_ratio_p95':  round(float(np.percentile(arr, 95)), 3),
+            'bad_elements_pct':  round(float(np.mean(arr > 10.0) * 100), 2),
+            'sampled_count':     int(len(arr)),
+        }
+    except Exception as exc:
+        logger.warning(f"compute_mesh_quality failed: {exc}")
+        return {}
+
+
 def parse_mesh(file_path: str) -> dict:
     """
     Read a mesh file and return a canonical dict:
@@ -119,6 +272,7 @@ def parse_mesh(file_path: str) -> dict:
     ext = os.path.splitext(file_path)[1].lower()
 
     surface_triangles = extract_surface_triangles(elements)
+    surface_triangles = _ensure_outward_normals(surface_triangles, mesh.points)
 
     return {
         'nodes': nodes,
@@ -136,6 +290,8 @@ def parse_mesh(file_path: str) -> dict:
         'surface_triangle_count': len(surface_triangles),
         'format': ext.lstrip('.'),
         'field_names': list(node_fields.keys()) + list(element_fields.keys()),
+        'recommended_solvers': recommend_solvers(element_types),
+        'quality': compute_mesh_quality(elements, mesh.points),
     }
 
 

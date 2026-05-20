@@ -285,6 +285,7 @@ export default function CAEViewer({ mesh }) {
   const [clipFlip,       setClipFlip]       = useState(false);
   const [statsOpen,      setStatsOpen]      = useState(false);
   const [threshold,      setThreshold]      = useState([0, 1]);
+  const [solversOpen,    setSolversOpen]    = useState(false);
   const pickModeRef  = useRef(false);
   const mouseDragRef = useRef({ x: 0, y: 0 });
   const playTimerRef = useRef(null);
@@ -759,9 +760,56 @@ export default function CAEViewer({ mesh }) {
         )}
 
         {meshData && Object.keys(meshData.element_types || {}).length > 0 && (
-          <Typography variant="caption" color="text.disabled" display="block" sx={{ mb: 1 }}>
+          <Typography variant="caption" color="text.disabled" display="block" sx={{ mb: 0.5 }}>
             {Object.entries(meshData.element_types).map(([t, c]) => `${t}(${c})`).join(' · ')}
           </Typography>
+        )}
+
+        {/* Solver recommendations */}
+        {meshData?.recommended_solvers?.length > 0 && (
+          <>
+            <Button
+              fullWidth size="small" variant="text"
+              onClick={() => setSolversOpen(o => !o)}
+              sx={{ justifyContent: 'space-between', color: 'text.secondary', px: 0, py: 0.3, minHeight: 0, mb: solversOpen ? 0.5 : 0 }}
+            >
+              <span style={{ fontSize: '0.72rem' }}>Solvers recomendados</span>
+              <span style={{ fontSize: '0.65rem' }}>{solversOpen ? '▲' : '▼'}</span>
+            </Button>
+            {solversOpen && (
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
+                {meshData.recommended_solvers.map(s => (
+                  <Tooltip key={s.solver} title={`${s.description} · ${Math.round(s.confidence * 100)}%`}>
+                    <Chip
+                      label={s.solver}
+                      size="small"
+                      color={s.level === 'excellent' ? 'success' : s.level === 'good' ? 'info' : 'default'}
+                      sx={{ height: 20, fontSize: '0.65rem', cursor: 'default' }}
+                    />
+                  </Tooltip>
+                ))}
+              </Box>
+            )}
+          </>
+        )}
+
+        {/* Mesh quality */}
+        {meshData?.quality?.aspect_ratio_mean != null && (
+          <Box sx={{ mb: 0.5 }}>
+            {[
+              ['A.R. medio',     meshData.quality.aspect_ratio_mean, 5],
+              ['A.R. P95',       meshData.quality.aspect_ratio_p95,  10],
+              ['Elem. defic. %', meshData.quality.bad_elements_pct,  5],
+            ].map(([label, val, threshold]) => (
+              <Box key={label} sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography variant="caption" color="text.disabled">{label}</Typography>
+                <Typography variant="caption"
+                  sx={{ fontFamily: 'monospace', color: val > threshold ? 'warning.main' : 'success.main' }}>
+                  {val}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
         )}
 
         <Divider sx={{ my: 1 }} />

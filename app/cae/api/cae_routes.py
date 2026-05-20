@@ -48,6 +48,7 @@ def _allowed(filename):
 @bp.route('/meshes', methods=['GET'])
 def list_meshes():
     """List all uploaded CAE meshes."""
+    from app.cae.services.mesh_parser import recommend_solvers
     meshes = CAEMesh.query.order_by(CAEMesh.created_at.desc()).all()
     return jsonify({
         'meshes': [{
@@ -59,6 +60,7 @@ def list_meshes():
             'element_types': m.element_types,
             'field_names': m.field_names or [],
             'created_at': m.created_at.isoformat() if m.created_at else None,
+            'recommended_solvers': recommend_solvers(m.element_types or {})[:3],
         } for m in meshes],
         'total': len(meshes),
     }), 200
@@ -178,6 +180,8 @@ def get_mesh(mesh_id):
         'element_count': mesh_data['element_count'],
         'surface_triangle_count': mesh_data.get('surface_triangle_count', 0),
         'time_steps': mesh_data.get('time_steps', [0]),
+        'recommended_solvers': mesh_data.get('recommended_solvers', []),
+        'quality': mesh_data.get('quality', {}),
     }), 200
 
 

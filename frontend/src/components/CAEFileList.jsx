@@ -145,6 +145,14 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
                       {m.node_count > 0 && <Chip label={`${m.node_count?.toLocaleString()}n`} size="small" sx={{ height: 18, fontSize: '0.65rem' }} />}
                       {m.element_count > 0 && <Chip label={`${m.element_count?.toLocaleString()}e`} size="small" sx={{ height: 18, fontSize: '0.65rem' }} />}
                       {m.file_format && <Chip label={m.file_format.toUpperCase()} size="small" color="info" sx={{ height: 18, fontSize: '0.65rem' }} />}
+                      {m.recommended_solvers?.[0] && (
+                        <Chip
+                          label={m.recommended_solvers[0].solver}
+                          size="small"
+                          color={m.recommended_solvers[0].level === 'excellent' ? 'success' : 'default'}
+                          sx={{ height: 18, fontSize: '0.65rem' }}
+                        />
+                      )}
                     </Box>
                   }
                 />

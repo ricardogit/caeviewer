@@ -252,7 +252,9 @@ def mesh_step_file(
 
     node_count  = len(mesh_out.points)
     elem_count  = sum(len(c.data) for c in mesh_out.cells)
-    elem_types  = {c.type: len(c.data) for c in mesh_out.cells}
+    elem_types: dict = {}
+    for c in mesh_out.cells:
+        elem_types[c.type] = elem_types.get(c.type, 0) + len(c.data)
 
     bbox = {
         "min_x": float(xmin), "max_x": float(xmax),
