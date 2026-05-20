@@ -38,11 +38,75 @@ ALLOWED_MESH_EXTENSIONS = {
     '.exo', '.e',                # Exodus II
     '.cdb',                      # ANSYS CDB
     '.xdmf', '.xmf',             # XDMF
+    '.k', '.key',                # LS-DYNA keyword (single file)
+    '.zip',                      # LS-DYNA multi-file assembly (ZIP)
 }
 
 
 def _allowed(filename):
     return os.path.splitext(filename.lower())[1] in ALLOWED_MESH_EXTENSIONS
+
+
+def _find_lsdyna_master(directory: str):
+    """
+    Find the LS-DYNA master keyword file inside an extracted ZIP directory.
+
+    The master is the file that *contains* *INCLUDE directives but is not
+    itself referenced by any other file.  Falls back to the largest .k/.key
+    file at the root level.
+    """
+    import glob
+
+    # Collect all .k / .key files (root first, then subdirectories)
+    kfiles = (
+        glob.glob(os.path.join(directory, '*.k')) +
+        glob.glob(os.path.join(directory, '*.key')) +
+        glob.glob(os.path.join(directory, '**', '*.k'),  recursive=True) +
+        glob.glob(os.path.join(directory, '**', '*.key'), recursive=True)
+    )
+    seen: set = set()
+    kfiles = [f for f in kfiles
+              if not (os.path.abspath(f) in seen or seen.add(os.path.abspath(f)))]
+
+    if not kfiles:
+        return None
+    if len(kfiles) == 1:
+        return kfiles[0]
+
+    # Find which files are referenced via *INCLUDE in others
+    included: set = set()
+    for kf in kfiles:
+        try:
+            with open(kf, 'r', errors='ignore') as fh:
+                next_is_filename = False
+                for line in fh:
+                    stripped = line.strip()
+                    if stripped.upper().startswith('*INCLUDE'):
+                        next_is_filename = True
+                        continue
+                    if next_is_filename:
+                        if stripped and not stripped.startswith('$'):
+                            candidate = os.path.normpath(
+                                os.path.join(os.path.dirname(kf), stripped)
+                            )
+                            included.add(candidate)
+                        next_is_filename = False
+        except OSError:
+            pass
+
+    kfiles_abs = [os.path.abspath(f) for f in kfiles]
+    masters = [f for f in kfiles_abs if f not in included]
+
+    if masters:
+        root = os.path.abspath(directory)
+        root_masters = [f for f in masters if os.path.dirname(f) == root]
+        return root_masters[0] if root_masters else masters[0]
+
+    # Last resort: largest file at root level
+    root_files = [f for f in kfiles_abs
+                  if os.path.dirname(f) == os.path.abspath(directory)]
+    candidates = root_files or kfiles_abs
+    return max(candidates, key=os.path.getsize)
 
 
 @bp.route('/meshes', methods=['GET'])
@@ -68,7 +132,11 @@ def list_meshes():
 
 @bp.route('/meshes/upload', methods=['POST'])
 def upload_mesh():
-    """Upload a CAE mesh file."""
+    """Upload a CAE mesh file (single file or ZIP for LS-DYNA assemblies)."""
+    import uuid as _uuid
+    import zipfile
+    import shutil
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
 
@@ -82,18 +150,48 @@ def upload_mesh():
     filename = secure_filename(file.filename)
     upload_folder = os.path.join(str(current_app.config.get('UPLOAD_FOLDER', 'data/uploads')), 'cae')
     os.makedirs(upload_folder, exist_ok=True)
-    file_path = os.path.join(upload_folder, filename)
-    file.save(file_path)
 
-    ext = os.path.splitext(filename)[1].lower().lstrip('.')
+    raw_ext = os.path.splitext(filename)[1].lower()
 
+    # ── ZIP assembly (LS-DYNA multi-file) ─────────────────────────────────────
+    if raw_ext == '.zip':
+        zip_path  = os.path.join(upload_folder, filename)
+        assy_dir  = os.path.join(upload_folder, f'assy_{_uuid.uuid4().hex}')
+        file.save(zip_path)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(assy_dir)
+        except Exception as exc:
+            shutil.rmtree(assy_dir, ignore_errors=True)
+            os.remove(zip_path)
+            return jsonify({'error': f'ZIP inválido: {exc}'}), 400
+        os.remove(zip_path)
+
+        master = _find_lsdyna_master(assy_dir)
+        if not master:
+            shutil.rmtree(assy_dir, ignore_errors=True)
+            return jsonify({'error': 'No se encontró archivo .k o .key en el ZIP'}), 400
+
+        file_path       = master
+        ext             = 'k'
+        original_filename = file.filename
+
+    # ── Single file ───────────────────────────────────────────────────────────
+    else:
+        file_path         = os.path.join(upload_folder, filename)
+        file.save(file_path)
+        ext               = raw_ext.lstrip('.')
+        original_filename = file.filename
+
+    # ── Parse ─────────────────────────────────────────────────────────────────
+    base_name = os.path.basename(file_path)
     try:
         from app.cae.services.mesh_parser import parse_mesh, get_field_range
         mesh_data = parse_mesh(file_path)
 
         mesh = CAEMesh(
-            filename=filename,
-            original_filename=file.filename,
+            filename=base_name,
+            original_filename=original_filename,
             file_path=file_path,
             file_format=ext,
             node_count=mesh_data['node_count'],
@@ -107,16 +205,15 @@ def upload_mesh():
             description=request.form.get('description', ''),
         )
         db.session.add(mesh)
-        db.session.flush()  # get mesh.id
+        db.session.flush()
 
-        # Store field metadata
         for fname in mesh_data.get('field_names', []):
             is_nodal = fname in mesh_data['node_fields']
             raw = (mesh_data['node_fields'] if is_nodal else mesh_data['element_fields'])[fname]
             step0 = raw.get('0', [])
             fmin, fmax = get_field_range(step0)
             ncomp = len(step0[0]) if step0 and isinstance(step0[0], list) else 1
-            field = CAEField(
+            db.session.add(CAEField(
                 mesh_id=mesh.id,
                 name=fname,
                 field_type='nodal' if is_nodal else 'elemental',
@@ -124,19 +221,17 @@ def upload_mesh():
                 time_step=0.0,
                 data_min=fmin,
                 data_max=fmax,
-            )
-            db.session.add(field)
+            ))
 
         db.session.commit()
         parse_status = 'done'
 
     except Exception as e:
-        logger.warning(f"Mesh parse failed for {filename}: {e}")
+        logger.warning(f"Mesh parse failed for {base_name}: {e}")
         db.session.rollback()
-        # Still register the file even if parsing failed
         mesh = CAEMesh(
-            filename=filename,
-            original_filename=file.filename,
+            filename=base_name,
+            original_filename=original_filename,
             file_path=file_path,
             file_format=ext,
         )
@@ -146,13 +241,13 @@ def upload_mesh():
         mesh_data = {}
 
     return jsonify({
-        'success': True,
-        'mesh_id': str(mesh.id),
-        'filename': filename,
-        'node_count': mesh_data.get('node_count'),
+        'success':       True,
+        'mesh_id':       str(mesh.id),
+        'filename':      base_name,
+        'node_count':    mesh_data.get('node_count'),
         'element_count': mesh_data.get('element_count'),
-        'field_names': mesh_data.get('field_names', []),
-        'parse_status': parse_status,
+        'field_names':   mesh_data.get('field_names', []),
+        'parse_status':  parse_status,
     }), 201
 
 
@@ -260,16 +355,24 @@ def download_mesh(mesh_id):
 
 @bp.route('/meshes/<string:mesh_id>', methods=['DELETE'])
 def delete_mesh(mesh_id):
-    """Delete a CAE mesh and its file."""
+    """Delete a CAE mesh and its file (or entire assy_* directory for ZIP assemblies)."""
+    import shutil
     mesh = CAEMesh.query.filter_by(id=mesh_id).first()
     if not mesh:
         return jsonify({'error': 'Mesh not found'}), 404
 
-    if mesh.file_path and os.path.exists(mesh.file_path):
-        try:
-            os.remove(mesh.file_path)
-        except Exception as e:
-            logger.warning(f"Could not delete mesh file: {e}")
+    if mesh.file_path:
+        parent = os.path.dirname(mesh.file_path)
+        if os.path.basename(parent).startswith('assy_') and os.path.isdir(parent):
+            try:
+                shutil.rmtree(parent)
+            except Exception as e:
+                logger.warning(f"Could not delete assembly directory: {e}")
+        elif os.path.exists(mesh.file_path):
+            try:
+                os.remove(mesh.file_path)
+            except Exception as e:
+                logger.warning(f"Could not delete mesh file: {e}")
 
     db.session.delete(mesh)
     db.session.commit()

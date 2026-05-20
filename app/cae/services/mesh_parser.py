@@ -18,6 +18,13 @@ except ImportError:
     MESHIO_AVAILABLE = False
     logger.warning("meshio not installed — CAE mesh import disabled. Run: pip install meshio numpy")
 
+try:
+    import lsdyna_mesh_reader as _lmr_probe  # noqa: F401
+    LSDYNA_AVAILABLE = True
+except ImportError:
+    LSDYNA_AVAILABLE = False
+    logger.warning("lsdyna-mesh-reader not installed — LS-DYNA import disabled. Run: pip install lsdyna-mesh-reader")
+
 
 # ---------------------------------------------------------------------------
 # Outward-normal consistency
@@ -172,6 +179,188 @@ def compute_mesh_quality(elements: dict, nodes_np) -> dict:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# LS-DYNA keyword reader
+# ---------------------------------------------------------------------------
+
+def _parse_lsdyna(file_path: str) -> dict:
+    """
+    Parse a LS-DYNA keyword file (.k/.key).
+    *INCLUDE directives are resolved automatically by lsdyna-mesh-reader
+    relative to the master file's directory (ZIP assembly workflow).
+    """
+    try:
+        import lsdyna_mesh_reader as lmr
+    except ImportError:
+        raise RuntimeError(
+            "lsdyna-mesh-reader no está instalado. Ejecuta: pip install lsdyna-mesh-reader"
+        )
+    import numpy as np
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
+
+    logger.info(f"Parsing LS-DYNA keyword: {file_path}")
+    deck = lmr.read(file_path)
+
+    # ── Nodes ─────────────────────────────────────────────────────────────────
+    # LS-DYNA uses arbitrary integer node IDs; remap to 0-based contiguous idx.
+    nid_arr = np.asarray(deck.nodes.nid,         dtype=np.int64)
+    coords  = np.asarray(deck.nodes.coordinates, dtype=np.float64)
+    nid_to_idx: dict = {int(nid): i for i, nid in enumerate(nid_arr)}
+    nodes = coords.tolist()
+
+    elements:      dict = {}
+    element_types: dict = {}
+    total_elements: int = 0
+
+    def _safe(nid: int) -> int:
+        return nid_to_idx.get(nid, -1)
+
+    def _add(etype: str, batch: list) -> None:
+        nonlocal total_elements
+        if not batch:
+            return
+        if etype in elements:
+            elements[etype].extend(batch)
+            element_types[etype] += len(batch)
+        else:
+            elements[etype]     = batch
+            element_types[etype] = len(batch)
+        total_elements += len(batch)
+
+    # ── Solids (ELEMENT_SOLID) ────────────────────────────────────────────────
+    # Card: 8 node columns. Degenerate types use repeated node IDs:
+    #   tet4   → nodes 5-8 repeat node 4  (4 unique)
+    #   wedge6 → nodes 7-8 repeat node 6  (6 unique)
+    #   pyramid→ nodes 6-8 repeat node 5  (5 unique)
+    if getattr(deck, 'elements_solid', None) is not None:
+        try:
+            raw = np.asarray(deck.elements_solid.connectivity, dtype=np.int64)
+            hex_b, tet_b, wedge_b, pyr_b = [], [], [], []
+            for row in raw:
+                unique = list(dict.fromkeys(int(x) for x in row))  # ordered dedup
+                n = len(unique)
+                idxs = [_safe(u) for u in unique]
+                if -1 in idxs:
+                    continue
+                if n == 4:
+                    tet_b.append(idxs)
+                elif n == 5:
+                    pyr_b.append(idxs)
+                elif n == 6:
+                    wedge_b.append(idxs)
+                else:                                               # 7 or 8 → hex
+                    idxs8 = [_safe(int(x)) for x in row]
+                    if -1 not in idxs8:
+                        hex_b.append(idxs8)
+            _add('hexahedron', hex_b)
+            _add('tetra',      tet_b)
+            _add('wedge',      wedge_b)
+            _add('pyramid',    pyr_b)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA solids: {exc}")
+
+    # ── Thick shells (ELEMENT_TSHELL) → treated as hexahedra ─────────────────
+    if getattr(deck, 'elements_tshell', None) is not None:
+        try:
+            raw   = np.asarray(deck.elements_tshell.connectivity, dtype=np.int64)
+            batch = []
+            for row in raw:
+                idxs = [_safe(int(x)) for x in row[:8]]
+                if -1 not in idxs:
+                    batch.append(idxs)
+            _add('hexahedron', batch)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA tshells: {exc}")
+
+    # ── Shells (ELEMENT_SHELL) ────────────────────────────────────────────────
+    # Card: 4 node columns. Tri3: last node == node 3 (or 0 as padding).
+    if getattr(deck, 'elements_shell', None) is not None:
+        try:
+            raw = np.asarray(deck.elements_shell.connectivity, dtype=np.int64)
+            quads, tris = [], []
+            for row in raw:
+                n1, n2, n3, n4 = (int(x) for x in row[:4])
+                if n4 == n3 or n4 == 0:
+                    idxs = [_safe(n) for n in (n1, n2, n3)]
+                    if -1 not in idxs:
+                        tris.append(idxs)
+                else:
+                    idxs = [_safe(n) for n in (n1, n2, n3, n4)]
+                    if -1 not in idxs:
+                        quads.append(idxs)
+            _add('triangle', tris)
+            _add('quad',     quads)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA shells: {exc}")
+
+    # ── Beams (ELEMENT_BEAM) ──────────────────────────────────────────────────
+    if getattr(deck, 'elements_beam', None) is not None:
+        try:
+            raw   = np.asarray(deck.elements_beam.connectivity, dtype=np.int64)
+            batch = []
+            for row in raw:
+                idxs = [_safe(int(x)) for x in row[:2]]
+                if -1 not in idxs:
+                    batch.append(idxs)
+            _add('line', batch)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA beams: {exc}")
+
+    # ── Node sets (*SET_NODE) ─────────────────────────────────────────────────
+    node_sets: dict = {}
+    try:
+        for ns in (getattr(deck, 'node_sets', None) or []):
+            sid  = str(getattr(ns, 'sid', id(ns)))
+            idxs = [_safe(int(n)) for n in (getattr(ns, 'nid', None) or [])]
+            good = [i for i in idxs if i >= 0]
+            if good:
+                node_sets[sid] = good
+    except Exception as exc:
+        logger.warning(f"LS-DYNA node sets: {exc}")
+
+    # ── Parts → element set names ─────────────────────────────────────────────
+    element_sets: dict = {}
+    try:
+        for part in (getattr(deck, 'parts', None) or []):
+            pid  = str(getattr(part, 'pid', id(part)))
+            name = (getattr(part, 'title', '') or '').strip() or f'Part_{pid}'
+            element_sets[name] = []
+    except Exception as exc:
+        logger.warning(f"LS-DYNA parts: {exc}")
+
+    # ── Bounding box ──────────────────────────────────────────────────────────
+    bbox = {
+        'min_x': float(coords[:, 0].min()), 'max_x': float(coords[:, 0].max()),
+        'min_y': float(coords[:, 1].min()), 'max_y': float(coords[:, 1].max()),
+        'min_z': float(coords[:, 2].min()), 'max_z': float(coords[:, 2].max()),
+    }
+
+    surface_triangles = extract_surface_triangles(elements)
+    surface_triangles = _ensure_outward_normals(surface_triangles, coords)
+
+    return {
+        'nodes':                  nodes,
+        'elements':               elements,
+        'surface_triangles':      surface_triangles,
+        'node_sets':              node_sets,
+        'element_sets':           element_sets,
+        'node_fields':            {},
+        'element_fields':         {},
+        'time_steps':             [0],
+        'bounding_box':           bbox,
+        'node_count':             len(nodes),
+        'element_count':          total_elements,
+        'element_types':          element_types,
+        'surface_triangle_count': len(surface_triangles),
+        'format':                 'k',
+        'field_names':            [],
+        'recommended_solvers':    recommend_solvers(element_types),
+        'quality':                compute_mesh_quality(elements, coords),
+    }
+
+
 def parse_mesh(file_path: str) -> dict:
     """
     Read a mesh file and return a canonical dict:
@@ -194,6 +383,10 @@ def parse_mesh(file_path: str) -> dict:
       format: str,
     }
     """
+    # Route LS-DYNA keyword files to dedicated parser
+    if os.path.splitext(file_path)[1].lower() in ('.k', '.key'):
+        return _parse_lsdyna(file_path)
+
     if not MESHIO_AVAILABLE:
         raise RuntimeError("meshio is not installed. Run: pip install meshio numpy")
 

@@ -9,7 +9,7 @@ import { UploadFile, Refresh, GridOn, DeleteOutline, Hub, InsertDriveFile } from
 import axios from 'axios';
 import MeshFromStepDialog from './MeshFromStepDialog';
 
-const SUPPORTED = '.vtu, .vtk, .inp, .bdf, .msh, .med, .exo, .cdb';
+const SUPPORTED = '.vtu, .vtk, .inp, .bdf, .msh, .med, .exo, .cdb, .k, .key, .zip (LS-DYNA)';
 
 export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
   const [meshes, setMeshes] = useState([]);
@@ -226,7 +226,7 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
             onClick={() => fileInputRef.current?.click()}
             sx={{ border: 2, borderStyle: 'dashed', borderColor: dragOver ? 'info.main' : selectedFile ? 'success.main' : 'divider', borderRadius: 2, p: 3, mb: 2, textAlign: 'center', cursor: 'pointer', transition: 'all 0.2s' }}
           >
-            <input ref={fileInputRef} type="file" accept=".vtu,.vtk,.inp,.bdf,.nas,.msh,.med,.exo,.cdb,.xdmf" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files[0])} />
+            <input ref={fileInputRef} type="file" accept=".vtu,.vtk,.inp,.bdf,.nas,.msh,.med,.exo,.cdb,.xdmf,.k,.key,.zip" style={{ display: 'none' }} onChange={(e) => setSelectedFile(e.target.files[0])} />
             <GridOn sx={{ fontSize: 40, color: selectedFile ? 'success.main' : 'text.secondary', mb: 1 }} />
             {selectedFile
               ? <Typography variant="body2" color="success.main" fontWeight="medium">{selectedFile.name} ({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)</Typography>
