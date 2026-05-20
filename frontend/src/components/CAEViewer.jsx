@@ -96,17 +96,20 @@ function buildLUT(name) {
 function buildSurfacePD(meshData, fieldData, warpScale = 0) {
   const pd = vtkPolyData.newInstance();
   const allNodes = meshData.nodes;
+  const nNodes = allNodes.length;
   const triangles = meshData.surface_triangles || [];
   const isVec = fieldData?.values?.length > 0 && Array.isArray(fieldData.values[0]);
 
-  // Build a compact points array using only the nodes referenced by surface
-  // triangles.  Interior nodes (unreferenced) are excluded so that the VTK.js
-  // actor bounds — and therefore the initial camera position — are computed
-  // from the visible surface, not the full node cloud.
-  const remap = new Int32Array(allNodes.length).fill(-1);
-  const surfOld = [];   // surfOld[newIdx] = oldIdx
+  // Build compact points array from only surface-referenced nodes.
+  // Interior nodes are excluded so VTK.js actor bounds (and initial camera)
+  // are derived from the visible surface, not the full node cloud.
+  // Guard: TypedArray out-of-bounds returns undefined in JS (not -1),
+  // so we check idx range explicitly before touching remap.
+  const remap = new Int32Array(nNodes).fill(-1);
+  const surfOld = [];  // surfOld[newIdx] = originalIdx
   for (const tri of triangles) {
     for (const idx of tri) {
+      if (idx < 0 || idx >= nNodes) continue;   // guard invalid indices
       if (remap[idx] < 0) { remap[idx] = surfOld.length; surfOld.push(idx); }
     }
   }
@@ -128,18 +131,19 @@ function buildSurfacePD(meshData, fieldData, warpScale = 0) {
   pts.setData(coords, 3);
   pd.setPoints(pts);
 
-  // Triangle connectivity with remapped indices
-  const polys = new Uint32Array(triangles.length * 4);
-  for (let i = 0; i < triangles.length; i++) {
-    const tri = triangles[i];
-    polys[i * 4]     = 3;
-    polys[i * 4 + 1] = remap[tri[0]];
-    polys[i * 4 + 2] = remap[tri[1]];
-    polys[i * 4 + 3] = remap[tri[2]];
+  // Triangle connectivity — skip any triangle whose remapped index is -1
+  // (out-of-range or missing node).
+  const polyBuf = [];
+  for (const tri of triangles) {
+    const a = (tri[0] >= 0 && tri[0] < nNodes) ? remap[tri[0]] : -1;
+    const b = (tri[1] >= 0 && tri[1] < nNodes) ? remap[tri[1]] : -1;
+    const c = (tri[2] >= 0 && tri[2] < nNodes) ? remap[tri[2]] : -1;
+    if (a < 0 || b < 0 || c < 0) continue;
+    polyBuf.push(3, a, b, c);
   }
-  pd.getPolys().setData(polys);
+  pd.getPolys().setData(new Uint32Array(polyBuf));
 
-  // Scalar field — look up values using original node indices
+  // Scalar field — look up values by original node index
   if (fieldData?.values?.length > 0) {
     const vals = fieldData.values;
     const scalars = new Float32Array(surfOld.length);
@@ -541,12 +545,16 @@ export default function CAEViewer({ mesh }) {
     if (!vtkRef.current || !meshData) return;
     const { renderWindow, mapper, actor } = vtkRef.current;
 
-    // Compute physical warp multiplier: at warp=1 the max displacement ≈ 20% of bounding box
+    // Compute physical warp multiplier: at warp=1 the max displacement ≈ 20% of bounding box.
+    // Guard against data_max == 0 (uniform field) which would produce Infinity.
     let actualWarp = 0;
-    if (warp > 0 && isVector && fieldData?.data_max > 0 && meshData.bounding_box) {
-      const b    = meshData.bounding_box;
-      const diag = Math.hypot(b.max_x - b.min_x, b.max_y - b.min_y, b.max_z - b.min_z);
-      actualWarp = warp * (diag / (fieldData.data_max * 5));
+    if (warp > 0 && isVector && meshData.bounding_box) {
+      const absMax = Math.abs(fieldData?.data_max ?? 0);
+      if (absMax > 0) {
+        const b    = meshData.bounding_box;
+        const diag = Math.hypot(b.max_x - b.min_x, b.max_y - b.min_y, b.max_z - b.min_z);
+        actualWarp = warp * (diag / (absMax * 5));
+      }
     }
 
     vtkRef.current.lut?.delete?.();

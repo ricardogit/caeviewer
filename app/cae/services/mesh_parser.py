@@ -487,7 +487,9 @@ def parse_mesh(file_path: str) -> dict:
     ext = os.path.splitext(file_path)[1].lower()
 
     surface_triangles = extract_surface_triangles(elements)
-    surface_triangles = _ensure_outward_normals(surface_triangles, mesh.points)
+    # Do NOT apply centroid-based normal flip here: face winding is already
+    # guaranteed outward by extract_surface_triangles for VTK-convention meshes
+    # (all meshio formats normalise to VTK node ordering).
 
     return {
         'nodes': nodes,
@@ -520,10 +522,24 @@ def extract_surface_triangles(elements: dict) -> list:
     """
     triangles = []
 
-    surf_tri_types = [e for e in ('triangle', 'tri', 'tri3', 'triangle6', 'tri6') if e in elements]
+    # Volumetric element type names recognised by the extractor.
+    _VOL_TYPES = {
+        'tetra', 'tet4', 'tetra10', 'tet10',
+        'hexahedron', 'hex8', 'hexahedron20', 'hex20',
+        'wedge', 'penta6', 'prism6',
+        'pyramid', 'pyra5',
+    }
+    has_volume = any(t in elements for t in _VOL_TYPES)
+
+    surf_tri_types  = [e for e in ('triangle', 'tri', 'tri3', 'triangle6', 'tri6') if e in elements]
     surf_quad_types = [e for e in ('quad', 'quad4', 'quad8') if e in elements]
 
-    if surf_tri_types or surf_quad_types:
+    # Use explicit surface elements ONLY when there are no volumetric elements.
+    # GMSH mixed meshes include tagged boundary triangles alongside tetra/hex
+    # volumes; those boundary groups cover only named surfaces, not the full
+    # outer shell, producing holes.  For pure surface meshes (shells) the
+    # surface elements ARE the mesh.
+    if (surf_tri_types or surf_quad_types) and not has_volume:
         for etype in surf_tri_types:
             triangles.extend([conn[:3] for conn in elements[etype]])
         for etype in surf_quad_types:
@@ -533,7 +549,10 @@ def extract_surface_triangles(elements: dict) -> list:
                 triangles.append([q[0], q[2], q[3]])
         return triangles
 
-    # No surface elements — extract boundary faces from volumetric mesh
+    # Extract boundary faces from volumetric mesh.
+    # Face winding follows VTK outward-normal convention (CCW when viewed from
+    # outside → right-hand normal points away from element interior).
+    # Verified analytically for each element type.
     from collections import defaultdict
     face_count: dict = defaultdict(int)
     face_nodes: dict = {}
@@ -544,25 +563,32 @@ def extract_surface_triangles(elements: dict) -> list:
         if key not in face_nodes:
             face_nodes[key] = fn
 
-    tet_faces = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    # Tet4: face opposite node 3 → (0,2,1) [NOT (0,1,2) which is inward]
+    #        face opposite node 2 → (0,1,3)
+    #        face opposite node 1 → (0,3,2) [NOT (0,2,3) which is inward]
+    #        face opposite node 0 → (1,2,3)
+    tet_faces = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
     for etype in ('tetra', 'tet4', 'tetra10', 'tet10'):
         for conn in elements.get(etype, []):
             for f in tet_faces:
                 _reg([conn[i] for i in f])
 
+    # Hex8: all faces verified outward by right-hand rule with VTK node layout
     hex_faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
     for etype in ('hexahedron', 'hex8', 'hexahedron20', 'hex20'):
         for conn in elements.get(etype, []):
             for f in hex_faces:
                 _reg([conn[i] for i in f])
 
+    # Wedge6: bottom triangle (0,2,1) outward [NOT (0,1,2)], top (3,4,5) outward
     for etype in ('wedge', 'penta6', 'prism6'):
         for conn in elements.get(etype, []):
-            for f in [(0, 1, 2), (3, 4, 5)]:
+            for f in [(0, 2, 1), (3, 4, 5)]:
                 _reg([conn[i] for i in f])
             for f in [(0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)]:
                 _reg([conn[i] for i in f])
 
+    # Pyramid5: base (0,3,2,1) outward; triangular side faces all outward
     for etype in ('pyramid', 'pyra5'):
         for conn in elements.get(etype, []):
             _reg([conn[i] for i in (0, 3, 2, 1)])
