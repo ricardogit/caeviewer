@@ -15,7 +15,7 @@ numpy>=1.24.0
 gmsh>=4.12.0
 
 # LS-DYNA keyword format reader (.k / .key, multi-file *INCLUDE assemblies)
-lsdyna-mesh-reader>=0.3
+lsdyna-mesh-reader>=0.1.0
 
 # STEP geometry (install via conda-forge, not pip)
 # pythonocc-core==7.7.2  →  conda install -c conda-forge pythonocc-core=7.7.2
