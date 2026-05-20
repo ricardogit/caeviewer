@@ -169,7 +169,7 @@ def get_mesh(mesh_id):
     return jsonify({
         'mesh_id': mesh_id,
         'nodes': mesh_data['nodes'],
-        'elements': mesh_data['elements'],
+        'element_types': mesh_data['element_types'],
         'surface_triangles': mesh_data.get('surface_triangles', []),
         'node_sets': mesh_data['node_sets'],
         'element_sets': mesh_data['element_sets'],

@@ -95,17 +95,29 @@ function buildLUT(name) {
 
 function buildSurfacePD(meshData, fieldData, warpScale = 0) {
   const pd = vtkPolyData.newInstance();
-  const nodes = meshData.nodes;
+  const allNodes = meshData.nodes;
   const triangles = meshData.surface_triangles || [];
   const isVec = fieldData?.values?.length > 0 && Array.isArray(fieldData.values[0]);
 
-  // Node coordinates, optionally warped by displacement vector
-  const coords = new Float32Array(nodes.length * 3);
-  for (let i = 0; i < nodes.length; i++) {
-    const [x, y, z] = nodes[i];
+  // Build a compact points array using only the nodes referenced by surface
+  // triangles.  Interior nodes (unreferenced) are excluded so that the VTK.js
+  // actor bounds — and therefore the initial camera position — are computed
+  // from the visible surface, not the full node cloud.
+  const remap = new Int32Array(allNodes.length).fill(-1);
+  const surfOld = [];   // surfOld[newIdx] = oldIdx
+  for (const tri of triangles) {
+    for (const idx of tri) {
+      if (remap[idx] < 0) { remap[idx] = surfOld.length; surfOld.push(idx); }
+    }
+  }
+
+  const coords = new Float32Array(surfOld.length * 3);
+  for (let i = 0; i < surfOld.length; i++) {
+    const origIdx = surfOld[i];
+    const [x, y, z] = allNodes[origIdx];
     let dx = 0, dy = 0, dz = 0;
     if (warpScale > 0 && isVec) {
-      const v = fieldData.values[i];
+      const v = fieldData.values[origIdx];
       if (v) { dx = v[0] * warpScale; dy = v[1] * warpScale; dz = v[2] * warpScale; }
     }
     coords[i * 3]     = x + dx;
@@ -116,28 +128,28 @@ function buildSurfacePD(meshData, fieldData, warpScale = 0) {
   pts.setData(coords, 3);
   pd.setPoints(pts);
 
-  // Triangle connectivity: [3, n0, n1, n2, 3, n3, n4, n5, ...]
+  // Triangle connectivity with remapped indices
   const polys = new Uint32Array(triangles.length * 4);
   for (let i = 0; i < triangles.length; i++) {
     const tri = triangles[i];
     polys[i * 4]     = 3;
-    polys[i * 4 + 1] = tri[0];
-    polys[i * 4 + 2] = tri[1];
-    polys[i * 4 + 3] = tri[2];
+    polys[i * 4 + 1] = remap[tri[0]];
+    polys[i * 4 + 2] = remap[tri[1]];
+    polys[i * 4 + 3] = remap[tri[2]];
   }
   pd.getPolys().setData(polys);
 
-  // Scalar field (magnitude for vectors) — point data only for PolyData rendering
+  // Scalar field — look up values using original node indices
   if (fieldData?.values?.length > 0) {
     const vals = fieldData.values;
-    const scalars = new Float32Array(vals.length);
+    const scalars = new Float32Array(surfOld.length);
     if (isVec) {
-      for (let i = 0; i < vals.length; i++) {
-        const v = vals[i];
-        scalars[i] = Math.sqrt(v.reduce((s, c) => s + c * c, 0));
+      for (let i = 0; i < surfOld.length; i++) {
+        const v = vals[surfOld[i]];
+        if (v) scalars[i] = Math.sqrt(v.reduce((s, c) => s + c * c, 0));
       }
     } else {
-      for (let i = 0; i < vals.length; i++) scalars[i] = vals[i];
+      for (let i = 0; i < surfOld.length; i++) scalars[i] = vals[surfOld[i]] ?? 0;
     }
     const da = vtkDataArray.newInstance({ name: 'result', values: scalars, numberOfComponents: 1 });
     pd.getPointData().setScalars(da);
@@ -746,9 +758,9 @@ export default function CAEViewer({ mesh }) {
           </Typography>
         )}
 
-        {meshData && Object.keys(meshData.elements || {}).length > 0 && (
+        {meshData && Object.keys(meshData.element_types || {}).length > 0 && (
           <Typography variant="caption" color="text.disabled" display="block" sx={{ mb: 1 }}>
-            {Object.entries(meshData.elements).map(([t, c]) => `${t}(${c.length})`).join(' · ')}
+            {Object.entries(meshData.element_types).map(([t, c]) => `${t}(${c})`).join(' · ')}
           </Typography>
         )}
 
