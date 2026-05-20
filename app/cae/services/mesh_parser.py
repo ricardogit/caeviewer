@@ -183,14 +183,61 @@ def compute_mesh_quality(elements: dict, nodes_np) -> dict:
 # LS-DYNA keyword reader
 # ---------------------------------------------------------------------------
 
+def _resolve_lsdyna_includes(master_path: str) -> list:
+    """
+    Traverse *INCLUDE directives starting from master_path (BFS, relative
+    to each file's own directory).  Returns an ordered list of absolute
+    paths: master first, then discovered includes in BFS order.  Missing
+    files are logged and skipped.
+    """
+    def _find_includes(path: str) -> list:
+        found = []
+        try:
+            with open(path, 'r', errors='ignore') as fh:
+                take_next = False
+                for line in fh:
+                    s = line.strip()
+                    if s.upper().startswith('*INCLUDE'):
+                        take_next = True
+                        continue
+                    if take_next:
+                        if s and not s.startswith('$'):
+                            candidate = os.path.normpath(
+                                os.path.join(os.path.dirname(path), s)
+                            )
+                            found.append(candidate)
+                        take_next = False
+        except OSError:
+            pass
+        return found
+
+    ordered: list = []
+    visited: set  = set()
+    queue         = [os.path.abspath(master_path)]
+    while queue:
+        abs_p = queue.pop(0)
+        if abs_p in visited:
+            continue
+        visited.add(abs_p)
+        if not os.path.exists(abs_p):
+            logger.warning(f"LS-DYNA *INCLUDE not found (skipped): {abs_p}")
+            continue
+        ordered.append(abs_p)
+        for inc in _find_includes(abs_p):
+            inc_abs = os.path.abspath(inc)
+            if inc_abs not in visited:
+                queue.append(inc_abs)
+    return ordered
+
+
 def _parse_lsdyna(file_path: str) -> dict:
     """
     Parse a LS-DYNA keyword file (.k/.key) using lsdyna-mesh-reader 0.1.x API.
 
-    lsdyna-mesh-reader does NOT resolve *INCLUDE — for multi-file assemblies,
-    the ZIP upload workflow extracts all files and points here to the master .k
-    file; nodes/elements in other files won't be visible unless they are in
-    this single file (limitation of the library at v0.1.x).
+    *INCLUDE directives are resolved manually (the library does not do this).
+    Each file in the inclusion chain is read with a separate Deck() call and
+    the node/element sections are concatenated before processing.  Works for
+    both single-file models and multi-file assemblies extracted from a ZIP.
     """
     try:
         import lsdyna_mesh_reader
@@ -203,20 +250,43 @@ def _parse_lsdyna(file_path: str) -> dict:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
 
-    logger.info(f"Parsing LS-DYNA keyword: {file_path}")
-    deck = lsdyna_mesh_reader.Deck(file_path)
+    # ── Resolve *INCLUDE chain ─────────────────────────────────────────────────
+    file_list = _resolve_lsdyna_includes(file_path)
+    logger.info(
+        f"LS-DYNA assembly: {len(file_list)} file(s) — "
+        + ", ".join(os.path.basename(f) for f in file_list)
+    )
 
-    # ── Nodes ─────────────────────────────────────────────────────────────────
-    # Merge all node sections; LS-DYNA uses arbitrary integer IDs — remap to
-    # 0-based contiguous indices for the viewer.
+    # ── Read all files, aggregate sections ────────────────────────────────────
     all_nids:   list = []
     all_coords: list = []
-    for ns in (deck.node_sections or []):
-        all_nids.append(np.asarray(ns.nid,         dtype=np.int64))
-        all_coords.append(np.asarray(ns.coordinates, dtype=np.float64))
+    solid_secs:  list = []
+    shell_secs:  list = []
+    tshell_secs: list = []
+    beam_secs:   list = []
+    all_decks:   list = []   # kept for sets/parts pass below
+
+    for fpath in file_list:
+        try:
+            deck = lsdyna_mesh_reader.Deck(fpath)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA: error reading {fpath}: {exc}")
+            continue
+        all_decks.append(deck)
+        for ns in (deck.node_sections or []):
+            all_nids.append(np.asarray(ns.nid,          dtype=np.int64))
+            all_coords.append(np.asarray(ns.coordinates, dtype=np.float64))
+        solid_secs.extend( deck.element_solid_sections  or [])
+        shell_secs.extend( deck.element_shell_sections  or [])
+        tshell_secs.extend(getattr(deck, 'element_tshell_sections', None) or [])
+        beam_secs.extend(  getattr(deck, 'element_beam_sections',   None) or [])
 
     if not all_nids:
-        raise ValueError("No nodes found in LS-DYNA file")
+        n_files = len(file_list)
+        raise ValueError(
+            f"No se encontraron nodos en {n_files} archivo(s) LS-DYNA. "
+            "Si es un ensamble multi-archivo, sube todos los .k en un ZIP."
+        )
 
     nid_arr = np.concatenate(all_nids)
     coords  = np.concatenate(all_coords, axis=0)
@@ -244,9 +314,9 @@ def _parse_lsdyna(file_path: str) -> dict:
 
     def _iter_sections(sections):
         """
-        Yield per-element node-ID arrays from lsdyna-mesh-reader 0.1.x sections.
-        Each section stores connectivity as a flat node_ids array with a
-        node_id_offsets array (CSR-style: offsets[i]:offsets[i+1] = elem i nodes).
+        Yield per-element node-ID arrays (original LS-DYNA IDs, not indices).
+        node_ids is a flat 1-D array; node_id_offsets is CSR-style so that
+        node_ids[offsets[i]:offsets[i+1]] gives element i's connectivity.
         """
         for sec in (sections or []):
             nids    = np.asarray(sec.node_ids,        dtype=np.int64)
@@ -255,12 +325,11 @@ def _parse_lsdyna(file_path: str) -> dict:
                 yield nids[offsets[i]:offsets[i + 1]]
 
     # ── Solids (ELEMENT_SOLID) ────────────────────────────────────────────────
-    # LS-DYNA stores 8 node columns even for degenerate types (repeated nodes).
-    # Detect actual type by counting unique IDs in the row:
-    #   4 unique → tet4, 5 → pyramid, 6 → wedge6, 7-8 → hex8
+    # LS-DYNA stores 8 columns for all solid types; degenerate kinds repeat
+    # the last node: tet4 → 4 unique, pyramid5 → 5, wedge6 → 6, hex8 → 7-8.
     hex_b, tet_b, wedge_b, pyr_b = [], [], [], []
     try:
-        for row in _iter_sections(deck.element_solid_sections):
+        for row in _iter_sections(solid_secs):
             unique = list(dict.fromkeys(int(x) for x in row))  # ordered dedup
             n      = len(unique)
             idxs   = [_safe(u) for u in unique]
@@ -286,7 +355,7 @@ def _parse_lsdyna(file_path: str) -> dict:
     # ── Thick shells (ELEMENT_TSHELL) → hexahedra ────────────────────────────
     try:
         batch = []
-        for row in _iter_sections(getattr(deck, 'element_tshell_sections', None)):
+        for row in _iter_sections(tshell_secs):
             idxs = [_safe(int(x)) for x in row[:8]]
             if -1 not in idxs:
                 batch.append(idxs)
@@ -295,10 +364,10 @@ def _parse_lsdyna(file_path: str) -> dict:
         logger.warning(f"LS-DYNA tshells: {exc}")
 
     # ── Shells (ELEMENT_SHELL) ────────────────────────────────────────────────
-    # 4-column card; tri3 detected when 4th node repeats 3rd (or is 0).
+    # 4-column card; tri3 when 4th node repeats 3rd (or is 0).
     try:
         quads, tris = [], []
-        for row in _iter_sections(deck.element_shell_sections):
+        for row in _iter_sections(shell_secs):
             row_list = [int(x) for x in row]
             if len(row_list) >= 4:
                 n1, n2, n3, n4 = row_list[:4]
@@ -322,7 +391,7 @@ def _parse_lsdyna(file_path: str) -> dict:
     # ── Beams (ELEMENT_BEAM) ──────────────────────────────────────────────────
     try:
         batch = []
-        for row in _iter_sections(getattr(deck, 'element_beam_sections', None)):
+        for row in _iter_sections(beam_secs):
             idxs = [_safe(int(x)) for x in row[:2]]
             if -1 not in idxs:
                 batch.append(idxs)
@@ -330,27 +399,23 @@ def _parse_lsdyna(file_path: str) -> dict:
     except Exception as exc:
         logger.warning(f"LS-DYNA beams: {exc}")
 
-    # ── Node sets ─────────────────────────────────────────────────────────────
-    node_sets: dict = {}
-    try:
-        for ns in (getattr(deck, 'node_set_sections', None) or []):
-            sid  = str(getattr(ns, 'sid', id(ns)))
-            idxs = [_safe(int(n)) for n in (getattr(ns, 'nid', None) or [])]
-            good = [i for i in idxs if i >= 0]
-            if good:
-                node_sets[sid] = good
-    except Exception as exc:
-        logger.warning(f"LS-DYNA node sets: {exc}")
-
-    # ── Parts → element set names ─────────────────────────────────────────────
+    # ── Node sets / parts (best-effort from cached decks) ────────────────────
+    node_sets:    dict = {}
     element_sets: dict = {}
-    try:
-        for part in (getattr(deck, 'part_sections', None) or []):
-            pid  = str(getattr(part, 'pid', id(part)))
-            name = (getattr(part, 'title', '') or '').strip() or f'Part_{pid}'
-            element_sets[name] = []
-    except Exception as exc:
-        logger.warning(f"LS-DYNA parts: {exc}")
+    for d in all_decks:
+        try:
+            for ns in (getattr(d, 'node_set_sections', None) or []):
+                sid  = str(getattr(ns, 'sid', id(ns)))
+                idxs = [_safe(int(n)) for n in (getattr(ns, 'nid', None) or [])]
+                good = [i for i in idxs if i >= 0]
+                if good:
+                    node_sets[sid] = good
+            for part in (getattr(d, 'part_sections', None) or []):
+                pid  = str(getattr(part, 'pid', id(part)))
+                name = (getattr(part, 'title', '') or '').strip() or f'Part_{pid}'
+                element_sets[name] = []
+        except Exception as exc:
+            logger.warning(f"LS-DYNA sets/parts: {exc}")
 
     # ── Bounding box ──────────────────────────────────────────────────────────
     bbox = {
