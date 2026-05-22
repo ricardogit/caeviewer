@@ -185,10 +185,10 @@ def compute_mesh_quality(elements: dict, nodes_np) -> dict:
 
 def _resolve_lsdyna_includes(master_path: str) -> list:
     """
-    Traverse *INCLUDE directives starting from master_path (BFS, relative
-    to each file's own directory).  Returns an ordered list of absolute
-    paths: master first, then discovered includes in BFS order.  Missing
-    files are logged and skipped.
+    BFS traversal of *INCLUDE directives.  Returns [(abs_path, None), ...]
+    where None means identity transform (no *INCLUDE_TRANSFORM offsets).
+    Deduplicates: each unique file is visited once.
+    Used as fallback when no *INCLUDE_TRANSFORM is present.
     """
     def _find_includes(path: str) -> list:
         found = []
@@ -197,11 +197,13 @@ def _resolve_lsdyna_includes(master_path: str) -> list:
                 take_next = False
                 for line in fh:
                     s = line.strip()
-                    if s.upper().startswith('*INCLUDE'):
+                    su = s.upper()
+                    # Skip *INCLUDE_TRANSFORM (handled by _parse_include_transforms)
+                    if su.startswith('*INCLUDE') and not su.startswith('*INCLUDE_TRANSFORM'):
                         take_next = True
                         continue
                     if take_next:
-                        if s and not s.startswith('$'):
+                        if s and not s.startswith('$') and not s.startswith('*'):
                             candidate = os.path.normpath(
                                 os.path.join(os.path.dirname(path), s)
                             )
@@ -227,7 +229,171 @@ def _resolve_lsdyna_includes(master_path: str) -> list:
             inc_abs = os.path.abspath(inc)
             if inc_abs not in visited:
                 queue.append(inc_abs)
-    return ordered
+    return [(p, None) for p in ordered]
+
+
+def _parse_include_transforms(master_path: str) -> list:
+    """
+    Parse *DEFINE_TRANSFORMATION and *INCLUDE_TRANSFORM from a LS-DYNA master
+    file.  Returns [(abs_filepath, transform), ...] preserving duplicate entries
+    (e.g. the same bolt file included 6 times with different translations).
+
+    transform is either None (identity) or a (R, t) tuple where:
+      R: 3×3 numpy rotation matrix (or None for pure translation)
+      t: (tx, ty, tz) float tuple
+
+    Supports TRANSL and ROTATE operations.  Multiple operations per transform
+    are composed left-to-right (last operation applied last).
+
+    Falls back to _resolve_lsdyna_includes() if no *INCLUDE_TRANSFORM found.
+    """
+    import numpy as np
+
+    master_abs = os.path.abspath(master_path)
+    master_dir = os.path.dirname(master_abs)
+
+    try:
+        with open(master_abs, 'r', errors='ignore') as fh:
+            lines = fh.readlines()
+    except OSError:
+        return _resolve_lsdyna_includes(master_path)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _advance(idx):
+        """Skip comment/blank lines; return (stripped_line, next_idx) or (None, idx)."""
+        while idx < len(lines):
+            s = lines[idx].strip()
+            if s and not s.startswith('$'):
+                return s, idx + 1
+            idx += 1
+        return None, idx
+
+    def _rot_matrix(rx, ry, rz, cx, cy, cz, angle_deg):
+        """Build 4×4 homogeneous rotation around axis (rx,ry,rz) centered at (cx,cy,cz)."""
+        L = (rx**2 + ry**2 + rz**2) ** 0.5
+        if L < 1e-10:
+            return np.eye(4)
+        ux, uy, uz = rx / L, ry / L, rz / L
+        a = angle_deg * 3.141592653589793 / 180.0
+        c, s = np.cos(a), np.sin(a)
+        R = np.array([
+            [c + ux*ux*(1-c),    ux*uy*(1-c) - uz*s, ux*uz*(1-c) + uy*s, 0],
+            [uy*ux*(1-c) + uz*s, c + uy*uy*(1-c),    uy*uz*(1-c) - ux*s, 0],
+            [uz*ux*(1-c) - uy*s, uz*uy*(1-c) + ux*s, c + uz*uz*(1-c),    0],
+            [0, 0, 0, 1],
+        ], dtype=np.float64)
+        # Rotate around (cx,cy,cz): translate to origin, rotate, translate back
+        Tc  = np.eye(4); Tc[0,3]  = -cx; Tc[1,3]  = -cy; Tc[2,3]  = -cz
+        Tci = np.eye(4); Tci[0,3] =  cx; Tci[1,3] =  cy; Tci[2,3] =  cz
+        return Tci @ R @ Tc
+
+    # ── Pass 1: parse *DEFINE_TRANSFORMATION ─────────────────────────────────
+    transforms = {}   # tranid → 4×4 numpy matrix
+    i = 0
+    while i < len(lines):
+        su = lines[i].strip().upper()
+        if su.startswith('*DEFINE_TRANSFORMATION'):
+            i += 1
+            if 'TITLE' in su:
+                _, i = _advance(i)   # title line — skip
+            tranid_s, i = _advance(i)
+            if tranid_s is None:
+                continue
+            try:
+                tranid = int(tranid_s.split()[0])
+            except (ValueError, IndexError):
+                continue
+            M = np.eye(4)
+            while i < len(lines):
+                s2 = lines[i].strip()
+                if s2.startswith('*'):
+                    break
+                if s2 and not s2.startswith('$'):
+                    parts = s2.split()
+                    op = parts[0].upper()
+                    try:
+                        if op == 'TRANSL' and len(parts) >= 4:
+                            T = np.eye(4)
+                            T[0,3] = float(parts[1])
+                            T[1,3] = float(parts[2])
+                            T[2,3] = float(parts[3])
+                            M = T @ M
+                        elif op == 'ROTATE' and len(parts) >= 8:
+                            R = _rot_matrix(
+                                float(parts[1]), float(parts[2]), float(parts[3]),
+                                float(parts[4]), float(parts[5]), float(parts[6]),
+                                float(parts[7]),
+                            )
+                            M = R @ M
+                    except (ValueError, IndexError):
+                        pass
+                i += 1
+            transforms[tranid] = M
+        else:
+            i += 1
+
+    # ── Pass 2: parse *INCLUDE_TRANSFORM ─────────────────────────────────────
+    includes = []
+    has_transform_kw = False
+    i = 0
+    while i < len(lines):
+        su = lines[i].strip().upper()
+        i += 1
+        if su.startswith('*INCLUDE_TRANSFORM'):
+            has_transform_kw = True
+            fname_s, i = _advance(i)
+            if fname_s is None or fname_s.startswith('*'):
+                continue
+            # 4 data cards (skip $ comments between them); card index 3 = tranid
+            tranid = 0
+            card = 0
+            while i <= len(lines) and card < 4:
+                ds, i = _advance(i)
+                if ds is None or ds.startswith('*'):
+                    break
+                if card == 3:
+                    try:
+                        tranid = int(ds.split()[0])
+                    except (ValueError, IndexError):
+                        pass
+                card += 1
+            # Resolve file path (handles backslashes from Windows paths)
+            fname_norm = fname_s.replace('\\', os.sep).replace('/', os.sep).strip()
+            abs_path = os.path.normpath(os.path.join(master_dir, fname_norm))
+            if not os.path.exists(abs_path):
+                # Try basename only (for archives that flatten directory structure)
+                abs_path2 = os.path.join(master_dir, os.path.basename(fname_norm))
+                if os.path.exists(abs_path2):
+                    abs_path = abs_path2
+                else:
+                    logger.warning(f"*INCLUDE_TRANSFORM: file not found: {fname_s!r}")
+                    includes.append((None, transforms.get(tranid)))
+                    continue
+            includes.append((abs_path, transforms.get(tranid)))
+
+        elif su.startswith('*INCLUDE') and not su.startswith('*INCLUDE_PATH'):
+            fname_s, i = _advance(i)
+            if fname_s is None or fname_s.startswith('*'):
+                continue
+            fname_norm = fname_s.replace('\\', os.sep).strip()
+            abs_path = os.path.normpath(os.path.join(master_dir, fname_norm))
+            if os.path.exists(abs_path):
+                includes.append((abs_path, None))
+
+    # ── Decide result ─────────────────────────────────────────────────────────
+    if not has_transform_kw:
+        # No *INCLUDE_TRANSFORM found — BFS resolver handles plain *INCLUDE chains
+        return _resolve_lsdyna_includes(master_path)
+
+    # Prepend master itself (may define nodes/elements at the root level)
+    result = [(master_abs, None)] + [(p, M) for p, M in includes if p is not None]
+    logger.info(
+        f"*INCLUDE_TRANSFORM assembly: {len(result)} total entries "
+        f"({len(set(p for p,_ in result))} unique files, "
+        f"{sum(1 for _,M in result if M is not None and not (M == np.eye(4)).all())} "
+        f"with non-identity transforms)"
+    )
+    return result
 
 
 def _parse_lsdyna(file_path: str) -> dict:
@@ -250,32 +416,34 @@ def _parse_lsdyna(file_path: str) -> dict:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
 
-    # ── Resolve *INCLUDE chain ─────────────────────────────────────────────────
-    file_list = _resolve_lsdyna_includes(file_path)
+    # ── Resolve includes (handles *INCLUDE and *INCLUDE_TRANSFORM) ────────────
+    # Returns [(abs_filepath, matrix_or_None), ...]
+    # - *INCLUDE_TRANSFORM: preserves duplicates, embeds TRANSL/ROTATE matrix
+    # - *INCLUDE / standalone file: deduplicates, matrix=None (identity)
+    file_entries = _parse_include_transforms(file_path)
 
-    # For ZIP assemblies (assy_* dir): *INCLUDE paths may be absolute Windows
-    # paths (C:\...) or use backslashes that don't resolve on Linux.  Fall back
-    # to scanning every .k/.key in the extracted directory so we never miss a
-    # part file regardless of path style used in the original archive.
+    # Fallback for ZIP assemblies where *INCLUDE paths use absolute Windows
+    # paths that can't resolve on Linux: scan directory for any .k/.key not
+    # already in the list (added with identity transform, no duplicates).
     parent_dir = os.path.dirname(os.path.abspath(file_path))
     if os.path.basename(parent_dir).startswith('assy_'):
         import glob as _glob
-        all_k = set()
+        known_paths = set(p for p, _ in file_entries if p)
+        all_k: set = set()
         for pat in ('**/*.k', '**/*.key'):
             for f in _glob.glob(os.path.join(parent_dir, pat), recursive=True):
                 all_k.add(os.path.abspath(f))
-        known = set(file_list)
-        extra = sorted(all_k - known)
+        extra = sorted(all_k - known_paths)
         if extra:
             logger.info(
-                f"LS-DYNA assy fallback: adding {len(extra)} unlisted file(s) "
+                f"LS-DYNA assy fallback: +{len(extra)} unlisted file(s): "
                 + ", ".join(os.path.basename(f) for f in extra)
             )
-            file_list.extend(extra)
+            file_entries.extend((f, None) for f in extra)
 
     logger.info(
-        f"LS-DYNA assembly: {len(file_list)} file(s) — "
-        + ", ".join(os.path.basename(f) for f in file_list)
+        f"LS-DYNA: {len(file_entries)} file entries "
+        f"({len(set(p for p,_ in file_entries if p))} unique files)"
     )
 
     # ── Per-file processing ────────────────────────────────────────────────────
@@ -399,7 +567,9 @@ def _parse_lsdyna(file_path: str) -> dict:
         except Exception as exc:
             logger.warning(f"LS-DYNA beams: {exc}")
 
-    for fpath in file_list:
+    for fpath, transform_M in file_entries:
+        if fpath is None:
+            continue
         try:
             deck = lsdyna_mesh_reader.Deck(fpath)
         except Exception as exc:
@@ -421,7 +591,12 @@ def _parse_lsdyna(file_path: str) -> dict:
                 if nid_int not in local_nid_map:
                     gidx = len(global_coords)
                     local_nid_map[nid_int] = gidx
-                    global_coords.append(coord.tolist())
+                    # Apply *INCLUDE_TRANSFORM matrix (TRANSL + ROTATE)
+                    if transform_M is not None:
+                        c4 = transform_M @ np.array([coord[0], coord[1], coord[2], 1.0])
+                        global_coords.append([float(c4[0]), float(c4[1]), float(c4[2])])
+                    else:
+                        global_coords.append(coord.tolist())
                     if nid_int not in accumulated_global_map:
                         accumulated_global_map[nid_int] = gidx
 
