@@ -258,6 +258,43 @@ function findNearestNodeToRay(nodes, origin, direction) {
 }
 
 // ---------------------------------------------------------------------------
+// Camera helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply a named camera preset to a VTK renderer.
+ * preset: 'iso' | '+x' | '-x' | '+y' | '-y' | '+z' | '-z'
+ * bbox: { min_x, max_x, min_y, max_y, min_z, max_z }
+ *
+ * Strategy: set direction (unit offset from scene center), then call resetCamera()
+ * which repositions the camera along that direction at the correct fit distance.
+ */
+function applyCameraPreset(renderer, renderWindow, preset, bbox) {
+  if (!bbox) return;
+  const cx = (bbox.min_x + bbox.max_x) / 2;
+  const cy = (bbox.min_y + bbox.max_y) / 2;
+  const cz = (bbox.min_z + bbox.max_z) / 2;
+
+  const camera = renderer.getActiveCamera();
+  camera.setFocalPoint(cx, cy, cz);
+
+  // Place camera in the desired direction (distance doesn't matter — resetCamera fixes it)
+  switch (preset) {
+    case '+x': camera.setPosition(cx + 1, cy,     cz    ); camera.setViewUp(0, 1,  0); break;
+    case '-x': camera.setPosition(cx - 1, cy,     cz    ); camera.setViewUp(0, 1,  0); break;
+    case '+y': camera.setPosition(cx,     cy + 1, cz    ); camera.setViewUp(0, 0, -1); break;
+    case '-y': camera.setPosition(cx,     cy - 1, cz    ); camera.setViewUp(0, 0,  1); break;
+    case '+z': camera.setPosition(cx,     cy,     cz + 1); camera.setViewUp(0, 1,  0); break;
+    case '-z': camera.setPosition(cx,     cy,     cz - 1); camera.setViewUp(0, 1,  0); break;
+    default: // 'iso' — equal components, above-right-front
+      camera.setPosition(cx + 1, cy + 1, cz + 1); camera.setViewUp(0, 1, 0); break;
+  }
+  // resetCamera() recomputes distance along the current direction to fit all actors
+  renderer.resetCamera();
+  renderWindow.render();
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -452,8 +489,8 @@ export default function CAEViewer({ mesh }) {
     actor.setMapper(mapper);
     actor.getProperty().setColor(0.62, 0.73, 0.86);
     renderer.addActor(actor);
-    renderer.resetCamera();
-    renderWindow.render();
+    // applyCameraPreset calls resetCamera() internally
+    applyCameraPreset(renderer, renderWindow, 'iso', meshData.bounding_box);
 
     vtkRef.current.pd     = pd;
     vtkRef.current.mapper = mapper;
@@ -760,6 +797,35 @@ export default function CAEViewer({ mesh }) {
             </Tooltip>
           </Box>
         </Box>
+
+        {/* Camera presets */}
+        {meshData && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.3, mb: 0.5 }}>
+            <Typography variant="caption" color="text.disabled" sx={{ mr: 0.5, fontSize: '0.65rem' }}>Vista:</Typography>
+            {[
+              { label: 'ISO', tip: 'Vista isométrica (recomendada)', preset: 'iso' },
+              { label: '+Y',  tip: 'Vista superior',                  preset: '+y' },
+              { label: '+X',  tip: 'Vista lateral derecha',           preset: '+x' },
+              { label: '+Z',  tip: 'Vista frontal',                   preset: '+z' },
+              { label: '-Z',  tip: 'Vista trasera',                   preset: '-z' },
+            ].map(({ label, tip, preset }) => (
+              <Tooltip key={preset} title={tip}>
+                <Button
+                  size="small" variant="outlined"
+                  onClick={() => {
+                    if (vtkRef.current) {
+                      applyCameraPreset(vtkRef.current.renderer, vtkRef.current.renderWindow, preset, meshData.bounding_box);
+                    }
+                  }}
+                  sx={{ minWidth: 0, px: 0.6, py: 0.1, fontSize: '0.60rem', lineHeight: 1.4,
+                        color: 'text.secondary', borderColor: 'divider' }}
+                >
+                  {label}
+                </Button>
+              </Tooltip>
+            ))}
+          </Box>
+        )}
 
         {meshData && (
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
