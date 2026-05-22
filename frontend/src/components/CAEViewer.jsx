@@ -23,6 +23,7 @@ import vtkLookupTable from '@kitware/vtk.js/Common/Core/LookupTable';
 
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkLight from '@kitware/vtk.js/Rendering/Core/Light';
 import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 
 const COLORMAPS = ['viridis', 'rainbow', 'coolwarm', 'jet', 'grayscale'];
@@ -409,8 +410,21 @@ export default function CAEViewer({ mesh }) {
     if (!container) return;
 
     const renderWindow = vtkRenderWindow.newInstance();
-    const renderer    = vtkRenderer.newInstance({ background: [0.07, 0.07, 0.07] });
+    const renderer    = vtkRenderer.newInstance({ background: [0.14, 0.14, 0.16] });
     renderWindow.addRenderer(renderer);
+
+    // Two-light setup: headlight + fill from below. Adding any light disables the
+    // auto headlight, so both must be explicit.
+    const keyLight = vtkLight.newInstance();
+    keyLight.setLightTypeToHeadLight();
+    keyLight.setIntensity(0.8);
+    const fillLight = vtkLight.newInstance();
+    fillLight.setLightTypeToCameraLight();
+    fillLight.setPosition(0.2, -0.8, 0.5);   // below-right in camera space
+    fillLight.setFocalPoint(0, 0, 0);
+    fillLight.setIntensity(0.3);
+    renderer.addLight(keyLight);
+    renderer.addLight(fillLight);
 
     const glWindow = vtkOpenGLRenderWindow.newInstance();
     glWindow.setContainer(container);
@@ -487,7 +501,11 @@ export default function CAEViewer({ mesh }) {
     mapper.setScalarVisibility(false);
     const actor  = vtkActor.newInstance();
     actor.setMapper(mapper);
-    actor.getProperty().setColor(0.62, 0.73, 0.86);
+    const prop = actor.getProperty();
+    prop.setColor(0.62, 0.73, 0.86);
+    prop.setAmbient(0.12);
+    prop.setSpecular(0.35);
+    prop.setSpecularPower(25);
     renderer.addActor(actor);
     // applyCameraPreset calls resetCamera() internally
     applyCameraPreset(renderer, renderWindow, 'iso', meshData.bounding_box);
