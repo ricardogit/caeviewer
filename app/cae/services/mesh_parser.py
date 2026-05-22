@@ -252,53 +252,46 @@ def _parse_lsdyna(file_path: str) -> dict:
 
     # ── Resolve *INCLUDE chain ─────────────────────────────────────────────────
     file_list = _resolve_lsdyna_includes(file_path)
+
+    # For ZIP assemblies (assy_* dir): *INCLUDE paths may be absolute Windows
+    # paths (C:\...) or use backslashes that don't resolve on Linux.  Fall back
+    # to scanning every .k/.key in the extracted directory so we never miss a
+    # part file regardless of path style used in the original archive.
+    parent_dir = os.path.dirname(os.path.abspath(file_path))
+    if os.path.basename(parent_dir).startswith('assy_'):
+        import glob as _glob
+        all_k = set()
+        for pat in ('**/*.k', '**/*.key'):
+            for f in _glob.glob(os.path.join(parent_dir, pat), recursive=True):
+                all_k.add(os.path.abspath(f))
+        known = set(file_list)
+        extra = sorted(all_k - known)
+        if extra:
+            logger.info(
+                f"LS-DYNA assy fallback: adding {len(extra)} unlisted file(s) "
+                + ", ".join(os.path.basename(f) for f in extra)
+            )
+            file_list.extend(extra)
+
     logger.info(
         f"LS-DYNA assembly: {len(file_list)} file(s) — "
         + ", ".join(os.path.basename(f) for f in file_list)
     )
 
-    # ── Read all files, aggregate sections ────────────────────────────────────
-    all_nids:   list = []
-    all_coords: list = []
-    solid_secs:  list = []
-    shell_secs:  list = []
-    tshell_secs: list = []
-    beam_secs:   list = []
-    all_decks:   list = []   # kept for sets/parts pass below
+    # ── Per-file processing ────────────────────────────────────────────────────
+    # LS-DYNA assemblies using *INCLUDE_TRANSFORM give each part file
+    # independent local node IDs (e.g. 1..N in every part file).
+    # We build a per-file local_nid→global_idx map and shift element
+    # connectivity on merge, so IDs from different files never collide.
+    # For "master+parts" assemblies where master defines all nodes and parts
+    # define only elements, we fall back to an accumulated global map.
 
-    for fpath in file_list:
-        try:
-            deck = lsdyna_mesh_reader.Deck(fpath)
-        except Exception as exc:
-            logger.warning(f"LS-DYNA: error reading {fpath}: {exc}")
-            continue
-        all_decks.append(deck)
-        for ns in (deck.node_sections or []):
-            all_nids.append(np.asarray(ns.nid,          dtype=np.int64))
-            all_coords.append(np.asarray(ns.coordinates, dtype=np.float64))
-        solid_secs.extend( deck.element_solid_sections  or [])
-        shell_secs.extend( deck.element_shell_sections  or [])
-        tshell_secs.extend(getattr(deck, 'element_tshell_sections', None) or [])
-        beam_secs.extend(  getattr(deck, 'element_beam_sections',   None) or [])
-
-    if not all_nids:
-        n_files = len(file_list)
-        raise ValueError(
-            f"No se encontraron nodos en {n_files} archivo(s) LS-DYNA. "
-            "Si es un ensamble multi-archivo, sube todos los .k en un ZIP."
-        )
-
-    nid_arr = np.concatenate(all_nids)
-    coords  = np.concatenate(all_coords, axis=0)
-    nid_to_idx: dict = {int(nid): i for i, nid in enumerate(nid_arr)}
-    nodes = coords.tolist()
-
+    global_coords:  list = []          # flat list of [x,y,z] triples
+    accumulated_global_map: dict = {}  # nid → global_idx (first-seen, for Pattern B)
     elements:       dict = {}
     element_types:  dict = {}
     total_elements: int  = 0
-
-    def _safe(nid: int) -> int:
-        return nid_to_idx.get(nid, -1)
+    all_decks:      list = []
 
     def _add(etype: str, batch: list) -> None:
         nonlocal total_elements
@@ -312,101 +305,165 @@ def _parse_lsdyna(file_path: str) -> dict:
             element_types[etype] = len(batch)
         total_elements += len(batch)
 
-    def _iter_sections(sections):
-        """
-        Yield per-element node-ID arrays (original LS-DYNA IDs, not indices).
-        node_ids is a flat 1-D array; node_id_offsets is CSR-style so that
-        node_ids[offsets[i]:offsets[i+1]] gives element i's connectivity.
-        """
+    def _iter_sec(sections):
+        """Yield per-element node-ID arrays from CSR-style section objects."""
         for sec in (sections or []):
-            nids    = np.asarray(sec.node_ids,        dtype=np.int64)
-            offsets = np.asarray(sec.node_id_offsets, dtype=np.intp)
-            for i in range(len(offsets) - 1):
-                yield nids[offsets[i]:offsets[i + 1]]
+            try:
+                nids    = np.asarray(sec.node_ids,        dtype=np.int64)
+                offsets = np.asarray(sec.node_id_offsets, dtype=np.intp)
+                for i in range(len(offsets) - 1):
+                    yield nids[offsets[i]:offsets[i + 1]]
+            except Exception as exc:
+                logger.warning(f"LS-DYNA section iter: {exc}")
 
-    # ── Solids (ELEMENT_SOLID) ────────────────────────────────────────────────
-    # LS-DYNA stores 8 columns for all solid types; degenerate kinds repeat
-    # the last node: tet4 → 4 unique, pyramid5 → 5, wedge6 → 6, hex8 → 7-8.
-    hex_b, tet_b, wedge_b, pyr_b = [], [], [], []
-    try:
-        for row in _iter_sections(solid_secs):
-            unique = list(dict.fromkeys(int(x) for x in row))  # ordered dedup
-            n      = len(unique)
-            idxs   = [_safe(u) for u in unique]
-            if -1 in idxs:
-                continue
-            if n == 4:
-                tet_b.append(idxs)
-            elif n == 5:
-                pyr_b.append(idxs)
-            elif n == 6:
-                wedge_b.append(idxs)
-            else:                                           # 7 or 8 → hex8
-                idxs8 = [_safe(int(x)) for x in row[:8]]
-                if -1 not in idxs8:
-                    hex_b.append(idxs8)
-    except Exception as exc:
-        logger.warning(f"LS-DYNA solids: {exc}")
-    _add('hexahedron', hex_b)
-    _add('tetra',      tet_b)
-    _add('wedge',      wedge_b)
-    _add('pyramid',    pyr_b)
+    def _process_elements(safe_fn, solid_secs, shell_secs, tshell_secs, beam_secs):
+        # ── Solids ────────────────────────────────────────────────────────────
+        # LS-DYNA ELEMENT_SOLID stores 8 or 10 columns.  Zeros are padding
+        # (n9/n10 = 0).  Exclude zeros before deduplication so that a tet4
+        # stored as [n1,n2,n3,n4,n4,n4,n4,n4,0,0] counts as 4 unique nodes,
+        # not 5 (which would wrongly classify it as a pyramid).
+        hex_b, tet_b, wedge_b, pyr_b = [], [], [], []
+        try:
+            for row in _iter_sec(solid_secs):
+                nonzero = [int(x) for x in row if int(x) != 0]
+                unique  = list(dict.fromkeys(nonzero))
+                n       = len(unique)
+                if n == 4:
+                    idxs = [safe_fn(u) for u in unique]
+                    if -1 not in idxs:
+                        tet_b.append(idxs)
+                elif n == 5:
+                    idxs = [safe_fn(u) for u in unique]
+                    if -1 not in idxs:
+                        pyr_b.append(idxs)
+                elif n == 6:
+                    idxs = [safe_fn(u) for u in unique]
+                    if -1 not in idxs:
+                        wedge_b.append(idxs)
+                elif n >= 7:
+                    idxs8 = [safe_fn(u) for u in unique[:8]]
+                    if len(idxs8) == 8 and -1 not in idxs8:
+                        hex_b.append(idxs8)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA solids: {exc}")
+        _add('hexahedron', hex_b)
+        _add('tetra',      tet_b)
+        _add('wedge',      wedge_b)
+        _add('pyramid',    pyr_b)
 
-    # ── Thick shells (ELEMENT_TSHELL) → hexahedra ────────────────────────────
-    try:
-        batch = []
-        for row in _iter_sections(tshell_secs):
-            idxs = [_safe(int(x)) for x in row[:8]]
-            if -1 not in idxs:
-                batch.append(idxs)
-        _add('hexahedron', batch)
-    except Exception as exc:
-        logger.warning(f"LS-DYNA tshells: {exc}")
+        # ── Thick shells → hexahedra ──────────────────────────────────────────
+        try:
+            batch = []
+            for row in _iter_sec(tshell_secs):
+                nz = [int(x) for x in row if int(x) != 0]
+                idxs = [safe_fn(u) for u in nz[:8]]
+                if len(idxs) == 8 and -1 not in idxs:
+                    batch.append(idxs)
+            _add('hexahedron', batch)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA tshells: {exc}")
 
-    # ── Shells (ELEMENT_SHELL) ────────────────────────────────────────────────
-    # 4-column card; tri3 when 4th node repeats 3rd (or is 0).
-    try:
-        quads, tris = [], []
-        for row in _iter_sections(shell_secs):
-            row_list = [int(x) for x in row]
-            if len(row_list) >= 4:
-                n1, n2, n3, n4 = row_list[:4]
-                if n4 == n3 or n4 == 0:
-                    idxs = [_safe(n) for n in (n1, n2, n3)]
+        # ── Shells ────────────────────────────────────────────────────────────
+        try:
+            quads, tris = [], []
+            for row in _iter_sec(shell_secs):
+                rl = [int(x) for x in row]
+                if len(rl) >= 4:
+                    n1, n2, n3, n4 = rl[:4]
+                    if n4 == 0 or n4 == n3:
+                        idxs = [safe_fn(n) for n in (n1, n2, n3)]
+                        if -1 not in idxs:
+                            tris.append(idxs)
+                    else:
+                        idxs = [safe_fn(n) for n in (n1, n2, n3, n4)]
+                        if -1 not in idxs:
+                            quads.append(idxs)
+                elif len(rl) == 3:
+                    idxs = [safe_fn(n) for n in rl]
                     if -1 not in idxs:
                         tris.append(idxs)
-                else:
-                    idxs = [_safe(n) for n in (n1, n2, n3, n4)]
-                    if -1 not in idxs:
-                        quads.append(idxs)
-            elif len(row_list) == 3:
-                idxs = [_safe(n) for n in row_list]
-                if -1 not in idxs:
-                    tris.append(idxs)
-        _add('triangle', tris)
-        _add('quad',     quads)
-    except Exception as exc:
-        logger.warning(f"LS-DYNA shells: {exc}")
+            _add('triangle', tris)
+            _add('quad',     quads)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA shells: {exc}")
 
-    # ── Beams (ELEMENT_BEAM) ──────────────────────────────────────────────────
-    try:
-        batch = []
-        for row in _iter_sections(beam_secs):
-            idxs = [_safe(int(x)) for x in row[:2]]
-            if -1 not in idxs:
-                batch.append(idxs)
-        _add('line', batch)
-    except Exception as exc:
-        logger.warning(f"LS-DYNA beams: {exc}")
+        # ── Beams ─────────────────────────────────────────────────────────────
+        try:
+            batch = []
+            for row in _iter_sec(beam_secs):
+                nz = [int(x) for x in row if int(x) != 0]
+                idxs = [safe_fn(u) for u in nz[:2]]
+                if len(idxs) == 2 and -1 not in idxs:
+                    batch.append(idxs)
+            _add('line', batch)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA beams: {exc}")
 
-    # ── Node sets / parts (best-effort from cached decks) ────────────────────
+    for fpath in file_list:
+        try:
+            deck = lsdyna_mesh_reader.Deck(fpath)
+        except Exception as exc:
+            logger.warning(f"LS-DYNA: cannot read {fpath}: {exc}")
+            continue
+        all_decks.append(deck)
+
+        # Build local map: local nid → global coord index for THIS file's nodes
+        local_nid_map: dict = {}
+        file_node_start = len(global_coords)
+
+        for ns in (deck.node_sections or []):
+            nids_arr   = np.asarray(ns.nid,          dtype=np.int64)
+            coords_arr = np.asarray(ns.coordinates,  dtype=np.float64)
+            for nid_raw, coord in zip(nids_arr, coords_arr):
+                nid_int = int(nid_raw)
+                if nid_int == 0:
+                    continue
+                if nid_int not in local_nid_map:
+                    gidx = len(global_coords)
+                    local_nid_map[nid_int] = gidx
+                    global_coords.append(coord.tolist())
+                    if nid_int not in accumulated_global_map:
+                        accumulated_global_map[nid_int] = gidx
+
+        n_file_nodes = len(global_coords) - file_node_start
+        logger.info(f"  {os.path.basename(fpath)}: {n_file_nodes} nodes, "
+                    f"solids={len(deck.element_solid_sections or [])}, "
+                    f"shells={len(deck.element_shell_sections or [])}")
+
+        # Use this file's local map if it has nodes; otherwise fall back to the
+        # accumulated global map (supports "master-nodes + part-elements" pattern)
+        active_map = local_nid_map if local_nid_map else accumulated_global_map
+
+        def _safe(nid: int, _m=active_map) -> int:
+            return _m.get(nid, -1)
+
+        _process_elements(
+            _safe,
+            deck.element_solid_sections,
+            deck.element_shell_sections,
+            getattr(deck, 'element_tshell_sections', None),
+            getattr(deck, 'element_beam_sections',   None),
+        )
+
+    if not global_coords:
+        n_files = len(file_list)
+        raise ValueError(
+            f"No se encontraron nodos en {n_files} archivo(s) LS-DYNA. "
+            "Si es un ensamble multi-archivo, sube todos los .k en un ZIP."
+        )
+
+    coords = np.array(global_coords, dtype=np.float64)
+    nodes  = global_coords  # already list of [x,y,z]
+
+    # ── Node sets / parts (best-effort) ──────────────────────────────────────
     node_sets:    dict = {}
     element_sets: dict = {}
     for d in all_decks:
         try:
             for ns in (getattr(d, 'node_set_sections', None) or []):
                 sid  = str(getattr(ns, 'sid', id(ns)))
-                idxs = [_safe(int(n)) for n in (getattr(ns, 'nid', None) or [])]
+                idxs = [accumulated_global_map.get(int(n), -1)
+                        for n in (getattr(ns, 'nid', None) or [])]
                 good = [i for i in idxs if i >= 0]
                 if good:
                     node_sets[sid] = good
@@ -425,7 +482,8 @@ def _parse_lsdyna(file_path: str) -> dict:
     }
 
     surface_triangles = extract_surface_triangles(elements)
-    surface_triangles = _ensure_outward_normals(surface_triangles, coords)
+    # Face winding is analytically correct from extract_surface_triangles;
+    # do NOT apply centroid-based flip (breaks non-convex geometry).
 
     return {
         'nodes':                  nodes,
@@ -511,7 +569,18 @@ def parse_mesh(file_path: str) -> dict:
 
     # Sets
     node_sets = {k: v.tolist() for k, v in (mesh.point_sets or {}).items()}
-    element_sets = {k: v.tolist() for k, v in (mesh.cell_sets_dict or {}).items()}
+    # cell_sets_dict values are {cell_type: array} dicts — flatten to a single list
+    element_sets = {}
+    for name, by_type in (mesh.cell_sets_dict or {}).items():
+        if isinstance(by_type, dict):
+            combined = []
+            for arr in by_type.values():
+                combined.extend(arr.tolist() if hasattr(arr, 'tolist') else list(arr))
+            element_sets[name] = combined
+        elif hasattr(by_type, 'tolist'):
+            element_sets[name] = by_type.tolist()
+        else:
+            element_sets[name] = []
 
     # Fields — handle single-step and multi-step (Exodus II, XDMF, etc.)
     node_fields = {}
