@@ -621,9 +621,8 @@ def _parse_lsdyna(file_path: str) -> dict:
         )
 
     if not global_coords:
-        n_files = len(file_list)
         raise ValueError(
-            f"No se encontraron nodos en {n_files} archivo(s) LS-DYNA. "
+            f"No se encontraron nodos en {len(file_entries)} archivo(s) LS-DYNA. "
             "Si es un ensamble multi-archivo, sube todos los .k en un ZIP."
         )
 
@@ -656,9 +655,7 @@ def _parse_lsdyna(file_path: str) -> dict:
         'min_z': float(coords[:, 2].min()), 'max_z': float(coords[:, 2].max()),
     }
 
-    surface_triangles = extract_surface_triangles(elements)
-    # Face winding is analytically correct from extract_surface_triangles;
-    # do NOT apply centroid-based flip (breaks non-convex geometry).
+    surface_triangles = extract_surface_triangles(elements, coords)
 
     return {
         'nodes':                  nodes,
@@ -795,10 +792,7 @@ def parse_mesh(file_path: str) -> dict:
 
     ext = os.path.splitext(file_path)[1].lower()
 
-    surface_triangles = extract_surface_triangles(elements)
-    # Do NOT apply centroid-based normal flip here: face winding is already
-    # guaranteed outward by extract_surface_triangles for VTK-convention meshes
-    # (all meshio formats normalise to VTK node ordering).
+    surface_triangles = extract_surface_triangles(elements, mesh.points)
 
     return {
         'nodes': nodes,
@@ -821,13 +815,17 @@ def parse_mesh(file_path: str) -> dict:
     }
 
 
-def extract_surface_triangles(elements: dict) -> list:
+def extract_surface_triangles(elements: dict, nodes_np=None) -> list:
     """
     Extract triangles suitable for WebGL surface rendering.
 
     Priority:
     1. If explicit triangle/quad surface elements exist (e.g. GMSH boundary mesh), use them.
     2. Otherwise extract boundary faces from volumetric elements (tet, hex, wedge, pyramid).
+
+    When nodes_np (Nx3 numpy array) is provided, each boundary face's winding is
+    verified against the centroid of the element that owns it — this corrects
+    inverted/negative-Jacobian elements that analytical winding cannot handle.
     """
     triangles = []
 
@@ -861,16 +859,19 @@ def extract_surface_triangles(elements: dict) -> list:
     # Extract boundary faces from volumetric mesh.
     # Face winding follows VTK outward-normal convention (CCW when viewed from
     # outside → right-hand normal points away from element interior).
-    # Verified analytically for each element type.
     from collections import defaultdict
+    import numpy as _np
     face_count: dict = defaultdict(int)
     face_nodes: dict = {}
+    face_elem_conn: dict = {}   # key → element connectivity (for centroid correction)
 
-    def _reg(fn):
+    def _reg(fn, elem_conn=None):
         key = tuple(sorted(fn))
         face_count[key] += 1
         if key not in face_nodes:
             face_nodes[key] = fn
+            if nodes_np is not None and elem_conn is not None:
+                face_elem_conn[key] = elem_conn
 
     # Tet4: face opposite node 3 → (0,2,1) [NOT (0,1,2) which is inward]
     #        face opposite node 2 → (0,1,3)
@@ -880,34 +881,57 @@ def extract_surface_triangles(elements: dict) -> list:
     for etype in ('tetra', 'tet4', 'tetra10', 'tet10'):
         for conn in elements.get(etype, []):
             for f in tet_faces:
-                _reg([conn[i] for i in f])
+                _reg([conn[i] for i in f], conn)
 
     # Hex8: all faces verified outward by right-hand rule with VTK node layout
     hex_faces = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
     for etype in ('hexahedron', 'hex8', 'hexahedron20', 'hex20'):
         for conn in elements.get(etype, []):
             for f in hex_faces:
-                _reg([conn[i] for i in f])
+                _reg([conn[i] for i in f], conn)
 
     # Wedge6: bottom triangle (0,2,1) outward [NOT (0,1,2)], top (3,4,5) outward
     for etype in ('wedge', 'penta6', 'prism6'):
         for conn in elements.get(etype, []):
             for f in [(0, 2, 1), (3, 4, 5)]:
-                _reg([conn[i] for i in f])
+                _reg([conn[i] for i in f], conn)
             for f in [(0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)]:
-                _reg([conn[i] for i in f])
+                _reg([conn[i] for i in f], conn)
 
     # Pyramid5: base (0,3,2,1) outward; triangular side faces all outward
     for etype in ('pyramid', 'pyra5'):
         for conn in elements.get(etype, []):
-            _reg([conn[i] for i in (0, 3, 2, 1)])
+            _reg([conn[i] for i in (0, 3, 2, 1)], conn)
             for f in [(0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)]:
-                _reg([conn[i] for i in f])
+                _reg([conn[i] for i in f], conn)
+
+    n_pts = len(nodes_np) if nodes_np is not None else 0
 
     for key, count in face_count.items():
         if count != 1:
             continue
-        fn = face_nodes[key]
+        fn = list(face_nodes[key])
+
+        # Per-element centroid winding correction: verify the face normal points
+        # away from the element centroid.  Handles inverted/negative-Jacobian
+        # elements where the analytical winding above would be wrong.
+        if nodes_np is not None and key in face_elem_conn:
+            try:
+                ec = face_elem_conn[key]
+                ec_arr = _np.array(ec, dtype=_np.int32)
+                valid_ec = ec_arr[(ec_arr >= 0) & (ec_arr < n_pts)]
+                if len(valid_ec) >= 4:
+                    elem_c = nodes_np[valid_ec].mean(axis=0)
+                    p0 = nodes_np[fn[0]]
+                    p1 = nodes_np[fn[1]]
+                    p2 = nodes_np[fn[2]]
+                    face_c = (p0 + p1 + p2) / 3.0
+                    normal = _np.cross(p1 - p0, p2 - p0)
+                    if _np.dot(normal, face_c - elem_c) < 0:
+                        fn = fn[::-1]
+            except Exception:
+                pass
+
         if len(fn) == 3:
             triangles.append(fn)
         elif len(fn) == 4:
