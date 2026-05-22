@@ -678,6 +678,202 @@ def _parse_lsdyna(file_path: str) -> dict:
     }
 
 
+_ABAQUS_ELEM_MAP = {
+    # 3-D solids
+    'C3D8':   'hexahedron',  'C3D8R':  'hexahedron',  'C3D8H':  'hexahedron',
+    'C3D8I':  'hexahedron',  'C3D8RH': 'hexahedron',
+    'C3D20':  'hexahedron20','C3D20R': 'hexahedron20','C3D20RH':'hexahedron20',
+    'C3D4':   'tetra',       'C3D4H':  'tetra',
+    'C3D10':  'tetra10',     'C3D10M': 'tetra10',     'C3D10MH':'tetra10',
+    'C3D6':   'wedge',       'C3D6H':  'wedge',
+    'C3D5':   'pyramid',
+    # Shells
+    'S4':     'quad',        'S4R':    'quad',        'S4RS': 'quad',
+    'S4RT':   'quad',        'SC8R':   'quad',
+    'S3':     'triangle',    'S3R':    'triangle',    'STRI3':'triangle',
+    # Beams
+    'B31':    'line',        'B31H':   'line',        'B32':  'line',
+    'T2D2':   'line',
+}
+
+
+def _parse_abaqus_inp(file_path: str) -> dict:
+    """
+    Parse an Abaqus .inp file with correct per-part node-ID offsetting.
+
+    meshio collapses all parts into a single node dict keyed by local part ID,
+    so every part overwrites the previous one (last-part wins).  Element
+    connectivity still uses the original local IDs → wrong coordinates +
+    phantom shared faces → assembly appears as a single flat plate.
+
+    This parser reads each *Part section separately, accumulates a per-part
+    global_offset = len(global_nodes_so_far), builds a local_id→global_idx
+    map, and translates element connectivity before appending.
+    """
+    import numpy as np
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Abaqus file not found: {file_path}")
+
+    global_nodes: list  = []
+    global_elements: dict = {}
+    global_etypes:  dict  = {}
+    total_elements: int   = 0
+
+    # ── Line reader with continuation support ────────────────────────────────
+    def _iter_data_lines(fh):
+        """Yield (stripped, keyword_flag) handling Abaqus comma-continuation."""
+        pending = ''
+        for raw in fh:
+            s = raw.strip()
+            if not s or s.startswith('**'):
+                if pending:
+                    yield pending, False
+                    pending = ''
+                continue
+            if s.startswith('*'):
+                if pending:
+                    yield pending, False
+                    pending = ''
+                yield s, True
+                continue
+            # data line — handle continuation
+            if s.endswith(','):
+                pending += s
+            else:
+                full = pending + s
+                pending = ''
+                yield full, False
+
+        if pending:
+            yield pending, False
+
+    # ── State machine ─────────────────────────────────────────────────────────
+    MODE_NONE = 0; MODE_NODE = 1; MODE_ELEM = 2
+
+    part_nodes:     dict = {}  # local_id (int) → [x, y, z]
+    part_local_map: dict = {}  # local_id (int) → global_idx (built on first *Element)
+    nodes_committed: list = [False]  # mutable flag
+    elem_etype:     str  = ''
+    mode:           int  = MODE_NONE
+    in_part:        bool = False
+
+    def _commit_nodes():
+        """Commit part_nodes to global_nodes and build part_local_map."""
+        if nodes_committed[0] or not part_nodes:
+            return
+        for lid in sorted(part_nodes.keys()):
+            part_local_map[lid] = len(global_nodes)
+            global_nodes.append(part_nodes[lid])
+        nodes_committed[0] = True
+
+    try:
+        with open(file_path, 'r', errors='ignore') as fh:
+            for line, is_kw in _iter_data_lines(fh):
+                if is_kw:
+                    upper = line.upper()
+                    mode = MODE_NONE
+
+                    if upper.startswith('*PART'):
+                        in_part = True
+                        part_nodes.clear()
+                        part_local_map.clear()
+                        nodes_committed[0] = False
+                    elif upper.startswith('*END PART'):
+                        _commit_nodes()   # commit any nodes not yet committed
+                        in_part = False
+                    elif upper.startswith('*NODE') and not upper.startswith('*NODE OUTPUT') \
+                            and not upper.startswith('*NSET'):
+                        if in_part:
+                            mode = MODE_NODE
+                    elif upper.startswith('*ELEMENT') and not upper.startswith('*ELEMENT OUTPUT') \
+                            and not upper.startswith('*ELSET'):
+                        if in_part:
+                            # Commit nodes on first *Element encounter
+                            _commit_nodes()
+                            etype_raw = ''
+                            for tok in line.split(','):
+                                tok = tok.strip()
+                                if tok.upper().startswith('TYPE='):
+                                    etype_raw = tok.split('=', 1)[1].strip().upper()
+                                    break
+                            elem_etype = _ABAQUS_ELEM_MAP.get(etype_raw, '')
+                            if elem_etype:
+                                mode = MODE_ELEM
+                    continue  # done processing keyword line
+
+                # ── Data line ─────────────────────────────────────────────────
+                if mode == MODE_NODE and in_part:
+                    toks = [p.strip() for p in line.split(',')]
+                    if len(toks) >= 4:
+                        try:
+                            nid = int(toks[0])
+                            x, y, z = float(toks[1]), float(toks[2]), float(toks[3])
+                            part_nodes[nid] = [x, y, z]
+                        except (ValueError, IndexError):
+                            pass
+
+                elif mode == MODE_ELEM and in_part and elem_etype:
+                    toks = [p.strip() for p in line.split(',')]
+                    # toks[0] = element_id, toks[1:] = local node IDs
+                    try:
+                        local_ids = [int(t) for t in toks[1:] if t]
+                    except ValueError:
+                        continue
+                    global_idxs = [part_local_map.get(lid, -1) for lid in local_ids]
+                    if -1 in global_idxs:
+                        continue
+                    if elem_etype not in global_elements:
+                        global_elements[elem_etype] = []
+                        global_etypes[elem_etype]   = 0
+                    global_elements[elem_etype].append(global_idxs)
+                    global_etypes[elem_etype] += 1
+                    total_elements += 1
+
+    except OSError as e:
+        raise RuntimeError(f"Cannot read Abaqus file: {e}") from e
+
+    # Safety: commit any un-flushed last part
+    _commit_nodes()
+
+    if not global_nodes:
+        raise ValueError("No nodes found in Abaqus file.")
+
+    coords = np.array(global_nodes, dtype=np.float64)
+    bbox = {
+        'min_x': float(coords[:, 0].min()), 'max_x': float(coords[:, 0].max()),
+        'min_y': float(coords[:, 1].min()), 'max_y': float(coords[:, 1].max()),
+        'min_z': float(coords[:, 2].min()), 'max_z': float(coords[:, 2].max()),
+    }
+
+    surface_triangles = extract_surface_triangles(global_elements, coords)
+
+    logger.info(
+        f"Abaqus assembly: {len(global_nodes):,} nodes, {total_elements:,} elements, "
+        f"{len(surface_triangles):,} surface triangles"
+    )
+
+    return {
+        'nodes':                  global_nodes,
+        'elements':               global_elements,
+        'surface_triangles':      surface_triangles,
+        'node_sets':              {},
+        'element_sets':           {},
+        'node_fields':            {},
+        'element_fields':         {},
+        'time_steps':             [0],
+        'bounding_box':           bbox,
+        'node_count':             len(global_nodes),
+        'element_count':          total_elements,
+        'element_types':          global_etypes,
+        'surface_triangle_count': len(surface_triangles),
+        'format':                 'inp',
+        'field_names':            [],
+        'recommended_solvers':    recommend_solvers(global_etypes),
+        'quality':                compute_mesh_quality(global_elements, coords),
+    }
+
+
 def parse_mesh(file_path: str) -> dict:
     """
     Read a mesh file and return a canonical dict:
@@ -703,6 +899,12 @@ def parse_mesh(file_path: str) -> dict:
     # Route LS-DYNA keyword files to dedicated parser
     if os.path.splitext(file_path)[1].lower() in ('.k', '.key'):
         return _parse_lsdyna(file_path)
+
+    # Route Abaqus assembly files to dedicated parser that handles per-part
+    # node-ID offsetting (meshio collapses all parts into a single node dict,
+    # causing node collisions and face cancellation in multi-part assemblies).
+    if os.path.splitext(file_path)[1].lower() == '.inp':
+        return _parse_abaqus_inp(file_path)
 
     if not MESHIO_AVAILABLE:
         raise RuntimeError("meshio is not installed. Run: pip install meshio numpy")
