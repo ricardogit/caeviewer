@@ -830,11 +830,13 @@ export default function CAEViewer({ mesh }) {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.3, mb: 0.5 }}>
             <Typography variant="caption" color="text.disabled" sx={{ mr: 0.5, fontSize: '0.65rem' }}>Vista:</Typography>
             {[
-              { label: 'ISO', tip: 'Vista isométrica (recomendada)', preset: 'iso' },
-              { label: '+Y',  tip: 'Vista superior',                  preset: '+y' },
-              { label: '+X',  tip: 'Vista lateral derecha',           preset: '+x' },
-              { label: '+Z',  tip: 'Vista frontal',                   preset: '+z' },
-              { label: '-Z',  tip: 'Vista trasera',                   preset: '-z' },
+              { label: 'ISO', tip: 'Vista isométrica', preset: 'iso' },
+              { label: '+Y',  tip: 'Vista superior (desde arriba)', preset: '+y' },
+              { label: '-Y',  tip: 'Vista inferior (desde abajo) — muestra cabezas de tornillos y arandelas bajo la placa', preset: '-y' },
+              { label: '+X',  tip: 'Vista lateral derecha', preset: '+x' },
+              { label: '-X',  tip: 'Vista lateral izquierda', preset: '-x' },
+              { label: '+Z',  tip: 'Vista frontal', preset: '+z' },
+              { label: '-Z',  tip: 'Vista trasera', preset: '-z' },
             ].map(({ label, tip, preset }) => (
               <Tooltip key={preset} title={tip}>
                 <Button
