@@ -115,12 +115,16 @@ function buildSurfacePD(meshData, fieldData, warpScale = 0) {
     }
   }
 
+  // nodeMap[compact_idx] = original_idx — needed for field/warp value lookups
+  // because field data from the server is still indexed by original node position.
+  const nodeMap = meshData.node_map || null;
   const coords = new Float32Array(surfOld.length * 3);
   for (let i = 0; i < surfOld.length; i++) {
-    const origIdx = surfOld[i];
-    const [x, y, z] = allNodes[origIdx];
+    const compactIdx = surfOld[i];
+    const [x, y, z] = allNodes[compactIdx];
     let dx = 0, dy = 0, dz = 0;
     if (warpScale > 0 && isVec) {
+      const origIdx = nodeMap ? nodeMap[compactIdx] : compactIdx;
       const v = fieldData.values[origIdx];
       if (v) { dx = v[0] * warpScale; dy = v[1] * warpScale; dz = v[2] * warpScale; }
     }
@@ -144,17 +148,22 @@ function buildSurfacePD(meshData, fieldData, warpScale = 0) {
   }
   pd.getPolys().setData(new Uint32Array(polyBuf));
 
-  // Scalar field — look up values by original node index
+  // Scalar field — look up values by original (pre-compaction) node index.
+  // nodeMap is already declared above; reuse it here for field data alignment.
   if (fieldData?.values?.length > 0) {
     const vals = fieldData.values;
     const scalars = new Float32Array(surfOld.length);
     if (isVec) {
       for (let i = 0; i < surfOld.length; i++) {
-        const v = vals[surfOld[i]];
+        const origIdx = nodeMap ? nodeMap[surfOld[i]] : surfOld[i];
+        const v = vals[origIdx];
         if (v) scalars[i] = Math.sqrt(v.reduce((s, c) => s + c * c, 0));
       }
     } else {
-      for (let i = 0; i < surfOld.length; i++) scalars[i] = vals[surfOld[i]] ?? 0;
+      for (let i = 0; i < surfOld.length; i++) {
+        const origIdx = nodeMap ? nodeMap[surfOld[i]] : surfOld[i];
+        scalars[i] = vals[origIdx] ?? 0;
+      }
     }
     const da = vtkDataArray.newInstance({ name: 'result', values: scalars, numberOfComponents: 1 });
     pd.getPointData().setScalars(da);

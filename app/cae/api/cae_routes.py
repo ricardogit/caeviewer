@@ -251,9 +251,31 @@ def upload_mesh():
     }), 201
 
 
+def _compact_surface(nodes: list, surface_triangles: list):
+    """
+    Return (compact_nodes, remapped_tris, node_map) where:
+      compact_nodes  — only the nodes referenced by surface_triangles
+      remapped_tris  — triangle indices into compact_nodes
+      node_map       — node_map[compact_idx] = original_idx (for field lookups)
+
+    Reduces the GET /meshes/<id> response 3-4x for dense solid meshes where
+    interior nodes are never referenced by surface triangles.
+    """
+    seen: dict = {}
+    node_map: list = []
+    for tri in surface_triangles:
+        for idx in tri:
+            if idx not in seen:
+                seen[idx] = len(node_map)
+                node_map.append(idx)
+    compact_nodes = [nodes[i] for i in node_map]
+    remapped = [[seen[idx] for idx in tri] for tri in surface_triangles]
+    return compact_nodes, remapped, node_map
+
+
 @bp.route('/meshes/<string:mesh_id>', methods=['GET'])
 def get_mesh(mesh_id):
-    """Return mesh geometry (nodes + elements). Paginated for large meshes."""
+    """Return mesh geometry (surface nodes + triangles). Compact: interior nodes excluded."""
     mesh = CAEMesh.query.filter_by(id=mesh_id).first()
     if not mesh:
         return jsonify({'error': 'Mesh not found'}), 404
@@ -263,17 +285,23 @@ def get_mesh(mesh_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+    surface_tris = mesh_data.get('surface_triangles', [])
+    compact_nodes, remapped_tris, node_map = _compact_surface(
+        mesh_data['nodes'], surface_tris
+    )
+
     return jsonify({
         'mesh_id': mesh_id,
-        'nodes': mesh_data['nodes'],
+        'nodes': compact_nodes,
+        'node_map': node_map,
         'element_types': mesh_data['element_types'],
-        'surface_triangles': mesh_data.get('surface_triangles', []),
+        'surface_triangles': remapped_tris,
         'node_sets': mesh_data['node_sets'],
         'element_sets': mesh_data['element_sets'],
         'bounding_box': mesh_data['bounding_box'],
         'node_count': mesh_data['node_count'],
         'element_count': mesh_data['element_count'],
-        'surface_triangle_count': mesh_data.get('surface_triangle_count', 0),
+        'surface_triangle_count': len(remapped_tris),
         'time_steps': mesh_data.get('time_steps', [0]),
         'recommended_solvers': mesh_data.get('recommended_solvers', []),
         'quality': mesh_data.get('quality', {}),
