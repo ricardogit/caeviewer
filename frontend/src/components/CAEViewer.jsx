@@ -354,6 +354,23 @@ export default function CAEViewer({ mesh }) {
 
   const isVector = fieldData != null && Array.isArray(fieldData.values?.[0]);
 
+  // Unique display names for parts: "bolt #1", "bolt #2", ... when multiple instances of same file
+  const partDisplayNames = useMemo(() => {
+    if (!meshData?.parts?.length) return [];
+    const counts = {};
+    meshData.parts.forEach(p => {
+      const base = p.name.replace(/ T=\(.*?\)$/, '');
+      counts[base] = (counts[base] || 0) + 1;
+    });
+    const idx = {};
+    return meshData.parts.map(p => {
+      const base = p.name.replace(/ T=\(.*?\)$/, '');
+      idx[base] = (idx[base] || 0) + 1;
+      const short = base.replace(/(_single)?_step\.k$/, '').replace(/\.k$/, '');
+      return counts[base] > 1 ? `${short} #${idx[base]}` : short;
+    });
+  }, [meshData]);
+
   const stats = useMemo(() => {
     if (!fieldData?.values?.length) return null;
     const vals = fieldData.values;
@@ -1104,7 +1121,7 @@ export default function CAEViewer({ mesh }) {
                   {meshData.parts.map((part, i) => {
                     const vis = partsVisible[i] !== false;
                     const rgb = PART_COLORS[i % PART_COLORS.length].map(v => Math.round(v * 255));
-                    const shortName = part.name.replace(/ T=\(.*?\)$/, '');
+                    const displayName = partDisplayNames[i] || part.name;
                     return (
                       <Box
                         key={i}
@@ -1122,7 +1139,7 @@ export default function CAEViewer({ mesh }) {
                           <Typography variant="caption" noWrap
                             sx={{ flex: 1, color: vis ? 'text.secondary' : 'text.disabled',
                                   textDecoration: vis ? 'none' : 'line-through' }}>
-                            {shortName}
+                            {displayName}
                           </Typography>
                         </Tooltip>
                       </Box>
