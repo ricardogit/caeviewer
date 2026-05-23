@@ -305,6 +305,7 @@ def get_mesh(mesh_id):
         'time_steps': mesh_data.get('time_steps', [0]),
         'recommended_solvers': mesh_data.get('recommended_solvers', []),
         'quality': mesh_data.get('quality', {}),
+        'parts': mesh_data.get('parts', []),
     }), 200
 
 

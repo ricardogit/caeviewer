@@ -28,6 +28,15 @@ import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 
 const COLORMAPS = ['viridis', 'rainbow', 'coolwarm', 'jet', 'grayscale'];
 
+// 20 perceptually distinct colors for per-part rendering
+const PART_COLORS = [
+  [0.62, 0.73, 0.86], [0.96, 0.49, 0.31], [0.45, 0.77, 0.45], [0.95, 0.85, 0.36],
+  [0.75, 0.50, 0.75], [0.29, 0.75, 0.85], [0.95, 0.36, 0.36], [0.60, 0.80, 0.60],
+  [0.80, 0.60, 0.40], [0.60, 0.60, 0.80], [0.90, 0.70, 0.40], [0.40, 0.80, 0.80],
+  [0.80, 0.40, 0.60], [0.50, 0.70, 0.90], [0.90, 0.60, 0.80], [0.70, 0.90, 0.50],
+  [0.40, 0.60, 0.80], [0.80, 0.80, 0.40], [0.60, 0.40, 0.80], [0.40, 0.80, 0.60],
+];
+
 const COLORMAP_CSS = {
   viridis:  'linear-gradient(to right, #440154, #31688e, #35b779, #fde725)',
   rainbow:  'linear-gradient(to right, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000)',
@@ -94,11 +103,11 @@ function buildLUT(name) {
   return lut;
 }
 
-function buildSurfacePD(meshData, fieldData, warpScale = 0) {
+function buildSurfacePD(meshData, fieldData, warpScale = 0, triSubset = null) {
   const pd = vtkPolyData.newInstance();
   const allNodes = meshData.nodes;
   const nNodes = allNodes.length;
-  const triangles = meshData.surface_triangles || [];
+  const triangles = triSubset !== null ? triSubset : (meshData.surface_triangles || []);
   const isVec = fieldData?.values?.length > 0 && Array.isArray(fieldData.values[0]);
 
   // Build compact points array from only surface-referenced nodes.
@@ -337,6 +346,8 @@ export default function CAEViewer({ mesh }) {
   const [statsOpen,      setStatsOpen]      = useState(false);
   const [threshold,      setThreshold]      = useState([0, 1]);
   const [solversOpen,    setSolversOpen]    = useState(false);
+  const [partsOpen,      setPartsOpen]      = useState(false);
+  const [partsVisible,   setPartsVisible]   = useState([]);
   const pickModeRef  = useRef(false);
   const mouseDragRef = useRef({ x: 0, y: 0 });
   const playTimerRef = useRef(null);
@@ -389,6 +400,8 @@ export default function CAEViewer({ mesh }) {
     ]).then(([meshRes, fieldsRes]) => {
       setMeshData(meshRes.data);
       setTimeSteps(meshRes.data.time_steps || [0]);
+      const nparts = meshRes.data.parts?.length || 0;
+      setPartsVisible(nparts > 0 ? meshRes.data.parts.map(() => true) : []);
       const flds = fieldsRes.data.fields || [];
       setFields(flds);
       if (flds.length > 0) setSelectedField(flds[0].name);
@@ -454,7 +467,8 @@ export default function CAEViewer({ mesh }) {
 
     vtkRef.current = {
       renderWindow, renderer, glWindow, interactor, ro,
-      pd: null, mapper: null, actor: null, lut: null,
+      actors: [],   // [{actor, mapper, pd, name, part}]
+      lut: null,
       hotspotActor: null, hotspotMapper: null, hotspotPd: null,
     };
 
@@ -466,8 +480,11 @@ export default function CAEViewer({ mesh }) {
       if (v) {
         if (v.hotspotActor) { renderer.removeActor(v.hotspotActor); v.hotspotActor.delete(); }
         v.hotspotMapper?.delete(); v.hotspotPd?.delete();
-        if (v.actor) { renderer.removeActor(v.actor); v.actor.delete(); }
-        v.mapper?.delete(); v.pd?.delete(); v.lut?.delete();
+        (v.actors || []).forEach(a => {
+          renderer.removeActor(a.actor); a.actor.delete();
+          a.mapper?.delete(); a.pd?.delete();
+        });
+        v.lut?.delete?.();
       }
       glWindow.delete();
       renderWindow.delete();
@@ -475,12 +492,12 @@ export default function CAEViewer({ mesh }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Swap geometry when mesh data changes — reuse the existing pipeline.
+  // Swap geometry when mesh data changes — create one actor per part when available.
   useEffect(() => {
     if (!vtkRef.current) return;
     const { renderer, renderWindow } = vtkRef.current;
 
-    // Remove previous geometry actors
+    // Remove hotspot overlay
     if (vtkRef.current.hotspotActor) {
       renderer.removeActor(vtkRef.current.hotspotActor);
       vtkRef.current.hotspotActor.delete();
@@ -490,64 +507,86 @@ export default function CAEViewer({ mesh }) {
       vtkRef.current.hotspotMapper = null;
       vtkRef.current.hotspotPd = null;
     }
-    if (vtkRef.current.actor) {
-      renderer.removeActor(vtkRef.current.actor);
-      vtkRef.current.actor.delete();
-      vtkRef.current.mapper?.delete();
-      vtkRef.current.pd?.delete();
-      vtkRef.current.lut?.delete();
-      vtkRef.current.actor = null;
-      vtkRef.current.mapper = null;
-      vtkRef.current.pd = null;
-      vtkRef.current.lut = null;
-    }
+    // Remove previous geometry actors
+    (vtkRef.current.actors || []).forEach(a => {
+      renderer.removeActor(a.actor); a.actor.delete();
+      a.mapper?.delete(); a.pd?.delete();
+    });
+    vtkRef.current.lut?.delete?.();
+    vtkRef.current.actors = [];
+    vtkRef.current.lut = null;
 
     if (!meshData) { renderWindow.render(); return; }
 
-    const pd     = buildSurfacePD(meshData, null);
-    const mapper = vtkMapper.newInstance();
-    mapper.setInputData(pd);
-    mapper.setScalarVisibility(false);
-    const actor  = vtkActor.newInstance();
-    actor.setMapper(mapper);
-    const prop = actor.getProperty();
-    prop.setColor(0.62, 0.73, 0.86);
-    prop.setAmbient(0.12);
-    prop.setSpecular(0.35);
-    prop.setSpecularPower(25);
-    renderer.addActor(actor);
-    // applyCameraPreset calls resetCamera() internally
-    applyCameraPreset(renderer, renderWindow, 'iso', meshData.bounding_box);
+    const parts = meshData.parts || [];
+    const useParts = parts.length > 1;
+    const tris = meshData.surface_triangles || [];
 
-    vtkRef.current.pd     = pd;
-    vtkRef.current.mapper = mapper;
-    vtkRef.current.actor  = actor;
+    const newActors = useParts
+      ? parts.map((part, i) => {
+          const partTris = tris.slice(part.tri_start, part.tri_start + part.tri_count);
+          const pd = buildSurfacePD(meshData, null, 0, partTris);
+          const mapper = vtkMapper.newInstance();
+          mapper.setInputData(pd);
+          mapper.setScalarVisibility(false);
+          const actor = vtkActor.newInstance();
+          actor.setMapper(mapper);
+          const prop = actor.getProperty();
+          const color = PART_COLORS[i % PART_COLORS.length];
+          prop.setColor(...color);
+          prop.setAmbient(0.12); prop.setSpecular(0.35); prop.setSpecularPower(25);
+          renderer.addActor(actor);
+          return { actor, mapper, pd, name: part.name, part };
+        })
+      : (() => {
+          const pd = buildSurfacePD(meshData, null);
+          const mapper = vtkMapper.newInstance();
+          mapper.setInputData(pd);
+          mapper.setScalarVisibility(false);
+          const actor = vtkActor.newInstance();
+          actor.setMapper(mapper);
+          const prop = actor.getProperty();
+          prop.setColor(0.62, 0.73, 0.86);
+          prop.setAmbient(0.12); prop.setSpecular(0.35); prop.setSpecularPower(25);
+          renderer.addActor(actor);
+          return [{ actor, mapper, pd, name: 'mesh', part: null }];
+        })();
+
+    vtkRef.current.actors = newActors;
+    applyCameraPreset(renderer, renderWindow, 'iso', meshData.bounding_box);
   }, [meshData]);
 
   // Colormap change: update LUT only — no mesh rebuild
   useEffect(() => {
     colormapRef.current = colormap;
-    if (!vtkRef.current?.mapper || !fieldData?.values?.length) return;
-    const { mapper, renderWindow } = vtkRef.current;
+    if (!vtkRef.current?.actors?.length || !fieldData?.values?.length) return;
+    const { actors, renderWindow } = vtkRef.current;
     vtkRef.current.lut?.delete?.();
     const lut = buildLUT(colormap);
-    mapper.setLookupTable(lut);
+    actors.forEach(a => a.mapper.setLookupTable(lut));
     vtkRef.current.lut = lut;
     renderWindow.render();
   }, [colormap]);
 
   // Wireframe overlay toggle
   useEffect(() => {
-    if (!vtkRef.current?.actor) return;
-    const { actor, renderWindow } = vtkRef.current;
-    const prop = actor.getProperty();
-    prop.setEdgeVisibility(wireframe);
-    if (wireframe) {
-      prop.setEdgeColor(0.08, 0.08, 0.08);
-      prop.setLineWidth(0.8);
-    }
+    if (!vtkRef.current?.actors?.length) return;
+    const { actors, renderWindow } = vtkRef.current;
+    actors.forEach(a => {
+      const prop = a.actor.getProperty();
+      prop.setEdgeVisibility(wireframe);
+      if (wireframe) { prop.setEdgeColor(0.08, 0.08, 0.08); prop.setLineWidth(0.8); }
+    });
     renderWindow.render();
   }, [wireframe]);
+
+  // Per-part visibility toggle
+  useEffect(() => {
+    if (!vtkRef.current?.actors?.length) return;
+    const { actors, renderWindow } = vtkRef.current;
+    actors.forEach((a, i) => a.actor.setVisibility(partsVisible[i] !== false));
+    renderWindow.render();
+  }, [partsVisible]);
 
   // Keep ref in sync so the click handler always sees the latest value
   useEffect(() => { pickModeRef.current = pickMode; }, [pickMode]);
@@ -565,11 +604,11 @@ export default function CAEViewer({ mesh }) {
     return () => clearInterval(playTimerRef.current);
   }, [playing, timeSteps.length]);
 
-  // Section cut — clipping plane on the mapper
+  // Section cut — clipping plane on all mappers
   useEffect(() => {
-    if (!vtkRef.current?.mapper || !meshData?.bounding_box) return;
-    const { mapper, renderWindow } = vtkRef.current;
-    mapper.removeAllClippingPlanes();
+    if (!vtkRef.current?.actors?.length || !meshData?.bounding_box) return;
+    const { actors, renderWindow } = vtkRef.current;
+    actors.forEach(a => a.mapper.removeAllClippingPlanes());
 
     if (clipEnabled) {
       const b = meshData.bounding_box;
@@ -582,35 +621,35 @@ export default function CAEViewer({ mesh }) {
       const pos = min + clipPos * (max - min);
       const origin = clipAxis === 'X' ? [pos, 0, 0] : clipAxis === 'Y' ? [0, pos, 0] : [0, 0, pos];
       const n = clipFlip ? normal.map(v => -v) : normal;
-
-      const plane = vtkPlane.newInstance();
-      plane.setOrigin(...origin);
-      plane.setNormal(...n);
-      mapper.addClippingPlane(plane);
+      actors.forEach(a => {
+        const plane = vtkPlane.newInstance();
+        plane.setOrigin(...origin);
+        plane.setNormal(...n);
+        a.mapper.addClippingPlane(plane);
+      });
     }
 
     renderWindow.render();
   }, [clipEnabled, clipAxis, clipPos, clipFlip, meshData]);
 
-  // Threshold: remap scalar range on the mapper
+  // Threshold: remap scalar range on all mappers
   useEffect(() => {
-    if (!vtkRef.current?.mapper || !fieldData?.values?.length) return;
-    const { mapper, renderWindow } = vtkRef.current;
+    if (!vtkRef.current?.actors?.length || !fieldData?.values?.length) return;
+    const { actors, renderWindow } = vtkRef.current;
     const dMin = fieldData.data_min;
     const dMax = fieldData.data_max;
     const lo = dMin + threshold[0] * (dMax - dMin);
     const hi = dMin + threshold[1] * (dMax - dMin);
-    mapper.setScalarRange(lo === hi ? lo - 1e-10 : lo, hi);
+    actors.forEach(a => a.mapper.setScalarRange(lo === hi ? lo - 1e-10 : lo, hi));
     renderWindow.render();
   }, [threshold, fieldData]);
 
-  // Field data or warp change: rebuild UG
+  // Field data or warp change: rebuild per-part polydata
   useEffect(() => {
     if (!vtkRef.current || !meshData) return;
-    const { renderWindow, mapper, actor } = vtkRef.current;
+    const { renderWindow, actors } = vtkRef.current;
+    if (!actors?.length) return;
 
-    // Compute physical warp multiplier: at warp=1 the max displacement ≈ 20% of bounding box.
-    // Guard against data_max == 0 (uniform field) which would produce Infinity.
     let actualWarp = 0;
     if (warp > 0 && isVector && meshData.bounding_box) {
       const absMax = Math.abs(fieldData?.data_max ?? 0);
@@ -624,22 +663,36 @@ export default function CAEViewer({ mesh }) {
     vtkRef.current.lut?.delete?.();
     vtkRef.current.lut = null;
 
-    const newPd = buildSurfacePD(meshData, fieldData, actualWarp);
-    mapper.setInputData(newPd);
-    vtkRef.current.pd?.delete?.();
-    vtkRef.current.pd = newPd;
+    const parts = meshData.parts || [];
+    const useParts = parts.length > 1;
+    const tris = meshData.surface_triangles || [];
+
+    actors.forEach((a, i) => {
+      const triSubset = useParts && a.part
+        ? tris.slice(a.part.tri_start, a.part.tri_start + a.part.tri_count)
+        : null;
+      const newPd = buildSurfacePD(meshData, fieldData, actualWarp, triSubset);
+      a.mapper.setInputData(newPd);
+      a.pd?.delete?.();
+      a.pd = newPd;
+    });
 
     if (fieldData?.values?.length > 0) {
       const lut = buildLUT(colormapRef.current);
-      mapper.setLookupTable(lut);
-      mapper.setScalarRange(fieldData.data_min, fieldData.data_max);
-      mapper.setScalarVisibility(true);
-      mapper.setColorByArrayName('result');
-      mapper.setScalarModeToUsePointData();
+      actors.forEach(a => {
+        a.mapper.setLookupTable(lut);
+        a.mapper.setScalarRange(fieldData.data_min, fieldData.data_max);
+        a.mapper.setScalarVisibility(true);
+        a.mapper.setColorByArrayName('result');
+        a.mapper.setScalarModeToUsePointData();
+      });
       vtkRef.current.lut = lut;
     } else {
-      mapper.setScalarVisibility(false);
-      actor.getProperty().setColor(0.62, 0.73, 0.86);
+      actors.forEach((a, i) => {
+        a.mapper.setScalarVisibility(false);
+        const color = useParts ? PART_COLORS[i % PART_COLORS.length] : [0.62, 0.73, 0.86];
+        a.actor.getProperty().setColor(...color);
+      });
     }
 
     renderWindow.render();
@@ -1030,6 +1083,64 @@ export default function CAEViewer({ mesh }) {
               size="small"
               sx={{ mb: 1 }}
             />
+          </>
+        )}
+
+        {/* Per-part visibility */}
+        {meshData?.parts?.length > 1 && (
+          <>
+            <Divider sx={{ my: 1 }} />
+            <Button
+              fullWidth size="small" variant="text"
+              onClick={() => setPartsOpen(o => !o)}
+              sx={{ justifyContent: 'space-between', color: 'text.secondary', px: 0, py: 0.3, minHeight: 0, mb: partsOpen ? 0.5 : 0 }}
+            >
+              <span style={{ fontSize: '0.72rem' }}>Piezas ({meshData.parts.length})</span>
+              <span style={{ fontSize: '0.65rem' }}>{partsOpen ? '▲' : '▼'}</span>
+            </Button>
+            {partsOpen && (
+              <Box>
+                <Box sx={{ maxHeight: 200, overflowY: 'auto', mb: 0.5 }}>
+                  {meshData.parts.map((part, i) => {
+                    const vis = partsVisible[i] !== false;
+                    const rgb = PART_COLORS[i % PART_COLORS.length].map(v => Math.round(v * 255));
+                    const shortName = part.name.replace(/ T=\(.*?\)$/, '');
+                    return (
+                      <Box
+                        key={i}
+                        sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25, cursor: 'pointer',
+                              '&:hover': { bgcolor: 'action.hover' }, px: 0.5, borderRadius: 0.5 }}
+                        onClick={() => setPartsVisible(prev => {
+                          const next = [...prev];
+                          next[i] = !next[i];
+                          return next;
+                        })}
+                      >
+                        <Box sx={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                                   bgcolor: `rgb(${rgb.join(',')})`, opacity: vis ? 1 : 0.3 }} />
+                        <Tooltip title={part.name}>
+                          <Typography variant="caption" noWrap
+                            sx={{ flex: 1, color: vis ? 'text.secondary' : 'text.disabled',
+                                  textDecoration: vis ? 'none' : 'line-through' }}>
+                            {shortName}
+                          </Typography>
+                        </Tooltip>
+                      </Box>
+                    );
+                  })}
+                </Box>
+                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                  <Button size="small" variant="outlined" sx={{ flex: 1, fontSize: '0.6rem', py: 0.2 }}
+                    onClick={() => setPartsVisible(meshData.parts.map(() => true))}>
+                    Todos
+                  </Button>
+                  <Button size="small" variant="outlined" sx={{ flex: 1, fontSize: '0.6rem', py: 0.2 }}
+                    onClick={() => setPartsVisible(meshData.parts.map(() => false))}>
+                    Ninguno
+                  </Button>
+                </Box>
+              </Box>
+            )}
           </>
         )}
 

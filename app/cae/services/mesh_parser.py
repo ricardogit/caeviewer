@@ -558,6 +558,7 @@ def _parse_lsdyna(file_path: str) -> dict:
     elements:      dict = {}
     element_types: dict = {}
     total_elements: int = 0
+    part_node_ranges: list = []  # [(label, first_gidx, last_gidx)]
 
     def _add(etype: str, batch: list) -> None:
         nonlocal total_elements
@@ -578,6 +579,8 @@ def _parse_lsdyna(file_path: str) -> dict:
         if not part_nodes and not data['solids'] and not data['shells']:
             continue
 
+        first_gidx = len(global_coords)
+
         # Build per-file local_nid → global_idx map
         local_map: dict = {}
         if part_nodes:
@@ -590,6 +593,15 @@ def _parse_lsdyna(file_path: str) -> dict:
                     global_coords.append([float(c4[0]), float(c4[1]), float(c4[2])])
                 else:
                     global_coords.append(xyz)
+
+        # Record this part's node range for per-part surface grouping
+        last_gidx = len(global_coords)
+        if last_gidx > first_gidx:
+            t_vec = transform_M[:3, 3] if transform_M is not None else np.zeros(3)
+            fname_base = os.path.basename(fpath)
+            plabel = (f"{fname_base} T=({t_vec[0]:.0f},{t_vec[1]:.0f},{t_vec[2]:.0f})"
+                      if transform_M is not None else fname_base)
+            part_node_ranges.append((plabel, first_gidx, last_gidx))
 
         def _safe(nid: int, _m=local_map) -> int:
             return _m.get(nid, -1)
@@ -679,6 +691,27 @@ def _parse_lsdyna(file_path: str) -> dict:
 
     surface_triangles = extract_surface_triangles(elements, coords)
 
+    # Group surface triangles by part so the frontend can render per-part actors
+    parts_info: list = []
+    if part_node_ranges and surface_triangles:
+        node_part = np.full(len(global_coords), -1, dtype=np.int32)
+        for pidx, (plabel, lo, hi) in enumerate(part_node_ranges):
+            node_part[lo:hi] = pidx
+        from collections import defaultdict as _ddict
+        tri_by_part: dict = _ddict(list)
+        for tri in surface_triangles:
+            p = int(node_part[tri[0]]) if tri and 0 <= tri[0] < len(node_part) else -1
+            tri_by_part[p].append(tri)
+        sorted_tris: list = []
+        for pidx, (plabel, lo, hi) in enumerate(part_node_ranges):
+            tri_start = len(sorted_tris)
+            ptris = tri_by_part.get(pidx, [])
+            sorted_tris.extend(ptris)
+            if ptris:
+                parts_info.append({'name': plabel, 'tri_start': tri_start, 'tri_count': len(ptris)})
+        sorted_tris.extend(tri_by_part.get(-1, []))  # unassigned triangles (if any)
+        surface_triangles = sorted_tris
+
     return {
         'nodes':                  global_coords,
         'elements':               elements,
@@ -697,6 +730,7 @@ def _parse_lsdyna(file_path: str) -> dict:
         'field_names':            [],
         'recommended_solvers':    recommend_solvers(element_types),
         'quality':                compute_mesh_quality(elements, coords),
+        'parts':                  parts_info,
     }
 
 
