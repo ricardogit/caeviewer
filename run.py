@@ -11,4 +11,5 @@ if __name__ == '__main__':
     print(f"[INFO] CAE Viewer starting on http://localhost:{port}")
     print(f"[INFO] Viewer UI:   http://localhost:{port}/step-view/")
     print(f"[INFO] Design API:  http://localhost:{port}/api/design/")
+    print(f"[INFO] Using async_mode=threading (no deprecated eventlet)")
     socketio.run(app, host='0.0.0.0', port=port, debug=debug, allow_unsafe_werkzeug=True)

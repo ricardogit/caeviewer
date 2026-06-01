@@ -7,5 +7,10 @@ from flask_socketio import SocketIO
 db = SQLAlchemy()
 migrate = Migrate()
 compress = Compress()
-# allow_other_threads=True allows GMSH signal() calls from worker threads
-socketio = SocketIO(allow_other_threads=True, cors_allowed_origins='*')
+# explicit async_mode='threading' avoids deprecated eventlet
+# allow_other_threads=True for GMSH signal() calls from worker threads
+socketio = SocketIO(
+    async_mode='threading',
+    allow_other_threads=True,
+    cors_allowed_origins='*'
+)
