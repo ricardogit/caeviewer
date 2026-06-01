@@ -26,3 +26,10 @@ psutil>=5.9.0
 
 # Optional: faster GLB export
 # trimesh[easy]
+
+# New-generation CAE — design graph + FEM kernel (FASE 0+)
+flask-socketio==5.3.6
+scipy>=1.11.0
+networkx>=3.2
+scikit-learn>=1.3.0
+h5py>=3.9.0

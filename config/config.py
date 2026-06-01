@@ -45,9 +45,22 @@ class Config:
     DATA_DIR = BASE_DIR / 'data'
     LOGS_DIR = BASE_DIR / 'logs'
 
+    # New-generation CAE solver directories
+    DESIGN_DATA_DIR = BASE_DIR / 'data' / 'design'
+    SOLVER_DATA_DIR = BASE_DIR / 'data' / 'solver'
+    ROM_DATA_DIR    = BASE_DIR / 'data' / 'rom'
+
+    # Solver defaults (overridable via .env)
+    SOLVER_MAX_TIER            = int(os.getenv('SOLVER_MAX_TIER', 3))
+    SOLVER_DEFAULT_TOLERANCE   = float(os.getenv('SOLVER_DEFAULT_TOLERANCE', 1e-8))
+    SOLVER_DEFAULT_MAX_ITER    = int(os.getenv('SOLVER_DEFAULT_MAX_ITER', 100))
+    ADAPTIVE_ERROR_TOLERANCE   = float(os.getenv('ADAPTIVE_ERROR_TOLERANCE', 0.05))
+    ADAPTIVE_MAX_CYCLES        = int(os.getenv('ADAPTIVE_MAX_CYCLES', 5))
+
     @classmethod
     def init_app(cls, app):
-        for d in [cls.UPLOAD_FOLDER, cls.DATA_DIR, cls.LOGS_DIR]:
+        for d in [cls.UPLOAD_FOLDER, cls.DATA_DIR, cls.LOGS_DIR,
+                  cls.DESIGN_DATA_DIR, cls.SOLVER_DATA_DIR, cls.ROM_DATA_DIR]:
             d.mkdir(parents=True, exist_ok=True)
 
 

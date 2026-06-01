@@ -2,6 +2,7 @@
 STEP to GLB Converter - Conversión de archivos STEP a GLB para visualización 3D
 ================================================================================
 
+
 Utiliza pythonocc-core para:
 - Leer archivos STEP
 - Tesselar geometría
@@ -13,6 +14,8 @@ Utiliza pythonocc-core para:
 Author: STEP-View Pro Team
 Version: 1.0.0
 """
+
+from __future__ import annotations   # makes all annotations strings → no NameError when pythonocc is absent
 
 import logging
 import os

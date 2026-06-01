@@ -1,8 +1,10 @@
-"""Flask extensions — db only (no Celery for this standalone app)."""
+"""Flask extensions — shared singletons for the entire app."""
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_compress import Compress
+from flask_socketio import SocketIO
 
 db = SQLAlchemy()
 migrate = Migrate()
 compress = Compress()
+socketio = SocketIO()

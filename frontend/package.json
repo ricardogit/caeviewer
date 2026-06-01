@@ -17,6 +17,7 @@
     "analyze": "vite-bundle-visualizer"
   },
   "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.5",
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@kitware/vtk.js": "28.13.1",
@@ -28,12 +29,14 @@
     "@react-three/drei": "^9.92.4",
     "@react-three/fiber": "^8.15.12",
     "@react-three/postprocessing": "^2.15.11",
+    "@uiw/react-codemirror": "^4.25.10",
     "axios": "^1.6.2",
     "classnames": "^2.3.2",
     "cytoscape": "^3.28.1",
     "cytoscape-cola": "^2.5.1",
     "cytoscape-dagre": "^2.5.0",
     "d3": "^7.8.5",
+    "d3-contour": "^4.0.2",
     "d3-force": "^3.0.0",
     "d3-hierarchy": "^3.1.2",
     "date-fns": "^2.30.0",
@@ -54,7 +57,9 @@
     "react-router-dom": "^6.21.1",
     "react-virtualized-auto-sizer": "^1.0.24",
     "react-window": "^1.8.10",
+    "reactflow": "^11.11.4",
     "recharts": "^2.10.3",
+    "socket.io-client": "^4.8.3",
     "three": "^0.159.0",
     "zustand": "^4.4.7"
   },

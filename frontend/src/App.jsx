@@ -27,6 +27,9 @@ import MarkupPanel from './components/MarkupPanel';
 import CAEViewer from './components/CAEViewer';
 import CAEFileList from './components/CAEFileList';
 import MeshFromStepDialog from './components/MeshFromStepDialog';
+import GraphEditor from './components/DesignGraph/GraphEditor';
+import GraphProjectList from './components/DesignGraph/GraphProjectList';
+import SolverPanel from './components/Solver/SolverPanel';
 
 const darkTheme = createTheme({
   palette: {
@@ -51,8 +54,12 @@ export default function App() {
   const [featurePanelOpen, setFeaturePanelOpen] = useState(false);
   const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
+  // ── App mode: 'design' | 'step' | 'cae' ────────────────────────────────
+  const [appMode, setAppMode] = useState('cae');
+  const [solverOpen, setSolverOpen] = useState(false);
+  const caeMode = appMode === 'cae';     // kept for internal logic compatibility
+
   // ── CAE mode ─────────────────────────────────────────────────────────────
-  const [caeMode, setCaeMode] = useState(true);
   const [meshDialogOpen, setMeshDialogOpen] = useState(false);
   const [selectedMesh, setSelectedMesh] = useState(null);
   const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
@@ -173,21 +180,26 @@ export default function App() {
         <TopBar
           onMenuClick={() => setFileListOpen(!fileListOpen)}
           selectedFile={selectedFile}
-          caeMode={caeMode}
-          onToggleCAE={() => { setCaeMode(!caeMode); setSelectedFile(null); setSelectedMesh(null); }}
+          appMode={appMode}
+          onSetMode={(mode) => {
+            setAppMode(mode);
+            if (mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+          }}
         />
 
-        {/* Left: File List */}
+        {/* Left: sidebar — changes by mode */}
         <Drawer variant="persistent" anchor="left" open={fileListOpen}
           sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8 } }}
         >
-          {caeMode
-            ? <CAEFileList onSelectMesh={setSelectedMesh} selectedMeshId={selectedMesh?.id} />
-            : <FileList onSelectFile={handleFileSelect} selectedFileId={selectedFile?.id} />
+          {appMode === 'design'
+            ? <GraphProjectList />
+            : appMode === 'cae'
+              ? <CAEFileList onSelectMesh={setSelectedMesh} selectedMeshId={selectedMesh?.id} />
+              : <FileList onSelectFile={handleFileSelect} selectedFileId={selectedFile?.id} />
           }
         </Drawer>
 
-        {/* Main: 3D Viewer */}
+        {/* Main viewport */}
         <Box component="main" sx={{
           position: 'fixed',
           top: '64px',
@@ -197,7 +209,33 @@ export default function App() {
           overflow: 'hidden',
           transition: 'left 0.2s',
         }}>
-          {caeMode ? (
+          {appMode === 'design' ? (
+            <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+              <GraphEditor />
+              {/* Solver panel toggle */}
+              <Box sx={{ position: 'absolute', top: 16, right: 16, zIndex: 25 }}>
+                <IconButton
+                  onClick={() => setSolverOpen(o => !o)}
+                  sx={{
+                    bgcolor: solverOpen ? '#1565c0' : '#1e1e1e',
+                    border: `1px solid ${solverOpen ? '#2196f3' : '#444'}`,
+                    color: '#90caf9',
+                    '&:hover': { bgcolor: '#1976d2' },
+                  }}
+                >
+                  <Tooltip title="Panel de simulación FEM">
+                    <span style={{ fontSize: 18 }}>⚡</span>
+                  </Tooltip>
+                </IconButton>
+              </Box>
+              {/* Solver panel */}
+              {solverOpen && (
+                <Box sx={{ position: 'absolute', top: 0, right: 0, bottom: 0, zIndex: 30 }}>
+                  <SolverPanel onClose={() => setSolverOpen(false)} />
+                </Box>
+              )}
+            </Box>
+          ) : caeMode ? (
             <CAEViewer mesh={selectedMesh} />
           ) : selectedFile ? (
             <StepViewer3D

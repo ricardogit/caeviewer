@@ -85,11 +85,12 @@ def _find_lsdyna_master(directory: str):
                         next_is_filename = True
                         continue
                     if next_is_filename:
-                        if stripped and not stripped.startswith('$'):
-                            candidate = os.path.normpath(
-                                os.path.join(os.path.dirname(kf), stripped)
-                            )
-                            included.add(candidate)
+                        if stripped.startswith('$') or not stripped:
+                            continue  # skip comment/blank lines, keep looking
+                        candidate = os.path.normpath(
+                            os.path.join(os.path.dirname(kf), stripped)
+                        )
+                        included.add(candidate)
                         next_is_filename = False
         except OSError:
             pass
