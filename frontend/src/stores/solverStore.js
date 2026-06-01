@@ -98,7 +98,7 @@ const useSolverStore = create(
             max_iterations: get().maxIterations,
             ...extraSpec,
           };
-          const res = await axios.post(`/api/design/solver/${graphId}/run`, spec);
+          const res = await axios.post(`/api/design/solver/${graphId}/run/`, spec);
           const runId = res.data.run_id;
           set({ activeRunId: runId, runStatus: 'queued' });
           get()._subscribeToRun(runId);
@@ -115,7 +115,7 @@ const useSolverStore = create(
         const runId = get().activeRunId;
         if (!runId) return;
         try {
-          await axios.post(`/api/design/solver/${runId}/cancel`);
+          await axios.post(`/api/design/solver/${runId}/cancel/`);
           set({ runStatus: 'cancelled' });
         } catch (e) {
           set({ error: e.message });
@@ -155,7 +155,7 @@ const useSolverStore = create(
             height: p.height / 1000, E: p.E * 1e9, nu: p.nu,
             force_y: p.force_y, n_div: p.n_div,
           });
-          const res = await axios.get(`/api/design/solver/test/cantilever?${qp}`);
+          const res = await axios.get(`/api/design/solver/test/cantilever/?${qp}`);
           set({ cantileverResult: res.data, cantileverLoading: false });
           return res.data;
         } catch (e) {
@@ -198,7 +198,7 @@ const useSolverStore = create(
             resultSummary: data,
           });
           // Load field list
-          axios.get(`/api/design/solver/${runId}/results`)
+          axios.get(`/api/design/solver/${runId}/results/`)
             .then(r => set({ resultFields: r.data.fields || [] }))
             .catch(() => {});
           socket.emit('leave_run', { run_id: runId });

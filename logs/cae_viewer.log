@@ -22997,3 +22997,685 @@ WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relki
 2026-06-01 02:26:17,773 - sqlalchemy.engine.Engine - INFO - COMMIT
 2026-06-01 02:26:17,774 - werkzeug - WARNING -  * Debugger is active!
 2026-06-01 02:26:17,779 - werkzeug - INFO -  * Debugger PIN: 650-368-371
+2026-06-01 02:26:25,790 - app.step_view_pro.backend.api.graph_routes - INFO - [OK] Graph API routes loaded (expanded version)
+2026-06-01 02:26:25,795 - root - WARNING - PythonOCC not available. Feature extraction will be limited.
+2026-06-01 02:26:25,796 - app.step_view_pro.backend.feature_extractor - INFO - OK Feature Extractor module loaded
+2026-06-01 02:26:25,796 - app.step_view_pro.backend.advanced_feature_extractor - WARNING - pythonocc not available — AdvancedFeatureExtractor will return empty results
+2026-06-01 02:26:25,796 - app.step_view_pro.backend.advanced_feature_extractor - INFO - OK Advanced Feature Extractor module loaded (real pythonocc implementation)
+2026-06-01 02:26:25,796 - app.step_view_pro.backend.api.feature_routes - INFO - [OK] Feature API routes loaded
+2026-06-01 02:26:25,924 - trimesh.util - DEBUG - searching for blender in: C:\Recovery\OEM\Backup\;C:\Python3119\Scripts\;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files\JetBrains\PyCharm 2025.2.2\bin;C:\Program Files\JetBrains\PyCharm Community Edition 2025.2.5\bin;C:\Users\Ricardo\.local\bin;C:\Users\Ricardo\AppData\Local\Microsoft\WindowsApps;C:\Program Files\Git\cmd;C:\Users\Ricardo\.lmstudio\bin;C:\Users\Ricardo\AppData\Roaming\npm;C:\WINDOWS\System32\OpenSSH\;C:\WINDOWS;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;c:\Users\Ricardo\AppData\Roaming\ollama app.exe\;C:\nvm4w\nodejs;C:\WINDOWS\system32;C:\Users\Ricardo\AppData\Local\Programs\Microsoft VS Code\bin;C:\ProgramData\chocolatey\bin;C:\Python3119\;C:\Program Files\dotnet\;C:\WINDOWS\System32\Wbem;C:\Users\Ricardo\AppData\Local\Programs\Ollama;C:\Users\Ricardo\AppData\Local\nvm
+2026-06-01 02:26:25,938 - trimesh.util - DEBUG - falling back to hashlib hashing: `pip install xxhash`for 50x faster cache checks
+2026-06-01 02:26:27,157 - root - WARNING - progress_tracker not available. Progress tracking will be disabled.
+2026-06-01 02:26:27,159 - app.step_view_pro.backend.api.viewer_routes - INFO - [OK] Viewer API routes loaded (/model/*/glb, /progress/*, /model/*/metadata, /health)
+2026-06-01 02:26:27,162 - app.step_view_pro.backend.pmi_parser - INFO - OK PMI Parser module loaded
+2026-06-01 02:26:27,162 - app.step_view_pro.backend.api.pmi_routes - INFO - [OK] PMI API routes loaded
+2026-06-01 02:26:27,164 - app.step_view_pro.backend.comparison_tools - WARNING - PythonOCC not available. Comparison tools will be limited.
+2026-06-01 02:26:27,166 - app.step_view_pro.backend.comparison_tools - INFO - OK Comparison Tools module loaded
+2026-06-01 02:26:27,166 - app.step_view_pro.backend.step_processor - WARNING - PythonOCC not available. STEP processing will be limited.
+2026-06-01 02:26:27,166 - app.step_view_pro.backend.step_processor - INFO - OK STEP Processor module loaded
+2026-06-01 02:26:27,166 - app.step_view_pro.backend.api.comparison_routes - INFO - [OK] Comparison API routes loaded
+2026-06-01 02:26:27,169 - root - WARNING - PythonOCC no disponible: No module named 'OCC'
+2026-06-01 02:26:27,169 - app.step_view_pro.backend.api.geometry_routes - INFO - [OK] Geometry API routes loaded
+2026-06-01 02:26:27,175 - app.step_view_pro.backend.analysis.analysis_tools - INFO - OK Analysis Tools module loaded
+2026-06-01 02:26:27,175 - app.step_view_pro.backend.api.analysis_routes - INFO - [OK] Analysis API routes loaded
+2026-06-01 02:26:27,180 - root - WARNING - PythonOCC not available. Measurement tools will be limited.
+2026-06-01 02:26:27,180 - app.step_view_pro.backend.measurement_tools - INFO - OK Measurement Tools module loaded
+2026-06-01 02:26:27,180 - app.step_view_pro.backend.api.measurement_routes - INFO - [OK] Measurement API routes loaded
+2026-06-01 02:26:27,180 - app.step_view_pro.backend.export_tools - WARNING - PythonOCC not available. Export functionality will be limited.
+2026-06-01 02:26:27,180 - app.step_view_pro.backend.export_tools - INFO - OK Export Tools module loaded
+2026-06-01 02:26:27,180 - app.step_view_pro.backend.api.export_routes - INFO - [OK] Export API routes loaded
+2026-06-01 02:26:27,186 - app.step_view_pro.backend.performance.cache_manager - WARNING - Redis not available. Using PostgreSQL-only caching.
+2026-06-01 02:26:27,186 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded with PythonOCC support
+2026-06-01 02:26:27,186 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded
+2026-06-01 02:26:27,201 - app.step_view_pro.backend.performance.performance_monitor - INFO - OK Performance Monitor module loaded
+2026-06-01 02:26:27,202 - app.step_view_pro.backend.performance.query_optimizer - INFO - OK Query Optimizer module loaded
+2026-06-01 02:26:27,202 - app.step_view_pro.backend.api.performance_routes - INFO - [OK] Performance API routes loaded
+2026-06-01 02:26:27,202 - app.step_view_pro.backend.api.markup_routes - INFO - [OK] Markup API routes loaded
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - select pg_catalog.version()
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - select current_schema()
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - show standard_conforming_strings
+2026-06-01 02:26:27,329 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:27,335 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,337 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,337 - sqlalchemy.engine.Engine - INFO - [generated in 0.00139s] {'table_name': 'cae_meshes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,345 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,346 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,346 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,346 - sqlalchemy.engine.Engine - INFO - [cached since 0.01022s ago] {'table_name': 'design_graphs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,346 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,351 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,351 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,353 - sqlalchemy.engine.Engine - INFO - [cached since 0.01466s ago] {'table_name': 'parts', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,355 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,355 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,355 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,357 - sqlalchemy.engine.Engine - INFO - [cached since 0.0183s ago] {'table_name': 'step_view_cache', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,357 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,359 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,359 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,361 - sqlalchemy.engine.Engine - INFO - [cached since 0.02306s ago] {'table_name': 'step_view_performance_metrics', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,363 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,363 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,363 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,363 - sqlalchemy.engine.Engine - INFO - [cached since 0.0275s ago] {'table_name': 'cae_fields', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - [cached since 0.03166s ago] {'table_name': 'design_nodes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,367 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,375 - sqlalchemy.engine.Engine - INFO - [cached since 0.0365s ago] {'table_name': 'material_models', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,377 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,377 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,379 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,379 - sqlalchemy.engine.Engine - INFO - [cached since 0.0417s ago] {'table_name': 'physics_configs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,381 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,383 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,383 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,383 - sqlalchemy.engine.Engine - INFO - [cached since 0.04655s ago] {'table_name': 'simulation_runs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,383 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,383 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,388 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,388 - sqlalchemy.engine.Engine - INFO - [cached since 0.05041s ago] {'table_name': 'step_entities', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,390 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,391 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,391 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,392 - sqlalchemy.engine.Engine - INFO - [cached since 0.05482s ago] {'table_name': 'step_entity_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,392 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,392 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,392 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,398 - sqlalchemy.engine.Engine - INFO - [cached since 0.06001s ago] {'table_name': 'step_file_comparisons', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - [cached since 0.06529s ago] {'table_name': 'step_file_versions', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,400 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,407 - sqlalchemy.engine.Engine - INFO - [cached since 0.06867s ago] {'table_name': 'design_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,409 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,409 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,409 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,409 - sqlalchemy.engine.Engine - INFO - [cached since 0.07393s ago] {'table_name': 'experimental_records', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,414 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,414 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,414 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,414 - sqlalchemy.engine.Engine - INFO - [cached since 0.07779s ago] {'table_name': 'field_results', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,414 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:27,418 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:27,418 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:27,420 - sqlalchemy.engine.Engine - INFO - [cached since 0.08196s ago] {'table_name': 'sim_experiment_correlations', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:27,420 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:32,926 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://192.168.1.6:8080
+2026-06-01 02:26:32,927 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-06-01 02:26:32,930 - werkzeug - INFO -  * Restarting with stat
+2026-06-01 02:26:34,061 - app.step_view_pro.backend.api.graph_routes - INFO - [OK] Graph API routes loaded (expanded version)
+2026-06-01 02:26:34,066 - root - WARNING - PythonOCC not available. Feature extraction will be limited.
+2026-06-01 02:26:34,069 - app.step_view_pro.backend.feature_extractor - INFO - OK Feature Extractor module loaded
+2026-06-01 02:26:34,071 - app.step_view_pro.backend.advanced_feature_extractor - WARNING - pythonocc not available — AdvancedFeatureExtractor will return empty results
+2026-06-01 02:26:34,073 - app.step_view_pro.backend.advanced_feature_extractor - INFO - OK Advanced Feature Extractor module loaded (real pythonocc implementation)
+2026-06-01 02:26:34,073 - app.step_view_pro.backend.api.feature_routes - INFO - [OK] Feature API routes loaded
+2026-06-01 02:26:34,199 - trimesh.util - DEBUG - searching for blender in: C:\Users\Ricardo\.lmstudio\bin;C:\WINDOWS;C:\WINDOWS\System32\OpenSSH\;C:\Users\Ricardo\AppData\Local\nvm;C:\Recovery\OEM\Backup\;C:\WINDOWS\System32\Wbem;C:\Users\Ricardo\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Ricardo\AppData\Local\Programs\Ollama;C:\Users\Ricardo\AppData\Local\Microsoft\WindowsApps;c:\Users\Ricardo\AppData\Roaming\ollama app.exe\;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\Program Files\dotnet\;C:\ProgramData\chocolatey\bin;C:\Program Files\JetBrains\PyCharm 2025.2.2\bin;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files\Git\cmd;C:\Python3119\;C:\Program Files\JetBrains\PyCharm Community Edition 2025.2.5\bin;C:\WINDOWS\system32;C:\nvm4w\nodejs;C:\Python3119\Scripts\;C:\Users\Ricardo\AppData\Roaming\npm;C:\Users\Ricardo\.local\bin
+2026-06-01 02:26:34,212 - trimesh.util - DEBUG - falling back to hashlib hashing: `pip install xxhash`for 50x faster cache checks
+2026-06-01 02:26:35,407 - root - WARNING - progress_tracker not available. Progress tracking will be disabled.
+2026-06-01 02:26:35,407 - app.step_view_pro.backend.api.viewer_routes - INFO - [OK] Viewer API routes loaded (/model/*/glb, /progress/*, /model/*/metadata, /health)
+2026-06-01 02:26:35,409 - app.step_view_pro.backend.pmi_parser - INFO - OK PMI Parser module loaded
+2026-06-01 02:26:35,409 - app.step_view_pro.backend.api.pmi_routes - INFO - [OK] PMI API routes loaded
+2026-06-01 02:26:35,414 - app.step_view_pro.backend.comparison_tools - WARNING - PythonOCC not available. Comparison tools will be limited.
+2026-06-01 02:26:35,416 - app.step_view_pro.backend.comparison_tools - INFO - OK Comparison Tools module loaded
+2026-06-01 02:26:35,416 - app.step_view_pro.backend.step_processor - WARNING - PythonOCC not available. STEP processing will be limited.
+2026-06-01 02:26:35,416 - app.step_view_pro.backend.step_processor - INFO - OK STEP Processor module loaded
+2026-06-01 02:26:35,416 - app.step_view_pro.backend.api.comparison_routes - INFO - [OK] Comparison API routes loaded
+2026-06-01 02:26:35,419 - root - WARNING - PythonOCC no disponible: No module named 'OCC'
+2026-06-01 02:26:35,419 - app.step_view_pro.backend.api.geometry_routes - INFO - [OK] Geometry API routes loaded
+2026-06-01 02:26:35,424 - app.step_view_pro.backend.analysis.analysis_tools - INFO - OK Analysis Tools module loaded
+2026-06-01 02:26:35,426 - app.step_view_pro.backend.api.analysis_routes - INFO - [OK] Analysis API routes loaded
+2026-06-01 02:26:35,426 - root - WARNING - PythonOCC not available. Measurement tools will be limited.
+2026-06-01 02:26:35,426 - app.step_view_pro.backend.measurement_tools - INFO - OK Measurement Tools module loaded
+2026-06-01 02:26:35,430 - app.step_view_pro.backend.api.measurement_routes - INFO - [OK] Measurement API routes loaded
+2026-06-01 02:26:35,430 - app.step_view_pro.backend.export_tools - WARNING - PythonOCC not available. Export functionality will be limited.
+2026-06-01 02:26:35,431 - app.step_view_pro.backend.export_tools - INFO - OK Export Tools module loaded
+2026-06-01 02:26:35,432 - app.step_view_pro.backend.api.export_routes - INFO - [OK] Export API routes loaded
+2026-06-01 02:26:35,435 - app.step_view_pro.backend.performance.cache_manager - WARNING - Redis not available. Using PostgreSQL-only caching.
+2026-06-01 02:26:35,435 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded with PythonOCC support
+2026-06-01 02:26:35,435 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded
+2026-06-01 02:26:35,451 - app.step_view_pro.backend.performance.performance_monitor - INFO - OK Performance Monitor module loaded
+2026-06-01 02:26:35,451 - app.step_view_pro.backend.performance.query_optimizer - INFO - OK Query Optimizer module loaded
+2026-06-01 02:26:35,455 - app.step_view_pro.backend.api.performance_routes - INFO - [OK] Performance API routes loaded
+2026-06-01 02:26:35,455 - app.step_view_pro.backend.api.markup_routes - INFO - [OK] Markup API routes loaded
+2026-06-01 02:26:35,581 - sqlalchemy.engine.Engine - INFO - select pg_catalog.version()
+2026-06-01 02:26:35,583 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:35,584 - sqlalchemy.engine.Engine - INFO - select current_schema()
+2026-06-01 02:26:35,585 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:35,585 - sqlalchemy.engine.Engine - INFO - show standard_conforming_strings
+2026-06-01 02:26:35,585 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:26:35,588 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,592 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,593 - sqlalchemy.engine.Engine - INFO - [generated in 0.00429s] {'table_name': 'cae_meshes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,600 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,601 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,601 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,603 - sqlalchemy.engine.Engine - INFO - [cached since 0.01189s ago] {'table_name': 'design_graphs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,603 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,606 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,606 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,607 - sqlalchemy.engine.Engine - INFO - [cached since 0.01587s ago] {'table_name': 'parts', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,608 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,609 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,609 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,611 - sqlalchemy.engine.Engine - INFO - [cached since 0.0201s ago] {'table_name': 'step_view_cache', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,613 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,614 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,614 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,614 - sqlalchemy.engine.Engine - INFO - [cached since 0.02399s ago] {'table_name': 'step_view_performance_metrics', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,617 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,617 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,617 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,617 - sqlalchemy.engine.Engine - INFO - [cached since 0.02849s ago] {'table_name': 'cae_fields', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,622 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,622 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,622 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,626 - sqlalchemy.engine.Engine - INFO - [cached since 0.03446s ago] {'table_name': 'design_nodes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,626 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,626 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,626 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,626 - sqlalchemy.engine.Engine - INFO - [cached since 0.03897s ago] {'table_name': 'material_models', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,631 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,631 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,631 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - [cached since 0.04304s ago] {'table_name': 'physics_configs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - [cached since 0.04776s ago] {'table_name': 'simulation_runs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,634 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,641 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,643 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,644 - sqlalchemy.engine.Engine - INFO - [cached since 0.05279s ago] {'table_name': 'step_entities', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,645 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,645 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,646 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,646 - sqlalchemy.engine.Engine - INFO - [cached since 0.05624s ago] {'table_name': 'step_entity_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,649 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,649 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,649 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,652 - sqlalchemy.engine.Engine - INFO - [cached since 0.06069s ago] {'table_name': 'step_file_comparisons', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,652 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,655 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,655 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,657 - sqlalchemy.engine.Engine - INFO - [cached since 0.06531s ago] {'table_name': 'step_file_versions', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,657 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,657 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,657 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,657 - sqlalchemy.engine.Engine - INFO - [cached since 0.06978s ago] {'table_name': 'design_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,662 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,662 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,662 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,665 - sqlalchemy.engine.Engine - INFO - [cached since 0.07355s ago] {'table_name': 'experimental_records', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,665 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,665 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,665 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,669 - sqlalchemy.engine.Engine - INFO - [cached since 0.07777s ago] {'table_name': 'field_results', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,671 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,671 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:26:35,672 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:26:35,672 - sqlalchemy.engine.Engine - INFO - [cached since 0.08239s ago] {'table_name': 'sim_experiment_correlations', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:26:35,676 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:26:35,681 - werkzeug - WARNING -  * Debugger is active!
+2026-06-01 02:26:35,685 - werkzeug - INFO -  * Debugger PIN: 650-368-371
+2026-06-01 02:26:42,259 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:26:42] "[32mGET /api/design/graph HTTP/1.1[0m" 308 -
+2026-06-01 02:26:54,373 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:26:54] "[32mGET /api/design/graph HTTP/1.1[0m" 308 -
+2026-06-01 02:28:45,591 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:28:45,596 - sqlalchemy.engine.Engine - INFO - SELECT cae_meshes.filename AS cae_meshes_filename, cae_meshes.original_filename AS cae_meshes_original_filename, cae_meshes.file_path AS cae_meshes_file_path, cae_meshes.file_format AS cae_meshes_file_format, cae_meshes.node_count AS cae_meshes_node_count, cae_meshes.element_count AS cae_meshes_element_count, cae_meshes.element_types AS cae_meshes_element_types, cae_meshes.node_sets AS cae_meshes_node_sets, cae_meshes.element_sets AS cae_meshes_element_sets, cae_meshes.field_names AS cae_meshes_field_names, cae_meshes.time_steps AS cae_meshes_time_steps, cae_meshes.bounding_box AS cae_meshes_bounding_box, cae_meshes.description AS cae_meshes_description, cae_meshes.id AS cae_meshes_id, cae_meshes.created_at AS cae_meshes_created_at, cae_meshes.updated_at AS cae_meshes_updated_at 
+FROM cae_meshes ORDER BY cae_meshes.created_at DESC
+2026-06-01 02:28:45,603 - sqlalchemy.engine.Engine - INFO - [generated in 0.00551s] {}
+2026-06-01 02:28:45,611 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:28:45,613 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:28:45] "GET /api/cae/meshes HTTP/1.1" 200 -
+2026-06-01 02:28:45,643 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:28:45,645 - sqlalchemy.engine.Engine - INFO - SELECT cae_meshes.filename AS cae_meshes_filename, cae_meshes.original_filename AS cae_meshes_original_filename, cae_meshes.file_path AS cae_meshes_file_path, cae_meshes.file_format AS cae_meshes_file_format, cae_meshes.node_count AS cae_meshes_node_count, cae_meshes.element_count AS cae_meshes_element_count, cae_meshes.element_types AS cae_meshes_element_types, cae_meshes.node_sets AS cae_meshes_node_sets, cae_meshes.element_sets AS cae_meshes_element_sets, cae_meshes.field_names AS cae_meshes_field_names, cae_meshes.time_steps AS cae_meshes_time_steps, cae_meshes.bounding_box AS cae_meshes_bounding_box, cae_meshes.description AS cae_meshes_description, cae_meshes.id AS cae_meshes_id, cae_meshes.created_at AS cae_meshes_created_at, cae_meshes.updated_at AS cae_meshes_updated_at 
+FROM cae_meshes ORDER BY cae_meshes.created_at DESC
+2026-06-01 02:28:45,647 - sqlalchemy.engine.Engine - INFO - [cached since 0.04966s ago] {}
+2026-06-01 02:28:45,652 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:28:45,654 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:28:45] "GET /api/cae/meshes HTTP/1.1" 200 -
+2026-06-01 02:28:52,771 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:28:52,776 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs ORDER BY design_graphs.created_at DESC
+2026-06-01 02:28:52,779 - sqlalchemy.engine.Engine - INFO - [generated in 0.00295s] {}
+2026-06-01 02:28:52,783 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:28:52,785 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:28:52] "GET /api/design/graph/ HTTP/1.1" 200 -
+2026-06-01 02:28:52,793 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:28:52,794 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs ORDER BY design_graphs.created_at DESC
+2026-06-01 02:28:52,796 - sqlalchemy.engine.Engine - INFO - [cached since 0.02001s ago] {}
+2026-06-01 02:28:52,800 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:28:52,800 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:28:52] "GET /api/design/graph/ HTTP/1.1" 200 -
+2026-06-01 02:28:54,463 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:28:54,466 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs 
+WHERE design_graphs.id = %(id_1)s::UUID 
+ LIMIT %(param_1)s
+2026-06-01 02:28:54,469 - sqlalchemy.engine.Engine - INFO - [generated in 0.00321s] {'id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'param_1': 1}
+2026-06-01 02:28:54,472 - sqlalchemy.engine.Engine - INFO - SELECT design_nodes.graph_id AS design_nodes_graph_id, design_nodes.node_type AS design_nodes_node_type, design_nodes.label AS design_nodes_label, design_nodes.level AS design_nodes_level, design_nodes.properties AS design_nodes_properties, design_nodes.level_set AS design_nodes_level_set, design_nodes.result_ref AS design_nodes_result_ref, design_nodes.tier AS design_nodes_tier, design_nodes.pos_x AS design_nodes_pos_x, design_nodes.pos_y AS design_nodes_pos_y, design_nodes.id AS design_nodes_id, design_nodes.created_at AS design_nodes_created_at, design_nodes.updated_at AS design_nodes_updated_at 
+FROM design_nodes 
+WHERE design_nodes.graph_id = %(graph_id_1)s::UUID
+2026-06-01 02:28:54,478 - sqlalchemy.engine.Engine - INFO - [generated in 0.00527s] {'graph_id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf'}
+2026-06-01 02:28:54,480 - sqlalchemy.engine.Engine - INFO - SELECT design_edges.graph_id AS design_edges_graph_id, design_edges.source_id AS design_edges_source_id, design_edges.target_id AS design_edges_target_id, design_edges.edge_type AS design_edges_edge_type, design_edges.weight AS design_edges_weight, design_edges.properties AS design_edges_properties, design_edges.id AS design_edges_id, design_edges.created_at AS design_edges_created_at, design_edges.updated_at AS design_edges_updated_at 
+FROM design_edges 
+WHERE design_edges.graph_id = %(graph_id_1)s::UUID
+2026-06-01 02:28:54,480 - sqlalchemy.engine.Engine - INFO - [generated in 0.00297s] {'graph_id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf'}
+2026-06-01 02:28:54,489 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:28:54,489 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:28:54] "GET /api/design/graph/0349f14e-6797-455e-86b6-d4c221dd3abf HTTP/1.1" 200 -
+2026-06-01 02:29:00,456 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:29:00,456 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs 
+WHERE design_graphs.id = %(id_1)s::UUID 
+ LIMIT %(param_1)s
+2026-06-01 02:29:00,462 - sqlalchemy.engine.Engine - INFO - [cached since 5.996s ago] {'id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'param_1': 1}
+2026-06-01 02:29:00,485 - sqlalchemy.engine.Engine - INFO - INSERT INTO simulation_runs (graph_id, graph_version, hash, status, tier, physics, solver_config, mesh_stats, result_ref, wall_time, n_iterations, final_residual, converged, convergence_log, adaptive_log, parent_run_id, parameter_delta, id, created_at, updated_at) VALUES (%(graph_id)s::UUID, %(graph_version)s, %(hash)s, %(status)s, %(tier)s, %(physics)s::JSONB, %(solver_config)s::JSONB, %(mesh_stats)s::JSONB, %(result_ref)s, %(wall_time)s, %(n_iterations)s, %(final_residual)s, %(converged)s, %(convergence_log)s::JSONB, %(adaptive_log)s::JSONB, %(parent_run_id)s::UUID, %(parameter_delta)s::JSONB, %(id)s::UUID, %(created_at)s, %(updated_at)s)
+2026-06-01 02:29:00,487 - sqlalchemy.engine.Engine - INFO - [generated in 0.00301s] {'graph_id': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'graph_version': 1, 'hash': '0f8e1e327ead81903365ff5eda6b6e3e059615c80cf40e82bcbf65d77fce6c37', 'status': 'queued', 'tier': 1, 'physics': '["structural"]', 'solver_config': '{"physics": ["structural"], "tier": 1, "tolerance": 1e-08, "max_iterations": 1000}', 'mesh_stats': '{}', 'result_ref': None, 'wall_time': None, 'n_iterations': None, 'final_residual': None, 'converged': None, 'convergence_log': '[]', 'adaptive_log': '[]', 'parent_run_id': None, 'parameter_delta': '{}', 'id': UUID('5bdf4818-9fbd-4690-bf0e-d0bcaf0083d7'), 'created_at': datetime.datetime(2026, 6, 1, 8, 29, 0, 485443), 'updated_at': datetime.datetime(2026, 6, 1, 8, 29, 0, 485443)}
+2026-06-01 02:29:00,487 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:29:00,569 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:29:00] "[35m[1mPOST /api/design/solver/0349f14e-6797-455e-86b6-d4c221dd3abf/run HTTP/1.1[0m" 500 -
+2026-06-01 02:29:05,809 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:29:05,809 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs 
+WHERE design_graphs.id = %(id_1)s::UUID 
+ LIMIT %(param_1)s
+2026-06-01 02:29:05,809 - sqlalchemy.engine.Engine - INFO - [cached since 11.35s ago] {'id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'param_1': 1}
+2026-06-01 02:29:05,821 - sqlalchemy.engine.Engine - INFO - INSERT INTO simulation_runs (graph_id, graph_version, hash, status, tier, physics, solver_config, mesh_stats, result_ref, wall_time, n_iterations, final_residual, converged, convergence_log, adaptive_log, parent_run_id, parameter_delta, id, created_at, updated_at) VALUES (%(graph_id)s::UUID, %(graph_version)s, %(hash)s, %(status)s, %(tier)s, %(physics)s::JSONB, %(solver_config)s::JSONB, %(mesh_stats)s::JSONB, %(result_ref)s, %(wall_time)s, %(n_iterations)s, %(final_residual)s, %(converged)s, %(convergence_log)s::JSONB, %(adaptive_log)s::JSONB, %(parent_run_id)s::UUID, %(parameter_delta)s::JSONB, %(id)s::UUID, %(created_at)s, %(updated_at)s)
+2026-06-01 02:29:05,825 - sqlalchemy.engine.Engine - INFO - [cached since 5.34s ago] {'graph_id': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'graph_version': 1, 'hash': 'a9a48f5b6b4da5ac3caf62f6afaef65647ccda19bf74a3fbdd44a17e8b589e51', 'status': 'running', 'tier': 1, 'physics': '["structural"]', 'solver_config': '{"physics": ["structural"], "max_cycles": 5, "target_error": 0.05, "refinement_fraction": 0.2}', 'mesh_stats': '{}', 'result_ref': None, 'wall_time': None, 'n_iterations': None, 'final_residual': None, 'converged': None, 'convergence_log': '[]', 'adaptive_log': '[]', 'parent_run_id': None, 'parameter_delta': '{}', 'id': UUID('6b1376c3-6a3d-4521-9523-510f9658ff54'), 'created_at': datetime.datetime(2026, 6, 1, 8, 29, 5, 821345), 'updated_at': datetime.datetime(2026, 6, 1, 8, 29, 5, 821345)}
+2026-06-01 02:29:05,831 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:29:05,873 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:29:05] "[35m[1mPOST /api/design/solver/0349f14e-6797-455e-86b6-d4c221dd3abf/run-adaptive HTTP/1.1[0m" 500 -
+2026-06-01 02:29:58,008 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:29:58] "[32mGET /api/design/graph HTTP/1.1[0m" 308 -
+2026-06-01 02:30:13,644 - app.step_view_pro.backend.api.graph_routes - INFO - [OK] Graph API routes loaded (expanded version)
+2026-06-01 02:30:13,645 - root - WARNING - PythonOCC not available. Feature extraction will be limited.
+2026-06-01 02:30:13,646 - app.step_view_pro.backend.feature_extractor - INFO - OK Feature Extractor module loaded
+2026-06-01 02:30:13,647 - app.step_view_pro.backend.advanced_feature_extractor - WARNING - pythonocc not available — AdvancedFeatureExtractor will return empty results
+2026-06-01 02:30:13,650 - app.step_view_pro.backend.advanced_feature_extractor - INFO - OK Advanced Feature Extractor module loaded (real pythonocc implementation)
+2026-06-01 02:30:13,650 - app.step_view_pro.backend.api.feature_routes - INFO - [OK] Feature API routes loaded
+2026-06-01 02:30:13,780 - trimesh.util - DEBUG - searching for blender in: C:\Python3119\Scripts;C:\Program Files\Git\usr\bin\vendor_perl;C:\Users\Ricardo\AppData\Local\Programs\Ollama;C:\Users\Ricardo\.local\bin;C:\Recovery\OEM\Backup;C:\Program Files\Git\mingw64\bin;C:\Users\Ricardo\AppData\Roaming\ollama app.exe;C:\Users\Ricardo\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Ricardo\AppData\Local\Microsoft\WindowsApps;C:\Program Files\dotnet;C:\Program Files\Git\usr\bin;C:\WINDOWS\system32;C:\WINDOWS\System32\Wbem;C:\Users\Ricardo\AppData\Local\nvm;C:\Program Files\Git\usr\bin\core_perl;C:\Program Files\JetBrains\PyCharm 2025.2.2\bin;C:\Program Files\Git\usr\local\bin;C:\WINDOWS\System32\OpenSSH;C:\Users\Ricardo\bin;C:\nvm4w\nodejs;C:\Users\Ricardo\.lmstudio\bin;C:\Python3119;C:\ProgramData\chocolatey\bin;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\Program Files\Git\cmd;C:\WINDOWS;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files\JetBrains\PyCharm Community Edition 2025.2.5\bin;C:\Users\Ricardo\AppData\Roaming\npm
+2026-06-01 02:30:13,799 - trimesh.util - DEBUG - falling back to hashlib hashing: `pip install xxhash`for 50x faster cache checks
+2026-06-01 02:30:14,978 - root - WARNING - progress_tracker not available. Progress tracking will be disabled.
+2026-06-01 02:30:14,978 - app.step_view_pro.backend.api.viewer_routes - INFO - [OK] Viewer API routes loaded (/model/*/glb, /progress/*, /model/*/metadata, /health)
+2026-06-01 02:30:14,980 - app.step_view_pro.backend.pmi_parser - INFO - OK PMI Parser module loaded
+2026-06-01 02:30:14,981 - app.step_view_pro.backend.api.pmi_routes - INFO - [OK] PMI API routes loaded
+2026-06-01 02:30:14,982 - app.step_view_pro.backend.comparison_tools - WARNING - PythonOCC not available. Comparison tools will be limited.
+2026-06-01 02:30:14,982 - app.step_view_pro.backend.comparison_tools - INFO - OK Comparison Tools module loaded
+2026-06-01 02:30:14,983 - app.step_view_pro.backend.step_processor - WARNING - PythonOCC not available. STEP processing will be limited.
+2026-06-01 02:30:14,984 - app.step_view_pro.backend.step_processor - INFO - OK STEP Processor module loaded
+2026-06-01 02:30:14,984 - app.step_view_pro.backend.api.comparison_routes - INFO - [OK] Comparison API routes loaded
+2026-06-01 02:30:14,987 - root - WARNING - PythonOCC no disponible: No module named 'OCC'
+2026-06-01 02:30:14,987 - app.step_view_pro.backend.api.geometry_routes - INFO - [OK] Geometry API routes loaded
+2026-06-01 02:30:14,993 - app.step_view_pro.backend.analysis.analysis_tools - INFO - OK Analysis Tools module loaded
+2026-06-01 02:30:14,993 - app.step_view_pro.backend.api.analysis_routes - INFO - [OK] Analysis API routes loaded
+2026-06-01 02:30:14,994 - root - WARNING - PythonOCC not available. Measurement tools will be limited.
+2026-06-01 02:30:14,995 - app.step_view_pro.backend.measurement_tools - INFO - OK Measurement Tools module loaded
+2026-06-01 02:30:14,995 - app.step_view_pro.backend.api.measurement_routes - INFO - [OK] Measurement API routes loaded
+2026-06-01 02:30:14,996 - app.step_view_pro.backend.export_tools - WARNING - PythonOCC not available. Export functionality will be limited.
+2026-06-01 02:30:14,997 - app.step_view_pro.backend.export_tools - INFO - OK Export Tools module loaded
+2026-06-01 02:30:14,997 - app.step_view_pro.backend.api.export_routes - INFO - [OK] Export API routes loaded
+2026-06-01 02:30:15,000 - app.step_view_pro.backend.performance.cache_manager - WARNING - Redis not available. Using PostgreSQL-only caching.
+2026-06-01 02:30:15,000 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded with PythonOCC support
+2026-06-01 02:30:15,001 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded
+2026-06-01 02:30:15,015 - app.step_view_pro.backend.performance.performance_monitor - INFO - OK Performance Monitor module loaded
+2026-06-01 02:30:15,016 - app.step_view_pro.backend.performance.query_optimizer - INFO - OK Query Optimizer module loaded
+2026-06-01 02:30:15,016 - app.step_view_pro.backend.api.performance_routes - INFO - [OK] Performance API routes loaded
+2026-06-01 02:30:15,017 - app.step_view_pro.backend.api.markup_routes - INFO - [OK] Markup API routes loaded
+2026-06-01 02:30:15,132 - sqlalchemy.engine.Engine - INFO - select pg_catalog.version()
+2026-06-01 02:30:15,132 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:15,134 - sqlalchemy.engine.Engine - INFO - select current_schema()
+2026-06-01 02:30:15,136 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:15,136 - sqlalchemy.engine.Engine - INFO - show standard_conforming_strings
+2026-06-01 02:30:15,136 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:15,137 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,139 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,139 - sqlalchemy.engine.Engine - INFO - [generated in 0.00017s] {'table_name': 'cae_meshes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,142 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,142 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,142 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,142 - sqlalchemy.engine.Engine - INFO - [cached since 0.003161s ago] {'table_name': 'design_graphs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,143 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,143 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,143 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,144 - sqlalchemy.engine.Engine - INFO - [cached since 0.004748s ago] {'table_name': 'parts', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,144 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,144 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,144 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,144 - sqlalchemy.engine.Engine - INFO - [cached since 0.005915s ago] {'table_name': 'step_view_cache', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,146 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,146 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,146 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,146 - sqlalchemy.engine.Engine - INFO - [cached since 0.007065s ago] {'table_name': 'step_view_performance_metrics', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,147 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,147 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,147 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,147 - sqlalchemy.engine.Engine - INFO - [cached since 0.008308s ago] {'table_name': 'cae_fields', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,148 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,148 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,148 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,148 - sqlalchemy.engine.Engine - INFO - [cached since 0.009427s ago] {'table_name': 'design_nodes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,149 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,149 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,150 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,150 - sqlalchemy.engine.Engine - INFO - [cached since 0.01097s ago] {'table_name': 'material_models', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,152 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,152 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,153 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,153 - sqlalchemy.engine.Engine - INFO - [cached since 0.01372s ago] {'table_name': 'physics_configs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,153 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,154 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,154 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,154 - sqlalchemy.engine.Engine - INFO - [cached since 0.01528s ago] {'table_name': 'simulation_runs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,154 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,154 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - [cached since 0.0162s ago] {'table_name': 'step_entities', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,156 - sqlalchemy.engine.Engine - INFO - [cached since 0.01693s ago] {'table_name': 'step_entity_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,157 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,157 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,157 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,157 - sqlalchemy.engine.Engine - INFO - [cached since 0.01765s ago] {'table_name': 'step_file_comparisons', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,157 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,158 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,158 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,158 - sqlalchemy.engine.Engine - INFO - [cached since 0.01832s ago] {'table_name': 'step_file_versions', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,158 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,159 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,159 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,159 - sqlalchemy.engine.Engine - INFO - [cached since 0.01952s ago] {'table_name': 'design_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,159 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,160 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,160 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,160 - sqlalchemy.engine.Engine - INFO - [cached since 0.02106s ago] {'table_name': 'experimental_records', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,161 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,161 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,161 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,162 - sqlalchemy.engine.Engine - INFO - [cached since 0.02273s ago] {'table_name': 'field_results', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,162 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:15,162 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:15,163 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:15,163 - sqlalchemy.engine.Engine - INFO - [cached since 0.02381s ago] {'table_name': 'sim_experiment_correlations', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:15,163 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:28,456 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://192.168.1.6:8080
+2026-06-01 02:30:28,456 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2026-06-01 02:30:28,456 - werkzeug - INFO -  * Restarting with stat
+2026-06-01 02:30:29,549 - app.step_view_pro.backend.api.graph_routes - INFO - [OK] Graph API routes loaded (expanded version)
+2026-06-01 02:30:29,549 - root - WARNING - PythonOCC not available. Feature extraction will be limited.
+2026-06-01 02:30:29,555 - app.step_view_pro.backend.feature_extractor - INFO - OK Feature Extractor module loaded
+2026-06-01 02:30:29,555 - app.step_view_pro.backend.advanced_feature_extractor - WARNING - pythonocc not available — AdvancedFeatureExtractor will return empty results
+2026-06-01 02:30:29,557 - app.step_view_pro.backend.advanced_feature_extractor - INFO - OK Advanced Feature Extractor module loaded (real pythonocc implementation)
+2026-06-01 02:30:29,557 - app.step_view_pro.backend.api.feature_routes - INFO - [OK] Feature API routes loaded
+2026-06-01 02:30:29,684 - trimesh.util - DEBUG - searching for blender in: C:\Python3119;C:\Python3119\Scripts;C:\Program Files\Git\usr\bin\core_perl;C:\WINDOWS\system32;C:\Users\Ricardo\.lmstudio\bin;C:\WINDOWS\System32\OpenSSH;C:\ProgramData\chocolatey\bin;C:\WINDOWS\System32\WindowsPowerShell\v1.0;C:\WINDOWS;C:\Program Files\JetBrains\PyCharm 2025.2.2\bin;C:\Users\Ricardo\bin;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Users\Ricardo\.local\bin;C:\Users\Ricardo\AppData\Local\nvm;C:\Program Files\Git\usr\local\bin;C:\Recovery\OEM\Backup;C:\Users\Ricardo\AppData\Local\Microsoft\WindowsApps;C:\Users\Ricardo\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Ricardo\AppData\Roaming\npm;C:\Program Files\Git\usr\bin\vendor_perl;C:\Users\Ricardo\AppData\Roaming\ollama app.exe;C:\Program Files\Git\cmd;C:\WINDOWS\System32\Wbem;C:\nvm4w\nodejs;C:\Program Files\JetBrains\PyCharm Community Edition 2025.2.5\bin;C:\Program Files\dotnet;C:\Users\Ricardo\AppData\Local\Programs\Ollama
+2026-06-01 02:30:29,701 - trimesh.util - DEBUG - falling back to hashlib hashing: `pip install xxhash`for 50x faster cache checks
+2026-06-01 02:30:30,877 - root - WARNING - progress_tracker not available. Progress tracking will be disabled.
+2026-06-01 02:30:30,877 - app.step_view_pro.backend.api.viewer_routes - INFO - [OK] Viewer API routes loaded (/model/*/glb, /progress/*, /model/*/metadata, /health)
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.pmi_parser - INFO - OK PMI Parser module loaded
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.api.pmi_routes - INFO - [OK] PMI API routes loaded
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.comparison_tools - WARNING - PythonOCC not available. Comparison tools will be limited.
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.comparison_tools - INFO - OK Comparison Tools module loaded
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.step_processor - WARNING - PythonOCC not available. STEP processing will be limited.
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.step_processor - INFO - OK STEP Processor module loaded
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.api.comparison_routes - INFO - [OK] Comparison API routes loaded
+2026-06-01 02:30:30,883 - root - WARNING - PythonOCC no disponible: No module named 'OCC'
+2026-06-01 02:30:30,883 - app.step_view_pro.backend.api.geometry_routes - INFO - [OK] Geometry API routes loaded
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.analysis.analysis_tools - INFO - OK Analysis Tools module loaded
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.api.analysis_routes - INFO - [OK] Analysis API routes loaded
+2026-06-01 02:30:30,893 - root - WARNING - PythonOCC not available. Measurement tools will be limited.
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.measurement_tools - INFO - OK Measurement Tools module loaded
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.api.measurement_routes - INFO - [OK] Measurement API routes loaded
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.export_tools - WARNING - PythonOCC not available. Export functionality will be limited.
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.export_tools - INFO - OK Export Tools module loaded
+2026-06-01 02:30:30,893 - app.step_view_pro.backend.api.export_routes - INFO - [OK] Export API routes loaded
+2026-06-01 02:30:30,904 - app.step_view_pro.backend.performance.cache_manager - WARNING - Redis not available. Using PostgreSQL-only caching.
+2026-06-01 02:30:30,904 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded with PythonOCC support
+2026-06-01 02:30:30,904 - app.step_view_pro.backend.performance.cache_manager - INFO - OK Cache Manager module loaded
+2026-06-01 02:30:30,916 - app.step_view_pro.backend.performance.performance_monitor - INFO - OK Performance Monitor module loaded
+2026-06-01 02:30:30,916 - app.step_view_pro.backend.performance.query_optimizer - INFO - OK Query Optimizer module loaded
+2026-06-01 02:30:30,916 - app.step_view_pro.backend.api.performance_routes - INFO - [OK] Performance API routes loaded
+2026-06-01 02:30:30,916 - app.step_view_pro.backend.api.markup_routes - INFO - [OK] Markup API routes loaded
+2026-06-01 02:30:31,028 - sqlalchemy.engine.Engine - INFO - select pg_catalog.version()
+2026-06-01 02:30:31,028 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:31,028 - sqlalchemy.engine.Engine - INFO - select current_schema()
+2026-06-01 02:30:31,028 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:31,039 - sqlalchemy.engine.Engine - INFO - show standard_conforming_strings
+2026-06-01 02:30:31,039 - sqlalchemy.engine.Engine - INFO - [raw sql] {}
+2026-06-01 02:30:31,039 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,042 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,042 - sqlalchemy.engine.Engine - INFO - [generated in 0.00021s] {'table_name': 'cae_meshes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,046 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,046 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,047 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,047 - sqlalchemy.engine.Engine - INFO - [cached since 0.00509s ago] {'table_name': 'design_graphs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,048 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,048 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,048 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,049 - sqlalchemy.engine.Engine - INFO - [cached since 0.006441s ago] {'table_name': 'parts', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,049 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,050 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,050 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,050 - sqlalchemy.engine.Engine - INFO - [cached since 0.00782s ago] {'table_name': 'step_view_cache', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,050 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,051 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,052 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,052 - sqlalchemy.engine.Engine - INFO - [cached since 0.01033s ago] {'table_name': 'step_view_performance_metrics', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - [cached since 0.01174s ago] {'table_name': 'cae_fields', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - [cached since 0.01276s ago] {'table_name': 'design_nodes', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - [cached since 0.01398s ago] {'table_name': 'material_models', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,053 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,057 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,057 - sqlalchemy.engine.Engine - INFO - [cached since 0.01523s ago] {'table_name': 'physics_configs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - [cached since 0.01626s ago] {'table_name': 'simulation_runs', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,058 - sqlalchemy.engine.Engine - INFO - [cached since 0.01764s ago] {'table_name': 'step_entities', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,060 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,060 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,060 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,060 - sqlalchemy.engine.Engine - INFO - [cached since 0.01875s ago] {'table_name': 'step_entity_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.01995s ago] {'table_name': 'step_file_comparisons', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.02088s ago] {'table_name': 'step_file_versions', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.02189s ago] {'table_name': 'design_edges', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.0228s ago] {'table_name': 'experimental_records', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.02397s ago] {'table_name': 'field_results', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = %(table_name)s AND pg_catalog.pg_class.relkind = ANY (ARRAY[%(param_1)s, %(param_2)s, %(param_3)s, %(param_4)s, %(param_5)s]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != %(nspname_1)s
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - [cached since 0.0255s ago] {'table_name': 'sim_experiment_correlations', 'param_1': 'r', 'param_2': 'p', 'param_3': 'f', 'param_4': 'v', 'param_5': 'm', 'nspname_1': 'pg_catalog'}
+2026-06-01 02:30:31,062 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-06-01 02:30:31,062 - werkzeug - WARNING -  * Debugger is active!
+2026-06-01 02:30:31,073 - werkzeug - INFO -  * Debugger PIN: 650-368-371
+2026-06-01 02:30:35,431 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-06-01 02:30:35,437 - sqlalchemy.engine.Engine - INFO - SELECT design_graphs.name AS design_graphs_name, design_graphs.description AS design_graphs_description, design_graphs.version AS design_graphs_version, design_graphs.parent_id AS design_graphs_parent_id, design_graphs.hash AS design_graphs_hash, design_graphs.tier AS design_graphs_tier, design_graphs.status AS design_graphs_status, design_graphs.metadata AS design_graphs_metadata, design_graphs.id AS design_graphs_id, design_graphs.created_at AS design_graphs_created_at, design_graphs.updated_at AS design_graphs_updated_at 
+FROM design_graphs 
+WHERE design_graphs.id = %(id_1)s::UUID 
+ LIMIT %(param_1)s
+2026-06-01 02:30:35,437 - sqlalchemy.engine.Engine - INFO - [generated in 0.00023s] {'id_1': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'param_1': 1}
+2026-06-01 02:30:35,467 - sqlalchemy.engine.Engine - INFO - INSERT INTO simulation_runs (graph_id, graph_version, hash, status, tier, physics, solver_config, mesh_stats, result_ref, wall_time, n_iterations, final_residual, converged, convergence_log, adaptive_log, parent_run_id, parameter_delta, id, created_at, updated_at) VALUES (%(graph_id)s::UUID, %(graph_version)s, %(hash)s, %(status)s, %(tier)s, %(physics)s::JSONB, %(solver_config)s::JSONB, %(mesh_stats)s::JSONB, %(result_ref)s, %(wall_time)s, %(n_iterations)s, %(final_residual)s, %(converged)s, %(convergence_log)s::JSONB, %(adaptive_log)s::JSONB, %(parent_run_id)s::UUID, %(parameter_delta)s::JSONB, %(id)s::UUID, %(created_at)s, %(updated_at)s)
+2026-06-01 02:30:35,467 - sqlalchemy.engine.Engine - INFO - [generated in 0.00061s] {'graph_id': '0349f14e-6797-455e-86b6-d4c221dd3abf', 'graph_version': 1, 'hash': 'a9a48f5b6b4da5ac3caf62f6afaef65647ccda19bf74a3fbdd44a17e8b589e51', 'status': 'running', 'tier': 1, 'physics': '["structural"]', 'solver_config': '{"physics": ["structural"], "max_cycles": 5, "target_error": 0.05, "refinement_fraction": 0.2}', 'mesh_stats': '{}', 'result_ref': None, 'wall_time': None, 'n_iterations': None, 'final_residual': None, 'converged': None, 'convergence_log': '[]', 'adaptive_log': '[]', 'parent_run_id': None, 'parameter_delta': '{}', 'id': UUID('28d80497-b972-44bd-961a-ee0c4bde978c'), 'created_at': datetime.datetime(2026, 6, 1, 8, 30, 35, 467620), 'updated_at': datetime.datetime(2026, 6, 1, 8, 30, 35, 467620)}
+2026-06-01 02:30:35,468 - sqlalchemy.engine.Engine - INFO - ROLLBACK
+2026-06-01 02:30:35,527 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:30:35] "[35m[1mPOST /api/design/solver/0349f14e-6797-455e-86b6-d4c221dd3abf/run-adaptive HTTP/1.1[0m" 500 -
+2026-06-01 02:30:54,286 - werkzeug - INFO - 127.0.0.1 - - [01/Jun/2026 02:30:54] "[32mGET /api/design/graph HTTP/1.1[0m" 308 -

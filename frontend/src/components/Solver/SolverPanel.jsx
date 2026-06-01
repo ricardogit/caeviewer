@@ -167,7 +167,7 @@ export default function SolverPanel({ onClose }) {
                   onClick={async () => {
                     if (!activeGraphId) return;
                     try {
-                      const resp = await fetch(`/api/design/solver/${activeGraphId}/run-adaptive`, {
+                      const resp = await fetch(`/api/design/solver/${activeGraphId}/run-adaptive/`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

@@ -7,7 +7,7 @@ import { devtools } from 'zustand/middleware';
 import { applyNodeChanges, applyEdgeChanges } from 'reactflow';
 import axios from 'axios';
 
-const BASE = '/api/design/graph';
+const BASE = '/api/design/graph/';
 
 const useDesignStore = create(
   devtools(
