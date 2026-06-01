@@ -47,18 +47,42 @@ def run_simulation(graph_id):
         "loads":[{"node_set":"tip",   "force":[0,-1000,0]}]
     }
 
+    Si material/bcs/loads faltan, se leen del grafo.
+
     Returns: { run_id, hash }
     WebSocket room = run_id  →  events: solver_progress, solver_done, solver_error
     """
     from app.design.models.graph import DesignGraph
     from app.design.models.simulation import SimulationRun
     from app.design.services.traceability.hasher import SimulationHasher
+    from app.design.services.graph_to_solver_spec import graph_to_solver_spec
 
     graph = DesignGraph.query.filter_by(id=graph_id).first()
     if not graph:
         return jsonify({'error': 'Graph not found'}), 404
 
     data = request.get_json(silent=True) or {}
+
+    # Si no hay material/bcs/loads en el body, leerlos del grafo
+    if 'material' not in data or 'bcs' not in data or 'loads' not in data:
+        try:
+            graph_spec = graph_to_solver_spec(graph_id)
+            # Merge: valores del body tienen prioridad
+            if 'material' not in data:
+                data['material'] = graph_spec.get('material', data.get('material'))
+            if 'bcs' not in data:
+                data['bcs'] = graph_spec.get('bcs', data.get('bcs', []))
+            if 'loads' not in data:
+                data['loads'] = graph_spec.get('loads', data.get('loads', []))
+            if 'mesh_source' not in data and 'mesh_source' in graph_spec:
+                data['mesh_source'] = graph_spec['mesh_source']
+            if 'mesh_id' not in data and 'mesh_id' in graph_spec:
+                data['mesh_id'] = graph_spec['mesh_id']
+            if 'tier' not in data and 'tier' in graph_spec:
+                data['tier'] = graph_spec['tier']
+        except Exception as e:
+            logger.warning(f"Could not read graph spec for {graph_id}: {e}")
+            # Fallback a defaults
 
     run_id = _uuid.uuid4()
     hasher = SimulationHasher()

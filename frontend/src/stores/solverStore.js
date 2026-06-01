@@ -71,6 +71,7 @@ const useSolverStore = create(
       setTier: (t) => set({ tier: t }),
       setTolerance: (v) => set({ tolerance: v }),
       setSelectedField: (f) => set({ selectedField: f }),
+      setAdaptiveLog: (log) => set({ adaptiveLog: log }),
       clearError: () => set({ error: null }),
 
       setCantileverParam: (key, value) =>
@@ -221,6 +222,7 @@ const useSolverStore = create(
         convergenceLog: [], currentIter: 0, currentResidual: null,
         percentComplete: 0, currentStatus: '',
         resultSummary: null, resultFields: [],
+        adaptiveLog: [],
         cantileverResult: null, error: null,
       }),
     }),

@@ -33,9 +33,9 @@ export default function SolverPanel({ onClose }) {
   const {
     runStatus, activePhysics, tier, tolerance,
     currentIter, currentResidual, percentComplete, currentStatus,
-    convergenceLog, resultSummary, error,
+    convergenceLog, resultSummary, error, adaptiveLog,
     cantileverParams, cantileverResult, cantileverLoading,
-    setActivePhysics, setTier, setCantileverParam,
+    setActivePhysics, setTier, setCantileverParam, setAdaptiveLog,
     startRun, cancelRun, runCantileverTest, resetRun, clearError,
   } = useSolverStore();
 
@@ -179,7 +179,10 @@ export default function SolverPanel({ onClose }) {
                       });
                       const data = await resp.json();
                       if (resp.ok && data.adaptive_log) {
+                        setAdaptiveLog(data.adaptive_log);
                         alert(`✓ Adaptativo completado: ${data.adaptive_log.length} ciclos`);
+                      } else {
+                        alert(`Error: ${data.error || 'Error desconocido'}`);
                       }
                     } catch (e) {
                       alert(`Error: ${e.message}`);
@@ -263,9 +266,9 @@ export default function SolverPanel({ onClose }) {
         )}
 
         {/* ── Adaptive results ─────────────────────────────────────────────── */}
-        {runStatus === 'done' && (
+        {adaptiveLog && adaptiveLog.length > 0 && (
           <>
-            <AdaptiveMonitor adaptiveLog={resultSummary?.adaptive_log} />
+            <AdaptiveMonitor adaptiveLog={adaptiveLog} />
           </>
         )}
       </Box>

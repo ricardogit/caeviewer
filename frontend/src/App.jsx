@@ -435,7 +435,7 @@ export default function App() {
         stepFile={selectedFile}
         onMeshCreated={(newMesh) => {
           setSelectedMesh(newMesh);
-          setCaeMode(true);
+          setAppMode('cae');
           setMeshDialogOpen(false);
         }}
       />

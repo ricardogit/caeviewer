@@ -7,7 +7,7 @@ import { Handle, Position } from 'reactflow';
 import { Box, Typography, Chip } from '@mui/material';
 import {
   Lightbulb, ViewInAr, Science, Lock, ArrowDownward,
-  Assessment, AutoAwesome,
+  CheckCircle, AutoAwesome,
 } from '@mui/icons-material';
 
 const NODE_CONFIG = {
@@ -16,7 +16,7 @@ const NODE_CONFIG = {
   MATERIAL:     { color: '#ff9800', bg: '#e65100222', Icon: Science,       label: 'Material' },
   BC:           { color: '#f44336', bg: '#b71c1c22', Icon: Lock,           label: 'Frontera' },
   LOAD:         { color: '#fdd835', bg: '#f57f1722', Icon: ArrowDownward,  label: 'Carga' },
-  RESULT:       { color: '#00bcd4', bg: '#00697022', Icon: Assessment,     label: 'Resultado' },
+  RESULT:       { color: '#00bcd4', bg: '#00697022', Icon: CheckCircle,    label: 'Resultado' },
   OPTIMIZATION: { color: '#9c27b0', bg: '#4a148c22', Icon: AutoAwesome,   label: 'Optimización' },
 };
 
@@ -65,24 +65,96 @@ function DesignNodeComponent({ data, selected }) {
         </Typography>
 
         {/* Properties preview */}
-        {data.node_type === 'MATERIAL' && data.properties?.model_type && (
-          <Typography variant="caption" sx={{ color: '#aaa', fontSize: 10 }}>
-            {data.properties.model_type}
-          </Typography>
+        {data.node_type === 'MATERIAL' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.model_type && (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                {data.properties.model_type === 'linear_elastic_isotropic' ? 'Isotropic' : data.properties.model_type.substring(0, 12)}...
+              </Typography>
+            )}
+            {data.properties?.E != null && (
+              <Typography variant="caption" sx={{ color: '#aaa', fontSize: 9 }}>
+                E={(data.properties.E / 1e9)?.toFixed(0)} GPa ν={data.properties.nu?.toFixed(2)}
+              </Typography>
+            )}
+          </Box>
         )}
-        {data.node_type === 'LOAD' && data.properties?.magnitude != null && (
-          <Typography variant="caption" sx={{ color: '#aaa', fontSize: 10 }}>
-            {data.properties.magnitude} {data.properties.unit || 'N'}
-          </Typography>
+        {data.node_type === 'BC' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.bc_type && (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                {data.properties.bc_type}
+              </Typography>
+            )}
+            {data.properties?.dofs?.length > 0 && (
+              <Typography variant="caption" sx={{ color: '#aaa', fontSize: 9 }}>
+                DOFs: {['UX', 'UY', 'UZ', 'RX', 'RY', 'RZ'].filter((_, i) => data.properties.dofs.includes(i)).join(',')}
+              </Typography>
+            )}
+          </Box>
         )}
-        {data.node_type === 'GEOMETRY' && data.tier != null && (
-          <Chip label={`Tier ${data.tier}`} size="small"
-                sx={{ height: 16, fontSize: 9, mt: 0.3, bgcolor: `${color}33`, color }} />
+        {data.node_type === 'LOAD' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.magnitude != null && (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                F={data.properties.magnitude} {data.properties.unit || 'N'}
+              </Typography>
+            )}
+            {data.properties?.dir_x != null && (
+              <Typography variant="caption" sx={{ color: '#aaa', fontSize: 9 }}>
+                Dir: [{data.properties.dir_x?.toFixed(1)}, {data.properties.dir_y?.toFixed(1)}, {data.properties.dir_z?.toFixed(1)}]
+              </Typography>
+            )}
+          </Box>
         )}
-        {data.node_type === 'RESULT' && data.properties?.max_von_mises != null && (
-          <Typography variant="caption" sx={{ color: '#aaa', fontSize: 10 }}>
-            σ_max: {data.properties.max_von_mises?.toFixed(2)} MPa
-          </Typography>
+        {data.node_type === 'GEOMETRY' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.sdf_func && (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                {data.properties.sdf_func}
+              </Typography>
+            )}
+            {(data.tier != null || data.properties?.tier != null) && (
+              <Chip label={`Tier ${data.tier ?? data.properties.tier ?? 1}`} size="small"
+                    sx={{ height: 16, fontSize: 9, bgcolor: `${color}33`, color }} />
+            )}
+          </Box>
+        )}
+        {data.node_type === 'RESULT' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.max_von_mises_mpa != null ? (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                σ_max: {data.properties.max_von_mises_mpa?.toFixed(2)} MPa
+              </Typography>
+            ) : data.properties?.max_von_mises != null ? (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                σ_max: {(data.properties.max_von_mises / 1e6)?.toFixed(2)} MPa
+              </Typography>
+            ) : (
+              <Typography variant="caption" sx={{ color: '#666', fontSize: 9 }}>
+                Sin datos
+              </Typography>
+            )}
+            {data.properties?.max_displacement_mm != null && (
+              <Typography variant="caption" sx={{ color: '#aaa', fontSize: 9 }}>
+                δ_max: {data.properties.max_displacement_mm?.toFixed(3)} mm
+              </Typography>
+            )}
+          </Box>
+        )}
+        {data.node_type === 'OPTIMIZATION' && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mt: 0.3 }}>
+            {data.properties?.objective && (
+              <Typography variant="caption" sx={{ color: '#bbb', fontSize: 9 }}>
+                {data.properties.objective?.replace(/_/g, ' ')}
+              </Typography>
+            )}
+            {data.properties?.constraint_type && (
+              <Typography variant="caption" sx={{ color: '#aaa', fontSize: 9 }}>
+                Limit: {data.properties.constraint_value?.toFixed(2)}
+              </Typography>
+            )}
+          </Box>
         )}
       </Box>
 

@@ -47,6 +47,7 @@ class FEMKernel:
                 result = self._solve(run_id, solver_spec, socketio)
                 self._save_results(run_id, result, app)
                 self._update_run(run_id, 'done', result)
+                self._update_result_nodes(run_id, result, solver_spec)
                 socketio.emit('solver_done', {
                     'run_id': run_id,
                     **result['summary'],
@@ -392,6 +393,41 @@ class FEMKernel:
             db.session.commit()
         except Exception as e:
             logger.warning(f"Could not update SimulationRun {run_id}: {e}")
+
+    # ── Write-back results to RESULT nodes ───────────────────────────────────
+
+    def _update_result_nodes(self, run_id: str, result: dict, solver_spec: dict):
+        """Actualiza los nodos RESULT en el grafo con resultados de la simulación."""
+        graph_id = solver_spec.get('graph_id')
+        if not graph_id:
+            return
+
+        try:
+            from app.extensions import db
+            from app.design.models.graph import DesignGraph, DesignNode
+
+            graph = DesignGraph.query.filter_by(id=graph_id).first()
+            if not graph:
+                return
+
+            # Busca todos los nodos RESULT en el grafo
+            result_nodes = DesignNode.query.filter_by(graph_id=graph_id, node_type='RESULT').all()
+            if not result_nodes:
+                return
+
+            summary = result.get('summary', {})
+            for node in result_nodes:
+                node.properties = {
+                    'run_id': str(run_id),
+                    'max_von_mises_mpa': summary.get('max_von_mises_mpa'),
+                    'max_displacement_mm': summary.get('max_displacement_mm'),
+                    'safety_factor': 1.0,  # placeholder
+                }
+
+            db.session.commit()
+            logger.info(f"Updated {len(result_nodes)} RESULT nodes for graph {graph_id}")
+        except Exception as e:
+            logger.warning(f"Could not update RESULT nodes for graph {graph_id}: {e}")
 
     # ── Analytical validation ─────────────────────────────────────────────────
 

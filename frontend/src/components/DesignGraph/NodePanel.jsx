@@ -44,7 +44,11 @@ export default function NodePanel({ node, graphId, onClose }) {
   };
 
   const handleSave = () => {
-    updateNode(node.id, { label, level, properties: props });
+    const updates = { label, level, properties: props };
+    if (nodeType === 'GEOMETRY' && props.tier != null) {
+      updates.tier = props.tier;
+    }
+    updateNode(node.id, updates);
     setDirty(false);
   };
 
@@ -157,6 +161,28 @@ export default function NodePanel({ node, graphId, onClose }) {
                 ].map(([v, lbl]) => <MenuItem key={v} value={v}>{lbl}</MenuItem>)}
               </Select>
             </FormControl>
+            <TextField
+              label="ID de malla CAE"
+              size="small" fullWidth
+              value={props.mesh_id || ''}
+              onChange={e => setProp('mesh_id', e.target.value)}
+              placeholder="UUID de CAEMesh"
+              helperText="Opcional: vincula a una malla existente"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+              FormHelperTextProps={{ style: { color: '#666', fontSize: 11 } }}
+            />
+            <TextField
+              label="ID de archivo STEP"
+              size="small" fullWidth
+              value={props.step_file_id || ''}
+              onChange={e => setProp('step_file_id', e.target.value)}
+              placeholder="UUID de STEPFile"
+              helperText="Opcional: origen STEP file"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+              FormHelperTextProps={{ style: { color: '#666', fontSize: 11 } }}
+            />
           </>
         )}
 
@@ -202,6 +228,59 @@ export default function NodePanel({ node, graphId, onClose }) {
               </Select>
             </FormControl>
             <TextField
+              label="Nombre del conjunto de nodos (node_set)"
+              size="small" fullWidth
+              value={props.node_set || ''}
+              onChange={e => setProp('node_set', e.target.value)}
+              placeholder="ej: fixed_base"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+            />
+            <Box>
+              <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
+                Grados de libertad restringidos:
+              </Typography>
+              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 }}>
+                {[['UX', 0], ['UY', 1], ['UZ', 2], ['RX', 3], ['RY', 4], ['RZ', 5]].map(([lbl, idx]) => {
+                  const dofs = props.dofs || [];
+                  const checked = dofs.includes(idx);
+                  return (
+                    <Box
+                      key={lbl}
+                      onClick={() => {
+                        const newDofs = checked ? dofs.filter(d => d !== idx) : [...dofs, idx].sort();
+                        setProp('dofs', newDofs);
+                      }}
+                      sx={{
+                        p: 0.5,
+                        border: `1px solid ${checked ? '#4caf50' : '#555'}`,
+                        borderRadius: 0.5,
+                        cursor: 'pointer',
+                        bgcolor: checked ? '#1b5e20' : '#222',
+                        color: checked ? '#81c784' : '#888',
+                        fontSize: 12,
+                        textAlign: 'center',
+                        fontWeight: checked ? 700 : 400,
+                        transition: 'all 0.15s',
+                        '&:hover': { bgcolor: checked ? '#2e7d32' : '#333' },
+                      }}
+                    >
+                      {lbl}
+                    </Box>
+                  );
+                })}
+              </Box>
+            </Box>
+            <TextField
+              label="Valor prescrito (displacement)"
+              size="small" fullWidth type="number"
+              value={props.value ?? 0}
+              onChange={e => setProp('value', parseFloat(e.target.value))}
+              placeholder="0"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+            />
+            <TextField
               label="Descripción / superficie"
               size="small" fullWidth
               value={props.surface_label || ''}
@@ -225,6 +304,15 @@ export default function NodePanel({ node, graphId, onClose }) {
                 {LOAD_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
               </Select>
             </FormControl>
+            <TextField
+              label="Nombre del conjunto de nodos (node_set)"
+              size="small" fullWidth
+              value={props.node_set || ''}
+              onChange={e => setProp('node_set', e.target.value)}
+              placeholder="ej: tip"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+            />
             <TextField
               label="Magnitud"
               size="small" fullWidth type="number"
@@ -254,30 +342,97 @@ export default function NodePanel({ node, graphId, onClose }) {
                 />
               ))}
             </Box>
+            <Box sx={{ bgcolor: '#1b3a1b', border: '1px solid #2e7d32', borderRadius: 0.5, p: 1 }}>
+              <Typography variant="caption" sx={{ color: '#81c784', fontSize: 11 }}>
+                Vector de fuerza:
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', display: 'block', fontSize: 10, mt: 0.25 }}>
+                F = [{((props.magnitude ?? 0) * (props.dir_x ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_y ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_z ?? -1)).toFixed(1)}]
+              </Typography>
+            </Box>
           </>
         )}
 
         {nodeType === 'RESULT' && (
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-            {[
-              ['run_id', 'Run ID'],
-              ['max_von_mises', 'σ_max von Mises [Pa]'],
-              ['max_displacement', 'Desplazamiento máx [m]'],
-              ['safety_factor', 'Factor de seguridad'],
-            ].map(([k, lbl]) => props[k] != null && (
-              <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                <Typography variant="caption" sx={{ color: '#888' }}>{lbl}</Typography>
-                <Typography variant="caption" sx={{ color: '#00bcd4', fontFamily: 'monospace' }}>
-                  {typeof props[k] === 'number' ? props[k].toExponential(3) : props[k]}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Box sx={{ bgcolor: '#0d1b0d', border: '1px solid #2e7d32', borderRadius: 1, p: 1 }}>
+              {props.run_id ? (
+                <>
+                  <Typography variant="caption" sx={{ color: '#81c784', fontWeight: 700, display: 'block', mb: 0.5 }}>
+                    ✓ Simulación completada
+                  </Typography>
+                  {[
+                    ['run_id', 'Run ID'],
+                    ['max_von_mises_mpa', 'σ_max von Mises [MPa]'],
+                    ['max_displacement_mm', 'Desplazamiento máx [mm]'],
+                    ['safety_factor', 'Factor de seguridad'],
+                  ].map(([k, lbl]) => props[k] != null && (
+                    <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.25 }}>
+                      <Typography variant="caption" sx={{ color: '#888', fontSize: 10 }}>{lbl}</Typography>
+                      <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', fontSize: 10 }}>
+                        {typeof props[k] === 'number' ? props[k].toFixed(props[k] > 100 ? 2 : 4) : props[k]}
+                      </Typography>
+                    </Box>
+                  ))}
+                </>
+              ) : (
+                <Typography variant="caption" sx={{ color: '#666' }}>
+                  Sin resultados — ejecuta una simulación primero
                 </Typography>
-              </Box>
-            ))}
-            {Object.keys(props).length === 0 && (
-              <Typography variant="caption" sx={{ color: '#666' }}>
-                Sin resultados — ejecuta una simulación primero
-              </Typography>
-            )}
+              )}
+            </Box>
           </Box>
+        )}
+
+        {nodeType === 'OPTIMIZATION' && (
+          <>
+            <FormControl size="small" fullWidth>
+              <InputLabel sx={{ color: '#888' }}>Objetivo</InputLabel>
+              <Select
+                value={props.objective || 'minimize_mass'}
+                onChange={e => setProp('objective', e.target.value)}
+                label="Objetivo"
+                sx={{ color: '#fff' }}
+              >
+                {['minimize_mass', 'minimize_compliance', 'maximize_stiffness'].map(t => (
+                  <MenuItem key={t} value={t}>{t.replace(/_/g, ' ')}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl size="small" fullWidth>
+              <InputLabel sx={{ color: '#888' }}>Tipo de restricción</InputLabel>
+              <Select
+                value={props.constraint_type || 'volume_fraction'}
+                onChange={e => setProp('constraint_type', e.target.value)}
+                label="Tipo de restricción"
+                sx={{ color: '#fff' }}
+              >
+                {['volume_fraction', 'stress_limit', 'displacement_limit'].map(t => (
+                  <MenuItem key={t} value={t}>{t.replace(/_/g, ' ')}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label="Valor de restricción"
+              size="small" fullWidth type="number"
+              value={props.constraint_value ?? 0.5}
+              onChange={e => setProp('constraint_value', parseFloat(e.target.value))}
+              placeholder="0.5 (50% de volumen)"
+              inputProps={{ style: { color: '#fff' } }}
+              InputLabelProps={{ style: { color: '#888' } }}
+            />
+            <FormControl size="small" fullWidth>
+              <InputLabel sx={{ color: '#888' }}>Método</InputLabel>
+              <Select
+                value={props.method || 'SIMP'}
+                onChange={e => setProp('method', e.target.value)}
+                label="Método"
+                sx={{ color: '#fff' }}
+              >
+                {['SIMP', 'level_set', 'topopt'].map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+              </Select>
+            </FormControl>
+          </>
         )}
       </Box>
 

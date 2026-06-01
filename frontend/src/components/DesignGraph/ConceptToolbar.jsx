@@ -5,7 +5,7 @@
 import React from 'react';
 import { Box, Typography, Tooltip, Paper } from '@mui/material';
 import {
-  Lightbulb, ViewInAr, Science, Lock, ArrowDownward, Assessment, AutoAwesome,
+  Lightbulb, ViewInAr, Science, Lock, ArrowDownward, Assessment, AutoAwesome, CheckCircle,
 } from '@mui/icons-material';
 import { NODE_COLORS } from './GraphEditor';
 
@@ -15,6 +15,7 @@ const NODE_TYPES_CONFIG = [
   { type: 'MATERIAL',     label: 'Material',     Icon: Science,      defaultLabel: 'Material' },
   { type: 'BC',           label: 'Frontera',     Icon: Lock,         defaultLabel: 'Condición de frontera' },
   { type: 'LOAD',         label: 'Carga',        Icon: ArrowDownward,defaultLabel: 'Carga aplicada' },
+  { type: 'RESULT',       label: 'Resultado',    Icon: CheckCircle,  defaultLabel: 'Resultado de simulación' },
   { type: 'OPTIMIZATION', label: 'Optimización', Icon: AutoAwesome,  defaultLabel: 'Optimización topológica' },
 ];
 
