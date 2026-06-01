@@ -99,8 +99,16 @@ function GraphEditorInner() {
   }, [persistNodePosition]);
 
   // ── Selection ────────────────────────────────────────────────────────────
-  const onNodeClick = useCallback((_, node) => setSelectedNode(node.id), [setSelectedNode]);
-  const onEdgeClick = useCallback((_, edge) => setSelectedEdge(edge.id), [setSelectedEdge]);
+  const onNodeClick = useCallback((event, node) => {
+    event.stopPropagation();
+    setSelectedNode(node.id);
+  }, [setSelectedNode]);
+
+  const onEdgeClick = useCallback((event, edge) => {
+    event.stopPropagation();
+    setSelectedEdge(edge.id);
+  }, [setSelectedEdge]);
+
   const onPaneClick = useCallback(() => clearSelection(), [clearSelection]);
 
   // ── Edge dialog confirm ──────────────────────────────────────────────────
