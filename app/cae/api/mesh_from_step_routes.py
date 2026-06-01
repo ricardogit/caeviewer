@@ -105,7 +105,7 @@ def mesh_from_step():
     if result["node_count"] == 0:
         return jsonify({"error": "Meshing produced an empty mesh — check STEP geometry."}), 422
 
-    # Register as CAEMesh
+    # Register as CAEMesh with source_step_id provenance
     mesh_record = CAEMesh(
         filename=out_filename,
         original_filename=f"{original_name} (malla {mesh_family}, r={refinement})",
@@ -119,6 +119,7 @@ def mesh_from_step():
             f"Generado desde STEP: {original_name} · "
             f"type={mesh_type} · refinement={refinement} · algorithm={algorithm}"
         ),
+        source_step_id=part_id,  # Store the origin STEP file ID for traceability
     )
     db.session.add(mesh_record)
     db.session.commit()

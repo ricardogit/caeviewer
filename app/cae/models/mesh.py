@@ -26,6 +26,13 @@ class CAEMesh(BaseModel):
     bounding_box = db.Column(JSONB)  # {min_x, max_x, ...}
     description = db.Column(db.Text)
 
+    # Provenance: origin STEP file (nullable)
+    source_step_id = db.Column(UUID(as_uuid=True), db.ForeignKey('step_view_files.id', ondelete='SET NULL'), nullable=True)
+
+    __table_args__ = (
+        db.Index('idx_cae_meshes_source_step', 'source_step_id'),
+    )
+
     def __repr__(self):
         return f'<CAEMesh {self.original_filename} {self.node_count}n/{self.element_count}e>'
 
