@@ -16,7 +16,17 @@ except ImportError:
     logger.warning("networkx not installed — run: pip install networkx")
 
 VALID_NODE_TYPES = {'CONCEPT', 'GEOMETRY', 'MATERIAL', 'BC', 'LOAD', 'RESULT', 'OPTIMIZATION'}
-VALID_EDGE_TYPES = {'FUNCTIONAL', 'PHYSICAL', 'DEPENDS_ON', 'MANUFACTURED_BY', 'CONSTRAINS', 'PRODUCES'}
+VALID_EDGE_TYPES = {
+    # Semantic edges (Phase 2-3) — stronger meaning than Phase 1
+    'CONSTRAINS_MATERIAL',      # MATERIAL → GEOMETRY: material assignment
+    'CONSTRAINS_BC',            # BC → GEOMETRY: BC application scoping
+    'APPLIED_TO',               # LOAD → GEOMETRY: load application scoping
+    'DEPENDS_ON',               # Generic dependency
+    'FUNCTIONAL',               # Functional relationship
+    'MANUFACTURED_BY',          # Manufacturing process
+    'PHYSICAL',                 # Physical connection
+    'PRODUCES',                 # Output relationship
+}
 
 
 class DesignGraphService:
@@ -155,17 +165,50 @@ class DesignGraphService:
 
         nodes = DesignNode.query.filter_by(graph_id=graph_id).all()
         domain = {k: [] for k in ('material_nodes', 'bc_nodes', 'load_nodes',
-                                   'geometry_nodes', 'concept_nodes', 'result_nodes')}
+                                   'geometry_nodes', 'concept_nodes', 'result_nodes', 'optimization_nodes')}
         for n in nodes:
             mapping = {
                 'MATERIAL': 'material_nodes', 'BC': 'bc_nodes',
                 'LOAD': 'load_nodes', 'GEOMETRY': 'geometry_nodes',
                 'CONCEPT': 'concept_nodes', 'RESULT': 'result_nodes',
+                'OPTIMIZATION': 'optimization_nodes',
             }
             key = mapping.get(n.node_type)
             if key:
                 domain[key].append(n)
         return domain
+
+    def get_material_for_geometry(self, graph_id, geom_id) -> 'DesignNode':
+        """Get MATERIAL node for a GEOMETRY via CONSTRAINS_MATERIAL edge."""
+        from app.design.models.graph import DesignEdge, DesignNode
+        edge = DesignEdge.query.filter_by(
+            graph_id=graph_id,
+            target_id=geom_id,
+            edge_type='CONSTRAINS_MATERIAL'
+        ).first()
+        if edge and edge.source_id:
+            return DesignNode.query.get(edge.source_id)
+        return None
+
+    def get_bcs_for_geometry(self, graph_id, geom_id) -> list:
+        """Get BC nodes that apply to a GEOMETRY via CONSTRAINS_BC edge."""
+        from app.design.models.graph import DesignEdge, DesignNode
+        edges = DesignEdge.query.filter_by(
+            graph_id=graph_id,
+            target_id=geom_id,
+            edge_type='CONSTRAINS_BC'
+        ).all()
+        return [DesignNode.query.get(e.source_id) for e in edges if e.source_id]
+
+    def get_loads_for_geometry(self, graph_id, geom_id) -> list:
+        """Get LOAD nodes that apply to a GEOMETRY via APPLIED_TO edge."""
+        from app.design.models.graph import DesignEdge, DesignNode
+        edges = DesignEdge.query.filter_by(
+            graph_id=graph_id,
+            target_id=geom_id,
+            edge_type='APPLIED_TO'
+        ).all()
+        return [DesignNode.query.get(e.source_id) for e in edges if e.source_id]
 
     def compute_dependency_order(self, graph_id) -> list:
         if not NX_AVAILABLE:
@@ -175,6 +218,22 @@ class DesignGraphService:
             return list(nx.topological_sort(G))
         except nx.NetworkXUnfeasible:
             return list(G.nodes())
+
+    def check_dag_validity(self, graph_id) -> dict:
+        """Check if graph is a valid DAG (no cycles)."""
+        if not NX_AVAILABLE:
+            return {'is_dag': True, 'cycles': []}
+
+        G = self.to_networkx(graph_id)
+        if nx.is_directed_acyclic_graph(G):
+            return {'is_dag': True, 'cycles': []}
+
+        # Find all simple cycles
+        try:
+            cycles = list(nx.simple_cycles(G))
+            return {'is_dag': False, 'cycles': cycles}
+        except:
+            return {'is_dag': False, 'cycles': []}
 
     # ── Validation ─────────────────────────────────────────────────────────────
 
@@ -219,7 +278,14 @@ class DesignGraphService:
                 errors.append({'severity': 'warning', 'node_id': None,
                                'message': 'Nodos LOAD/BC no conectados a ningún GEOMETRY.'})
 
+        # Phase 2: DAG validity check
         if NX_AVAILABLE:
+            dag_check = self.check_dag_validity(graph_id)
+            if not dag_check['is_dag']:
+                cycle_str = ' → '.join(dag_check['cycles'][0]) if dag_check['cycles'] else 'cycle'
+                errors.append({'severity': 'error', 'node_id': None,
+                               'message': f'⚠️ Ciclo detectado en el grafo: {cycle_str}. DAG requerido para Phase 2+.'})
+
             G = self.to_networkx(graph_id)
             if not nx.is_weakly_connected(G) and len(G.nodes) > 1:
                 errors.append({'severity': 'warning', 'node_id': None,

@@ -269,6 +269,21 @@ def dependency_order(graph_id):
     return jsonify({'graph_id': graph_id, 'order': order}), 200
 
 
+@bp.route('/<string:graph_id>/dag-check', methods=['GET'])
+def dag_check(graph_id):
+    """Phase 2: Check if graph is a valid DAG (no cycles)."""
+    if not DesignGraph.query.filter_by(id=graph_id).first():
+        return jsonify({'error': 'Graph not found'}), 404
+
+    result = _svc.check_dag_validity(graph_id)
+    return jsonify({
+        'graph_id': graph_id,
+        'is_dag': result['is_dag'],
+        'cycles': result['cycles'],
+        'message': '✓ Grafo es DAG válido' if result['is_dag'] else f'⚠️ {len(result["cycles"])} ciclo(s) detectado(s)',
+    }), 200
+
+
 @bp.route('/<string:graph_id>/export/jsonld', methods=['GET'])
 def export_jsonld(graph_id):
     return jsonify({'error': 'Not implemented — FASE 7'}), 501
