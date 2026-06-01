@@ -4,6 +4,7 @@ FASE 2 full implementation.
 """
 from __future__ import annotations
 import logging
+import threading
 import uuid as _uuid
 
 from flask import Blueprint, jsonify, request, current_app
@@ -88,13 +89,19 @@ def run_simulation(graph_id):
 
     app = current_app._get_current_object()
     from app.design.services.fem.kernel import FEMKernel
-    socketio.start_background_task(
-        FEMKernel().solve_async,
-        app=app,
-        run_id=str(run_id),
-        solver_spec=spec,
-        socketio=socketio,
-    )
+
+    def run_solver():
+        kernel = FEMKernel()
+        kernel.solve_async(
+            app=app,
+            run_id=str(run_id),
+            solver_spec=spec,
+            socketio=socketio,
+        )
+
+    # Launch solver in background thread
+    thread = threading.Thread(target=run_solver, daemon=True)
+    thread.start()
 
     return jsonify({
         'run_id': str(run_id),
