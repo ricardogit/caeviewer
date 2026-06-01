@@ -128,7 +128,14 @@ class FEMMesh:
         lc = length / n_along_length
 
         with _gmsh_lock:
-            gmsh.initialize()
+            try:
+                gmsh.initialize()
+            except RuntimeError as e:
+                if "signal only works in main thread" in str(e):
+                    # Fallback: generate mesh without GMSH (use simple hexahedral grid)
+                    logger.warning("GMSH signal error in thread; using fallback mesh generation")
+                    return cls._generate_fallback_cantilever(length, width, height, n_along_length)
+                raise
             try:
                 gmsh.option.setNumber("General.Terminal", 0)  # silent
                 gmsh.model.add("cantilever")
@@ -174,6 +181,51 @@ class FEMMesh:
                            node_sets={'fixed': fixed_nodes, 'tip': tip_nodes})
             finally:
                 gmsh.finalize()
+
+    @classmethod
+    def _generate_fallback_cantilever(cls,
+                                      length: float = 0.050,
+                                      width: float = 0.010,
+                                      height: float = 0.010,
+                                      n_along_length: int = 12) -> FEMMesh:
+        """Fallback mesh: simple hexahedral grid (no GMSH needed)."""
+        n_x = max(2, n_along_length)
+        n_y = max(2, int(n_x * width / length))
+        n_z = max(2, int(n_x * height / length))
+
+        nodes = []
+        for i in range(n_x + 1):
+            for j in range(n_y + 1):
+                for k in range(n_z + 1):
+                    x = i * length / n_x
+                    y = j * width / n_y
+                    z = k * height / n_z
+                    nodes.append([x, y, z])
+        nodes = np.array(nodes, dtype=np.float64)
+
+        elements = []
+        for i in range(n_x):
+            for j in range(n_y):
+                for k in range(n_z):
+                    idx = lambda ii, jj, kk: ii * (n_y+1) * (n_z+1) + jj * (n_z+1) + kk
+                    n0 = idx(i, j, k)
+                    n1 = idx(i+1, j, k)
+                    n2 = idx(i+1, j+1, k)
+                    n3 = idx(i, j+1, k)
+                    n4 = idx(i, j, k+1)
+                    n5 = idx(i+1, j, k+1)
+                    n6 = idx(i+1, j+1, k+1)
+                    n7 = idx(i, j+1, k+1)
+                    elements.extend([[n0, n1, n2, n4], [n1, n2, n6, n5],
+                                     [n0, n2, n3, n4], [n2, n6, n7, n4],
+                                     [n0, n3, n7, n4], [n1, n5, n6, n2]])
+        elements = np.array(elements, dtype=np.int32)
+
+        fixed_nodes = [i for i in range(len(nodes)) if nodes[i, 0] < 1e-6]
+        tip_nodes = [i for i in range(len(nodes)) if nodes[i, 0] > length - 1e-6]
+
+        logger.info(f"Fallback cantilever mesh: {len(nodes)} nodes, {len(elements)} T4 elements")
+        return cls(nodes, elements, 'T4', node_sets={'fixed': fixed_nodes, 'tip': tip_nodes})
 
     @classmethod
     def from_cae_mesh_id(cls, mesh_id: str) -> FEMMesh:

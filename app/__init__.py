@@ -27,7 +27,7 @@ def create_app(config_name=None):
     db.init_app(app)
     migrate.init_app(app, db)
     compress.init_app(app)
-    socketio.init_app(app, cors_allowed_origins='*', async_mode='threading')
+    socketio.init_app(app, cors_allowed_origins='*')
 
     CORS(app, resources={
         r"/api/*": {
