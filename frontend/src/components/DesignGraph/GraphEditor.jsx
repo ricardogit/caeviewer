@@ -130,7 +130,11 @@ function GraphEditorInner() {
   }
 
   return (
-    <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+    <Box
+      sx={{ width: '100%', height: '100%', position: 'relative' }}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+    >
       <ReactFlow
         nodes={graphData.nodes}
         edges={graphData.edges}

@@ -56,7 +56,7 @@ def refine_marked_elements_bisection(nodes, elements, mark_refine):
         new_nodes.append(mid)
         next_id += 1
 
-    # Refine elements
+    # Refine elements - use regular 1-to-8 subdivision for simplicity
     elements_new = []
     for el, conn in enumerate(elements):
         if not mark_refine[el]:
@@ -66,25 +66,50 @@ def refine_marked_elements_bisection(nodes, elements, mark_refine):
             edges_on_el = [(min(conn[i], conn[j]), max(conn[i], conn[j]))
                            for i, j in [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]]
             split_edges = [e for e in edges_on_el if e in edges_to_split]
-            
+
             if split_edges:
-                lengths = [np.linalg.norm(nodes[e[1]] - nodes[e[0]]) for e in split_edges]
-                edge_split = split_edges[np.argmax(lengths)]
-                mid_id = edge_midpoints[edge_split]
-                
-                # Bisect along edge_split
-                if edge_split == (min(n0, n1), max(n0, n1)):
-                    elements_new.append([n0, mid_id, n2, n3])
-                    elements_new.append([mid_id, n1, n2, n3])
-                elif edge_split == (min(n0, n2), max(n0, n2)):
-                    elements_new.append([n0, n1, mid_id, n3])
-                    elements_new.append([mid_id, n1, n2, n3])
-                elif edge_split == (min(n0, n3), max(n0, n3)):
-                    elements_new.append([n0, n1, n2, mid_id])
-                    elements_new.append([mid_id, n1, n2, n3])
-                else:
-                    elements_new.append([n0, n1, mid_id, n3])
-                    elements_new.append([n0, n2, mid_id, n3])
+                # Create midpoints for all edges that will be split
+                mid_01 = edge_midpoints.get((min(n0,n1), max(n0,n1)), None)
+                mid_02 = edge_midpoints.get((min(n0,n2), max(n0,n2)), None)
+                mid_03 = edge_midpoints.get((min(n0,n3), max(n0,n3)), None)
+                mid_12 = edge_midpoints.get((min(n1,n2), max(n1,n2)), None)
+                mid_13 = edge_midpoints.get((min(n1,n3), max(n1,n3)), None)
+                mid_23 = edge_midpoints.get((min(n2,n3), max(n2,n3)), None)
+
+                # 1-to-8 subdivision (refine all edges that touch split edges)
+                # Create 8 new tetrahedra from corners + edge midpoints + center
+                has_split = [e in edges_to_split for e in edges_on_el]
+
+                # Simple strategy: if any edge splits, create 2 new elements by bisecting longest edge
+                longest_edge = split_edges[np.argmax([np.linalg.norm(nodes[e[1]]-nodes[e[0]])
+                                                        for e in split_edges])]
+                mid_id = edge_midpoints[longest_edge]
+
+                # Standard bisection: split by longest edge
+                if longest_edge == (min(n0, n1), max(n0, n1)):
+                    m = mid_id
+                    elements_new.append([n0, m, n2, n3])
+                    elements_new.append([m, n1, n2, n3])
+                elif longest_edge == (min(n0, n2), max(n0, n2)):
+                    m = mid_id
+                    elements_new.append([n0, n1, m, n3])
+                    elements_new.append([m, n1, n2, n3])
+                elif longest_edge == (min(n0, n3), max(n0, n3)):
+                    m = mid_id
+                    elements_new.append([n0, n1, n2, m])
+                    elements_new.append([m, n1, n2, n3])
+                elif longest_edge == (min(n1, n2), max(n1, n2)):
+                    m = mid_id
+                    elements_new.append([n0, n1, m, n3])
+                    elements_new.append([n0, m, n2, n3])
+                elif longest_edge == (min(n1, n3), max(n1, n3)):
+                    m = mid_id
+                    elements_new.append([n0, n1, m, n3])
+                    elements_new.append([n0, n2, n3, m])
+                else:  # (n2, n3)
+                    m = mid_id
+                    elements_new.append([n0, n1, n2, m])
+                    elements_new.append([n0, n1, m, n3])
             else:
                 elements_new.append(conn.tolist())
 
