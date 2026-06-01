@@ -276,11 +276,12 @@ def dag_check(graph_id):
         return jsonify({'error': 'Graph not found'}), 404
 
     result = _svc.check_dag_validity(graph_id)
+    msg = 'Graph is a valid DAG' if result['is_dag'] else f'{len(result["cycles"])} cycle(s) detected'
     return jsonify({
         'graph_id': graph_id,
         'is_dag': result['is_dag'],
         'cycles': result['cycles'],
-        'message': '✓ Grafo es DAG válido' if result['is_dag'] else f'⚠️ {len(result["cycles"])} ciclo(s) detectado(s)',
+        'message': msg,
     }), 200
 
 
