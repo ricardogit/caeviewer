@@ -7,10 +7,21 @@ import {
   createTheme,
   IconButton,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Typography,
+  CircularProgress,
 } from '@mui/material';
 import {
   AccountTree, Info, Close, Build,
-  Straighten, SquareFoot, ContentCut, Draw, GridOn, Hub,
+  Straighten, SquareFoot, ContentCut, Draw, GridOn, Hub, Share,
 } from '@mui/icons-material';
 import axios from 'axios';
 
@@ -68,6 +79,9 @@ export default function App() {
 
   // ── 3D features state ────────────────────────────────────────────────────
   const [clippingPlane, setClippingPlane] = useState(null);
+
+  // ── Cross-mode integration ───────────────────────────────────────────────
+  const [sendToDesignDialogOpen, setSendToDesignDialogOpen] = useState(false);
 
   // Picking mode: which input is requesting a 3D point
   const [pickingMode, setPickingMode] = useState(false);
@@ -180,10 +194,12 @@ export default function App() {
         <TopBar
           onMenuClick={() => setFileListOpen(!fileListOpen)}
           selectedFile={selectedFile}
+          selectedMesh={selectedMesh}
           appMode={appMode}
           onSetMode={(mode) => {
             setAppMode(mode);
             if (mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+            // Keep selectedFile when switching to CAE (for mesh provenance display)
           }}
         />
 
@@ -309,6 +325,14 @@ export default function App() {
                   <Hub />
                 </IconButton>
               </Tooltip>
+
+              {selectedFile && !caeMode && (
+                <Tooltip title="Enviar a Design Graph">
+                  <IconButton onClick={() => setSendToDesignDialogOpen(true)} sx={{ bgcolor: 'background.paper', '&:hover': { bgcolor: 'warning.dark' } }}>
+                    <Share />
+                  </IconButton>
+                </Tooltip>
+              )}
 
               {selectedEntityId && (
                 <Tooltip title="Entity Details">
@@ -440,6 +464,94 @@ export default function App() {
         }}
       />
 
+      {/* Send STEP file to Design Graph */}
+      {selectedFile && (
+        <SendToDesignDialog
+          open={sendToDesignDialogOpen}
+          onClose={() => setSendToDesignDialogOpen(false)}
+          stepFile={selectedFile}
+        />
+      )}
+
     </ThemeProvider>
+  );
+}
+
+// Helper component for sending STEP file to Design mode
+function SendToDesignDialog({ open, onClose, stepFile }) {
+  const [graphs, setGraphs] = useState([]);
+  const [selectedGraphId, setSelectedGraphId] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (open) {
+      axios.get('/api/design/graph/')
+        .then(res => {
+          setGraphs(res.data.graphs || []);
+          if (res.data.graphs?.length > 0) {
+            setSelectedGraphId(res.data.graphs[0].id);
+          }
+        })
+        .catch(console.error);
+    }
+  }, [open]);
+
+  const handleSend = async () => {
+    if (!selectedGraphId || !stepFile?.id) return;
+    setLoading(true);
+    try {
+      await axios.post(
+        `/api/design/graph/${selectedGraphId}/import/step`,
+        { step_file_id: stepFile.id }
+      );
+      alert(`STEP file enviado a grafo: ${graphs.find(g => g.id === selectedGraphId)?.name}`);
+      onClose();
+    } catch (e) {
+      alert(`Error: ${e.response?.data?.error || e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Enviar {stepFile?.original_filename} a Design</DialogTitle>
+      <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+        <Typography variant="body2" color="textSecondary">
+          Selecciona el grafo de diseño donde deseas importar este archivo STEP como nodo GEOMETRY.
+        </Typography>
+        <FormControl fullWidth size="small">
+          <InputLabel>Grafo destino</InputLabel>
+          <Select
+            value={selectedGraphId || ''}
+            onChange={e => setSelectedGraphId(e.target.value)}
+            label="Grafo destino"
+            disabled={graphs.length === 0}
+          >
+            {graphs.map(g => (
+              <MenuItem key={g.id} value={g.id}>
+                {g.name} (v{g.version})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        {graphs.length === 0 && (
+          <Typography variant="body2" color="error">
+            No hay grafos disponibles. Crea uno primero en el modo Design.
+          </Typography>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={loading}>Cancelar</Button>
+        <Button
+          onClick={handleSend}
+          variant="contained"
+          disabled={!selectedGraphId || loading}
+          startIcon={loading ? <CircularProgress size={16} /> : undefined}
+        >
+          {loading ? 'Enviando...' : 'Enviar a Design'}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }

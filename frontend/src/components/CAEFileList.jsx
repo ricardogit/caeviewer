@@ -5,7 +5,7 @@ import {
   IconButton, Tooltip, Dialog, DialogTitle,
   DialogContent, DialogActions, LinearProgress, Alert, Divider,
 } from '@mui/material';
-import { UploadFile, Refresh, GridOn, DeleteOutline, Hub, InsertDriveFile } from '@mui/icons-material';
+import { UploadFile, Refresh, GridOn, DeleteOutline, Hub, InsertDriveFile, Share } from '@mui/icons-material';
 import axios from 'axios';
 import MeshFromStepDialog from './MeshFromStepDialog';
 
@@ -31,6 +31,12 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
   const [stepFilesLoading, setStepFilesLoading] = useState(false);
   const [pickedStep, setPickedStep] = useState(null);
   const [meshDialogOpen, setMeshDialogOpen] = useState(false);
+
+  // Send-to-Design state
+  const [sendToDesignOpen, setSendToDesignOpen] = useState(false);
+  const [sendToDesignMesh, setSendToDesignMesh] = useState(null);
+  const [designGraphs, setDesignGraphs] = useState([]);
+  const [selectedGraphId, setSelectedGraphId] = useState(null);
 
   useEffect(() => { loadMeshes(); }, []);
 
@@ -129,11 +135,18 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
         <List dense>
           {meshes.map((m) => (
             <ListItem key={m.id} disablePadding secondaryAction={
-              <Tooltip title="Eliminar">
-                <IconButton edge="end" size="small" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(m.id); }} sx={{ opacity: 0.4, '&:hover': { opacity: 1, color: 'error.main' } }}>
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
-              </Tooltip>
+              <Box sx={{ display: 'flex', gap: 0.5 }}>
+                <Tooltip title="Enviar a Design">
+                  <IconButton edge="end" size="small" onClick={(e) => { e.stopPropagation(); setSendToDesignMesh(m); setSendToDesignOpen(true); }} sx={{ opacity: 0.4, '&:hover': { opacity: 1, color: 'info.main' } }}>
+                    <Share fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Eliminar">
+                  <IconButton edge="end" size="small" onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(m.id); }} sx={{ opacity: 0.4, '&:hover': { opacity: 1, color: 'error.main' } }}>
+                    <DeleteOutline fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Box>
             }>
               <ListItemButton selected={m.id === selectedMeshId} onClick={() => onSelectMesh(m)} sx={{ pr: 5 }}>
                 <GridOn sx={{ mr: 1, fontSize: 18, color: 'info.main', flexShrink: 0 }} />
@@ -248,6 +261,70 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
               {uploading ? 'Cargando…' : 'Cargar'}
             </Button>
           }
+        </DialogActions>
+      </Dialog>
+
+      {/* Send to Design Dialog */}
+      <Dialog open={sendToDesignOpen} onClose={() => setSendToDesignOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Enviar malla a Design Graph</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 1 }}>
+          <Typography variant="body2" color="textSecondary">
+            Selecciona el grafo de diseño donde deseas importar esta malla como nodo GEOMETRY.
+          </Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Button size="small" onClick={async () => {
+              try {
+                const res = await axios.get('/api/design/graph/');
+                setDesignGraphs(res.data.graphs || []);
+                if (res.data.graphs?.length > 0) setSelectedGraphId(res.data.graphs[0].id);
+              } catch (e) {
+                alert('Error cargando grafos');
+              }
+            }}>
+              Cargar grafos disponibles
+            </Button>
+            {designGraphs.length > 0 && (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {designGraphs.map(g => (
+                  <Button
+                    key={g.id}
+                    variant={selectedGraphId === g.id ? 'contained' : 'outlined'}
+                    onClick={() => setSelectedGraphId(g.id)}
+                    size="small"
+                  >
+                    {g.name} (v{g.version})
+                  </Button>
+                ))}
+              </Box>
+            )}
+            {designGraphs.length === 0 && (
+              <Typography variant="body2" color="error">
+                No hay grafos. Crea uno en modo Design primero.
+              </Typography>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSendToDesignOpen(false)}>Cancelar</Button>
+          <Button
+            onClick={async () => {
+              if (!selectedGraphId || !sendToDesignMesh) return;
+              try {
+                await axios.post(
+                  `/api/design/graph/${selectedGraphId}/import/mesh`,
+                  { mesh_id: sendToDesignMesh.id }
+                );
+                alert(`Malla enviada a ${designGraphs.find(g => g.id === selectedGraphId)?.name}`);
+                setSendToDesignOpen(false);
+              } catch (e) {
+                alert(`Error: ${e.response?.data?.error || e.message}`);
+              }
+            }}
+            variant="contained"
+            disabled={!selectedGraphId}
+          >
+            Enviar a Design
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>
