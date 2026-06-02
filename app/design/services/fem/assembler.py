@@ -66,15 +66,28 @@ def assemble_F(mesh: FEMMesh, loads: list) -> np.ndarray:
       - 'node_set' + 'force_per_node': [fx, fy, fz]  (applied equally to each node)
       - 'node_set' + 'force':          [fx, fy, fz]  (total, distributed over set)
       - 'node'    + 'force':           [fx, fy, fz]  (single node)
+      - (Phase 3/4) 'geometry_id': geometry to which this load applies
 
     Returns:
         F: (n_dof,) load vector.
+
+    Note (Phase 3-4):
+        Load specs may include 'geometry_id' for multi-geometry scoping (Phase 4 feature).
+        Currently, loads are applied globally to all nodes in the node_set,
+        regardless of geometry_id. True geometry scoping requires FEMMesh multi-geometry
+        support, planned for Phase 4 (multi-part assembly solving).
     """
     F = np.zeros(mesh.n_dof_structural, dtype=np.float64)
 
     for load in loads:
         f = np.array(load.get('force', load.get('force_per_node', [0.0, 0.0, 0.0])),
                      dtype=np.float64)
+
+        # TODO (Phase 4): Implement geometry_id filtering
+        # geom_id = load.get('geometry_id')
+        # geometry_filter = None
+        # if geom_id and hasattr(mesh, 'geometry_map'):
+        #     geometry_filter = set(mesh.geometry_map.get(geom_id, []))
 
         if 'node' in load:
             n = int(load['node'])
@@ -85,8 +98,13 @@ def assemble_F(mesh: FEMMesh, loads: list) -> np.ndarray:
             if not nodes:
                 logger.warning(f"Node set '{load['node_set']}' is empty or missing.")
                 continue
+
+            # Filter by geometry if specified (Phase 4 feature)
+            # if geometry_filter:
+            #     nodes = [n for n in nodes if n in geometry_filter]
+
             if 'force' in load and 'force_per_node' not in load:
-                f_per = f / len(nodes)
+                f_per = f / len(nodes) if nodes else f
             else:
                 f_per = f
             for n in nodes:
@@ -106,15 +124,31 @@ def apply_bcs(K: sp.csr_matrix, F: np.ndarray,
                 'node_set': str name in mesh.node_sets
                 'dofs':     list of DOF offsets [0,1,2] for ux,uy,uz (default all 3)
                 'values':   prescribed values (default 0.0 for each dof)
+                'geometry_id': (Phase 3/4) geometry to which this BC applies
         mesh: FEMMesh providing node_sets.
 
     Returns:
         (K_mod, F_mod): modified stiffness and load vector.
+
+    Note (Phase 3-4):
+        BC specs may include 'geometry_id' for multi-geometry scoping (Phase 4 feature).
+        Currently, BCs are applied globally to all nodes in the node_set,
+        regardless of geometry_id. True geometry scoping requires FEMMesh multi-geometry
+        support, planned for Phase 4 (multi-part assembly solving).
     """
     K_lil = K.tolil()
     F = F.copy()
 
     for bc in bcs:
+        # TODO (Phase 4): Implement geometry_id filtering
+        # geom_id = bc.get('geometry_id')
+        # if geom_id and hasattr(mesh, 'geometry_map'):
+        #     geom_nodes = set(mesh.geometry_map.get(geom_id, []))
+        #     nodes = [n for n in mesh.node_sets.get(bc.get('node_set', ''), [])
+        #              if n in geom_nodes]
+        # else:
+        #     nodes = mesh.node_sets.get(bc.get('node_set', ''), [])
+
         nodes = mesh.node_sets.get(bc.get('node_set', ''), [])
         dof_offsets = bc.get('dofs', [0, 1, 2])
         vals = bc.get('values', [0.0] * len(dof_offsets))
