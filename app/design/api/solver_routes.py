@@ -57,149 +57,253 @@ def run_simulation(graph_id):
     from app.design.services.traceability.hasher import SimulationHasher
     from app.design.services.graph_to_solver_spec import graph_to_solver_spec
 
-    graph = DesignGraph.query.filter_by(id=graph_id).first()
-    if not graph:
-        return jsonify({'error': 'Graph not found'}), 404
+    try:
+        # Validate graph exists
+        graph = DesignGraph.query.filter_by(id=graph_id).first()
+        if not graph:
+            logger.warning(f"Graph {graph_id} not found")
+            return jsonify({'error': 'Graph not found', 'graph_id': graph_id}), 404
 
-    data = request.get_json(silent=True) or {}
-
-    # Si no hay material/bcs/loads en el body, leerlos del grafo
-    if 'material' not in data or 'bcs' not in data or 'loads' not in data:
+        # Parse request body
         try:
-            graph_spec = graph_to_solver_spec(graph_id)
-            # Merge: valores del body tienen prioridad
-            if 'material' not in data:
-                data['material'] = graph_spec.get('material', data.get('material'))
-            if 'bcs' not in data:
-                data['bcs'] = graph_spec.get('bcs', data.get('bcs', []))
-            if 'loads' not in data:
-                data['loads'] = graph_spec.get('loads', data.get('loads', []))
-            if 'mesh_source' not in data and 'mesh_source' in graph_spec:
-                data['mesh_source'] = graph_spec['mesh_source']
-            if 'mesh_id' not in data and 'mesh_id' in graph_spec:
-                data['mesh_id'] = graph_spec['mesh_id']
-            if 'tier' not in data and 'tier' in graph_spec:
-                data['tier'] = graph_spec['tier']
+            data = request.get_json(silent=True) or {}
         except Exception as e:
-            logger.warning(f"Could not read graph spec for {graph_id}: {e}")
-            # Fallback a defaults
+            logger.error(f"Failed to parse JSON: {e}")
+            return jsonify({'error': 'Invalid JSON in request body'}), 400
 
-    run_id = _uuid.uuid4()
-    hasher = SimulationHasher()
-    run_hash = hasher.compute_hash(
-        graph_state={'graph_id': graph_id, 'version': graph.version},
-        solver_config={k: v for k, v in data.items()
-                       if k not in ('nodes', 'elements')},  # exclude large arrays
-        mesh_stats={},
-    )
+        # Validate tier if provided
+        if 'tier' in data:
+            try:
+                tier = int(data['tier'])
+                if tier not in (0, 1, 2, 3):
+                    return jsonify({'error': 'Tier must be 0-3', 'got': tier}), 422
+            except (ValueError, TypeError) as e:
+                logger.error(f"Invalid tier: {e}")
+                return jsonify({'error': 'Tier must be integer 0-3'}), 422
 
-    # Inject graph_id into spec for graph-based mesh
-    spec = dict(data)
-    spec['graph_id'] = graph_id
+        # Read spec from graph if needed
+        if 'material' not in data or 'bcs' not in data or 'loads' not in data:
+            try:
+                graph_spec = graph_to_solver_spec(graph_id)
+                # Merge: request body values have priority
+                if 'material' not in data:
+                    data['material'] = graph_spec.get('material', data.get('material'))
+                if 'bcs' not in data:
+                    data['bcs'] = graph_spec.get('bcs', data.get('bcs', []))
+                if 'loads' not in data:
+                    data['loads'] = graph_spec.get('loads', data.get('loads', []))
+                if 'mesh_source' not in data and 'mesh_source' in graph_spec:
+                    data['mesh_source'] = graph_spec['mesh_source']
+                if 'mesh_id' not in data and 'mesh_id' in graph_spec:
+                    data['mesh_id'] = graph_spec['mesh_id']
+                if 'tier' not in data and 'tier' in graph_spec:
+                    data['tier'] = graph_spec['tier']
+            except Exception as e:
+                logger.warning(f"Could not read graph spec for {graph_id}: {e}")
+                # Fallback to request body defaults
 
-    run = SimulationRun(
-        id=run_id,
-        graph_id=graph_id,
-        graph_version=graph.version,
-        hash=run_hash,
-        status='queued',
-        tier=int(data.get('tier', 1)),
-        physics=data.get('physics', ['structural']),
-        solver_config={k: v for k, v in data.items()
-                       if k not in ('nodes', 'elements')},
-    )
-    db.session.add(run)
-    db.session.commit()
+        # Validate required parameters
+        if not data.get('material'):
+            data['material'] = {'type': 'linear_elastic_isotropic', 'E': 210e9, 'nu': 0.3, 'rho': 7800}
+        if not data.get('bcs'):
+            logger.warning(f"No boundary conditions for run {graph_id}")
+        if not data.get('loads'):
+            logger.warning(f"No loads for run {graph_id}")
 
-    app = current_app._get_current_object()
-    from app.design.services.fem.kernel import FEMKernel
+        # Compute run hash
+        run_id = _uuid.uuid4()
+        hasher = SimulationHasher()
+        try:
+            run_hash = hasher.compute_hash(
+                graph_state={'graph_id': graph_id, 'version': graph.version},
+                solver_config={k: v for k, v in data.items()
+                               if k not in ('nodes', 'elements')},
+                mesh_stats={},
+            )
+        except Exception as e:
+            logger.error(f"Failed to compute run hash: {e}")
+            run_hash = 'unknown'
 
-    def run_solver():
-        kernel = FEMKernel()
-        kernel.solve_async(
-            app=app,
-            run_id=str(run_id),
-            solver_spec=spec,
-            socketio=socketio,
-        )
+        # Inject graph_id into spec
+        spec = dict(data)
+        spec['graph_id'] = graph_id
 
-    # Launch solver in background thread
-    thread = threading.Thread(target=run_solver, daemon=True)
-    thread.start()
+        # Create SimulationRun record
+        try:
+            run = SimulationRun(
+                id=run_id,
+                graph_id=graph_id,
+                graph_version=graph.version,
+                hash=run_hash,
+                status='queued',
+                tier=int(data.get('tier', 1)),
+                physics=data.get('physics', ['structural']),
+                solver_config={k: v for k, v in data.items()
+                               if k not in ('nodes', 'elements')},
+            )
+            db.session.add(run)
+            db.session.commit()
+        except Exception as e:
+            logger.error(f"Failed to create SimulationRun record: {e}")
+            db.session.rollback()
+            return jsonify({'error': 'Failed to create simulation record', 'detail': str(e)}), 500
 
-    return jsonify({
-        'run_id': str(run_id),
-        'hash': run_hash[:16],
-        'status': 'queued',
-        'graph_id': graph_id,
-    }), 202
+        # Launch solver in background thread
+        app = current_app._get_current_object()
+        from app.design.services.fem.kernel import FEMKernel
+
+        def run_solver():
+            kernel = FEMKernel()
+            try:
+                kernel.solve_async(
+                    app=app,
+                    run_id=str(run_id),
+                    solver_spec=spec,
+                    socketio=socketio,
+                )
+            except Exception as e:
+                logger.error(f"Unhandled error in solver thread: {e}", exc_info=True)
+                # Error already emitted via kernel.solve_async, but log for debugging
+
+        thread = threading.Thread(target=run_solver, daemon=True, name=f"solver-{run_id}")
+        thread.start()
+
+        logger.info(f"Launched simulation run {run_id} for graph {graph_id}")
+        return jsonify({
+            'run_id': str(run_id),
+            'hash': run_hash[:16] if run_hash != 'unknown' else run_hash,
+            'status': 'queued',
+            'graph_id': graph_id,
+        }), 202
+
+    except Exception as e:
+        logger.error(f"Unexpected error in run_simulation: {e}", exc_info=True)
+        return jsonify({'error': 'Internal server error', 'detail': str(e)}), 500
 
 
 # ── Run status & results ──────────────────────────────────────────────────────
 
 @bp.route('/<string:run_id>/status', methods=['GET'])
 def run_status(run_id):
-    from app.design.models.simulation import SimulationRun
-    run = SimulationRun.query.filter_by(id=run_id).first()
-    if not run:
-        return jsonify({'error': 'Run not found'}), 404
-    return jsonify({
-        'run_id': str(run.id),
-        'status': run.status,
-        'graph_id': str(run.graph_id),
-        'tier': run.tier,
-        'converged': run.converged,
-        'n_iterations': run.n_iterations,
-        'final_residual': run.final_residual,
-        'wall_time_s': run.wall_time,
-        'created_at': run.created_at.isoformat(),
-    }), 200
+    """Get status of a simulation run."""
+    try:
+        from app.design.models.simulation import SimulationRun
+        run = SimulationRun.query.filter_by(id=run_id).first()
+        if not run:
+            logger.warning(f"Run {run_id} not found")
+            return jsonify({'error': 'Run not found', 'run_id': run_id}), 404
+
+        return jsonify({
+            'run_id': str(run.id),
+            'status': run.status,
+            'graph_id': str(run.graph_id),
+            'tier': run.tier,
+            'converged': run.converged,
+            'n_iterations': run.n_iterations,
+            'final_residual': run.final_residual,
+            'wall_time_s': run.wall_time,
+            'created_at': run.created_at.isoformat(),
+        }), 200
+    except Exception as e:
+        logger.error(f"Error getting run status {run_id}: {e}")
+        return jsonify({'error': 'Failed to get run status', 'detail': str(e)}), 500
 
 
 @bp.route('/<string:run_id>/results', methods=['GET'])
 def run_results(run_id):
     """Return field summary and metadata for a completed run."""
-    from app.design.models.simulation import SimulationRun
-    run = SimulationRun.query.filter_by(id=run_id).first()
-    if not run:
-        return jsonify({'error': 'Run not found'}), 404
-    if run.status not in ('done', 'failed'):
-        return jsonify({'error': f'Run status is {run.status}', 'run_id': str(run.id)}), 409
-
-    result_path = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
-    h5_path = f"{result_path}/{run_id}.h5"
-
-    fields = []
-    summary = {}
     try:
-        import h5py, numpy as np
-        with h5py.File(h5_path, 'r') as f:
-            for fname in f['fields']:
-                ds = f[f'fields/{fname}/step_0']
-                arr = ds[:]
-                flat = arr.flatten()
-                fields.append({
-                    'name': fname,
-                    'type': 'nodal' if fname in ('displacement', 'displacement_magnitude', 'von_mises_nodal') else 'elemental',
-                    'components': arr.shape[1] if arr.ndim > 1 else 1,
-                    'data_min': float(flat.min()),
-                    'data_max': float(flat.max()),
-                })
-            summary = dict(f.attrs)
-    except Exception as e:
-        logger.warning(f"Could not read HDF5 for run {run_id}: {e}")
+        from app.design.models.simulation import SimulationRun
+        run = SimulationRun.query.filter_by(id=run_id).first()
+        if not run:
+            logger.warning(f"Run {run_id} not found")
+            return jsonify({'error': 'Run not found', 'run_id': run_id}), 404
 
-    return jsonify({
-        'run_id': str(run.id),
-        'status': run.status,
-        'converged': run.converged,
-        'wall_time_s': run.wall_time,
-        'n_iterations': run.n_iterations,
-        'final_residual': run.final_residual,
-        'mesh_stats': run.mesh_stats,
-        'fields': fields,
-        'summary': summary,
-    }), 200
+        if run.status == 'queued' or run.status == 'running':
+            logger.info(f"Run {run_id} still in progress (status={run.status})")
+            return jsonify({
+                'error': 'Run not complete',
+                'run_id': str(run.id),
+                'status': run.status,
+                'message': f'Run is still {run.status}. Check back later.',
+            }), 202  # Accepted but not ready
+
+        if run.status == 'failed':
+            logger.warning(f"Run {run_id} failed")
+            return jsonify({
+                'run_id': str(run.id),
+                'status': 'failed',
+                'error_message': run.error_message or 'Unknown error',
+                'wall_time_s': run.wall_time,
+            }), 200  # Return 200 with failed status
+
+        result_path = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
+        h5_path = f"{result_path}/{run_id}.h5"
+
+        fields = []
+        summary = {}
+        try:
+            import h5py
+            import os
+            if not os.path.exists(h5_path):
+                logger.error(f"Results file not found: {h5_path}")
+                return jsonify({
+                    'error': 'Results file not found',
+                    'run_id': str(run.id),
+                    'expected_path': h5_path,
+                }), 500
+
+            with h5py.File(h5_path, 'r') as f:
+                if 'fields' not in f:
+                    logger.warning(f"No fields in HDF5 for run {run_id}")
+                else:
+                    for fname in f['fields']:
+                        try:
+                            ds = f[f'fields/{fname}/step_0']
+                            arr = ds[:]
+                            flat = arr.flatten()
+                            fields.append({
+                                'name': fname,
+                                'type': 'nodal' if fname in ('displacement', 'displacement_magnitude', 'von_mises_nodal') else 'elemental',
+                                'components': arr.shape[1] if arr.ndim > 1 else 1,
+                                'data_min': float(flat.min()),
+                                'data_max': float(flat.max()),
+                            })
+                        except Exception as e:
+                            logger.warning(f"Could not read field {fname}: {e}")
+                if 'attributes' in f:
+                    summary = dict(f.attrs)
+        except Exception as e:
+            logger.error(f"Could not read HDF5 results for run {run_id}: {e}")
+            # Return partial results with warning
+            return jsonify({
+                'run_id': str(run.id),
+                'status': run.status,
+                'converged': run.converged,
+                'wall_time_s': run.wall_time,
+                'n_iterations': run.n_iterations,
+                'final_residual': run.final_residual,
+                'mesh_stats': run.mesh_stats,
+                'fields': fields,
+                'summary': summary,
+                'warning': f'Could not fully read results file: {str(e)}',
+            }), 200
+
+        return jsonify({
+            'run_id': str(run.id),
+            'status': run.status,
+            'converged': run.converged,
+            'wall_time_s': run.wall_time,
+            'n_iterations': run.n_iterations,
+            'final_residual': run.final_residual,
+            'mesh_stats': run.mesh_stats,
+            'fields': fields,
+            'summary': summary,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error getting results for run {run_id}: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to get results', 'detail': str(e)}), 500
 
 
 @bp.route('/<string:run_id>/field/<string:field_name>', methods=['GET'])
