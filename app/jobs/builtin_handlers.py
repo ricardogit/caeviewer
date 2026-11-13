@@ -61,3 +61,10 @@ def topology_simp(ctx, payload):
     """FASE 4: SIMP topology optimization for a SimulationRun (purpose='topology')."""
     from app.design.services.topology.runner import run_topology
     return run_topology(ctx, payload['run_id'], payload['spec'])
+
+
+@handler('rom.build', queue='solve')
+def rom_build(ctx, payload):
+    """FASE 5: POD-Galerkin ROM for a SimulationRun (purpose='rom')."""
+    from app.design.services.rom.runner import run_rom_build
+    return run_rom_build(ctx, payload['run_id'], payload['spec'])

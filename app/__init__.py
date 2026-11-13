@@ -184,6 +184,10 @@ def _register_socketio_events():
         if room:
             leave_room(room)
 
+    # FASE 5: real-time ROM evaluation (ROM explorer sliders)
+    from app.design.api.rom_routes import register_socket_handlers
+    register_socket_handlers(socketio)
+
     @socketio.on('connect')
     def handle_connect():
         pass   # connection acknowledged automatically

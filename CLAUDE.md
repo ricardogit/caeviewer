@@ -299,6 +299,28 @@ for a few iterations (warm start). Limit `MAX_ELEMENTS` = 150 000. T10 study mes
 - Hito: `python validate_topology.py` — plate with pinned bottom supports and deck load gives the
   deck-arch bridge (volume, grayness, compliance, symmetry, connectivity checks). ~100 s.
 
+## Reduced-Order Models (FASE 5)
+
+`app/design/services/rom/`: **POD-Galerkin** with an exact affine decomposition. Isotropic
+D = λ·m mᵀ + μ·diag(2,2,2,1,1,1) (engineering shear) → K = λK_λ + μK_μ; F = Σ (pᵢ/pᵢ⁰)·Fᵢ, gravity loads
+also scaled by ρ/ρ₀. Parameters: `E`, `nu`, `load_<i>`, `rho` (only with gravity) — `describe_parameters(spec)`.
+- `pod.py`: `PODROMBuilder` — LHS snapshots (normalized) → SVD, energy threshold 1−1e-12 (lower thresholds
+  keep too few modes: 0.999999 gave 1 mode / 0.5 % error) → projected r×r operators, element-centroid strain
+  modes, surface displacement/strain modes (float32) for the browser; validation vs full solves at fresh LHS points.
+- `online_solver.py`: process-wide LRU (4 ROMs); `evaluate()` = r×r solve + whole-volume max u/σvM (<1 ms).
+  The `residual` is a force-norm indicator (~1e-2), not an error: the UI shows the validation error.
+- `runner.py`: job `rom.build` (queue `solve`) → `SOLVER_DATA_DIR/rom/<run_id>/rom.npz`; runs are
+  `SimulationRun(purpose='rom')` with settings under `spec['rom']` (hashed); socket `rom_build_progress|done|error`.
+- API `/api/design/rom`: `GET /<graph_id>/parameters`, `POST /<graph_id>/build`, `GET /<graph_id>/list`,
+  `GET /<rom_id>`, `GET /<rom_id>/pack` (binary surface pack: uint32 header len + JSON + pad + xyz mm/tris/phi/strain),
+  `POST /<rom_id>/evaluate`, `POST /<rom_id>/full-run` + `GET /<rom_id>/compare/<run_id>` (ROM vs full solve).
+  Socket `rom_evaluate` (ack) is what the explorer uses; the client coalesces requests while one is in flight.
+- UI: SolverPanel → "ROM" (`ROMPanel.jsx`, `ROMExplorer.jsx`, `stores/romStore.js`, `utils/romPack.js`
+  rebuilds the surface field from the reduced coefficients in the browser).
+- Hito: `python validate_rom.py [--server http://127.0.0.1:8080 --rom-id <id>]` (use 127.0.0.1 on Windows:
+  `localhost` adds ~2 s per request via IPv6 fallback). Measured: cantilever error 1e-7, eval+field p95 <1 ms;
+  CAD shaft 56K DOF: 3 modes, build 210 s, socket round-trip p95 30 ms, full run 22 s vs ROM 3 ms.
+
 ## Traceability (FASE 7)
 
 `app/design/services/traceability/hasher.py`: the run hash = SHA-256 of **canonical physical inputs**

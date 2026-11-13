@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 PURPOSE_LABEL = {'run': 'Simulación', 'reproduce': 'Reproducción', 'adaptive': 'Adaptativa',
-                 'topology': 'Optimización topológica'}
+                 'topology': 'Optimización topológica', 'rom': 'Modelo de orden reducido (ROM)'}
 STATUS_LABEL = {'queued': 'en cola', 'running': 'calculando', 'done': 'completada',
                 'failed': 'fallida', 'cancelled': 'cancelada'}
 
@@ -27,6 +27,10 @@ KEY_RESULTS = [
     ('compliance_bw', 'complianceOptimum', 'Flexibilidad del diseño 0/1', 'J', 'JOU'),
     ('volume_fraction_bw', 'volumeFraction', 'Fracción de volumen del diseño 0/1', None, None),
     ('grayness', 'grayness', 'Fracción con densidad intermedia', None, None),
+    # ROM (FASE 5)
+    ('n_modes', 'romModes', 'Modos POD retenidos', None, None),
+    ('validation_max_error_u', 'romErrorU', 'Error de validación máx. (desplazamientos)', None, None),
+    ('validation_max_error_vm', 'romErrorVM', 'Error de validación máx. (von Mises máx.)', None, None),
 ]
 
 

@@ -16,7 +16,7 @@ import {
 } from '@mui/icons-material';
 
 const API = '/api/design/solver';
-const PURPOSE = { run: 'Simulación', reproduce: 'Reproducción', adaptive: 'Adaptativa', topology: 'Topología' };
+const PURPOSE = { run: 'Simulación', reproduce: 'Reproducción', adaptive: 'Adaptativa', topology: 'Topología', rom: 'ROM' };
 const STATUS = {
   queued: ['En cola', 'info'], running: ['Calculando', 'warning'], done: ['OK', 'success'],
   failed: ['Error', 'error'], cancelled: ['Cancelada', 'default'],

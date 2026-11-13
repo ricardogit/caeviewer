@@ -20,6 +20,7 @@ import ConvergenceMonitor from './ConvergenceMonitor';
 import AdaptiveMonitor from './AdaptiveMonitor';
 import SimHistory from './SimHistory';
 import TopologyPanel from './TopologyPanel';
+import ROMPanel from './ROMPanel';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -112,9 +113,13 @@ export default function SolverPanel({ onClose }) {
           <ToggleButton value="topology" sx={{ fontSize: 11 }}>
             Topología
           </ToggleButton>
+          <ToggleButton value="rom" sx={{ fontSize: 11 }}>
+            ROM
+          </ToggleButton>
         </ToggleButtonGroup>
 
         {mode === 'topology' && <TopologyPanel graphId={activeGraphId} />}
+        {mode === 'rom' && <ROMPanel graphId={activeGraphId} />}
 
         {/* ── Graph mode ───────────────────────────────────────────────── */}
         {mode === 'graph' && (
