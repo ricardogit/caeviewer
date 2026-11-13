@@ -68,6 +68,10 @@ def graph_to_solver_spec(graph_id: str) -> dict:
     if geometry_nodes:
         geom_node = geometry_nodes[0]
         props = geom_node.properties or {}
+        # Fase 1b: versioned CAD geometry with persistent face IDs (app.geometry).
+        # Consumed by the Gmsh/CalculiX path in Fase 2; BC/LOAD entity_ids refer to its faces.
+        if props.get('geometry_id'):
+            spec['geometry_id'] = props['geometry_id']
         mesh_id = props.get('mesh_id')
         if mesh_id:
             spec['mesh_source'] = 'cae_mesh'

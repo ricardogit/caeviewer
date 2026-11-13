@@ -268,6 +268,25 @@ class DesignGraphService:
             errors.append({'severity': 'error', 'node_id': None,
                            'message': 'Faltan nodos LOAD o BC. Agrega al menos una carga o condición de frontera.'})
 
+        # Fase 1b: GEOMETRY nodes may point at a versioned CAD geometry
+        for gnode in domain['geometry_nodes']:
+            gid = (gnode.properties or {}).get('geometry_id')
+            if not gid:
+                continue
+            from app.extensions import db
+            from app.geometry.models import Geometry
+            try:
+                geo = db.session.get(Geometry, gid)
+            except Exception:
+                db.session.rollback()
+                geo = None
+            if geo is None:
+                errors.append({'severity': 'error', 'node_id': str(gnode.id),
+                               'message': f'La geometría {gid} no existe.'})
+            elif geo.status != 'ready':
+                errors.append({'severity': 'warning', 'node_id': str(gnode.id),
+                               'message': f'La geometría "{geo.name}" v{geo.version} aún no está lista ({geo.status}).'})
+
         if domain['material_nodes'] and domain['geometry_nodes']:
             if not connected(mat_ids, geom_ids):
                 errors.append({'severity': 'warning', 'node_id': None,

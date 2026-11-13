@@ -39,6 +39,13 @@ python -m app.jobs.worker --queues default,solve
 Progress flows worker → `NOTIFY job_events` → web listener (started in `run.py`) → socket.io
 (`job_update` broadcast, plus wrapped events like `solver_progress` to their room).
 
+**Geometry (Fase 1b):** `app/geometry/` — STEP files are stored content-addressed under `data/geometry/files/`;
+the `geometry.import` job (queue `geometry`, needs pythonOCC → run the worker in the Docker image) fills
+`geometry_entities` with one row per face/solid (TopExp index + signature). Re-import keeps entity UUIDs;
+a new version (`parent_id`) links faces to the previous version by signature (`parent_entity_id`,
+`match_kind`). DB file URIs are relative to `DATA_DIR`. `occ_import`/`gmsh_bridge` must never be
+imported at module level from web code.
+
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
 image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.
 From Git Bash, prefix `docker run -e VAR=/path` with `MSYS_NO_PATHCONV=1`.
@@ -178,6 +185,7 @@ src/
 | Prefix | Module | Purpose |
 |--------|--------|---------|
 | `/api/jobs` | `app/jobs/api.py` | Job list/get/log/cancel/stats; POST only for `dummy` |
+| `/api/geometry` | `app/geometry/api.py` | Versioned STEP upload → `geometry.import` job (OCC worker); entities, versions, remap |
 | `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |
 | `/api/design/solver` | `solver_routes.py` | Launch FEM simulations (async), stream progress, get results |

@@ -19,9 +19,9 @@ import time
 import traceback
 from pathlib import Path
 
-from . import gmsh_bridge as gb
-from .occ_import import compute_signatures, read_step, write_brep
-from .signature import digest_of, match_signatures
+from app.geometry import gmsh_bridge as gb
+from app.geometry.occ_import import compute_signatures, read_step, write_brep
+from app.geometry.signature import digest_of, match_signatures
 
 VERSION_PAIR = ("Pedestal - copia", "Pedestalx")
 
