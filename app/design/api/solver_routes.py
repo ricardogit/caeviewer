@@ -54,7 +54,6 @@ def run_simulation(graph_id):
     """
     from app.design.models.graph import DesignGraph
     from app.design.models.simulation import SimulationRun
-    from app.design.services.traceability.hasher import SimulationHasher
     from app.design.services.graph_to_solver_spec import graph_to_solver_spec
 
     try:
@@ -125,63 +124,229 @@ def run_simulation(graph_id):
         if not data.get('loads'):
             logger.warning(f"No loads for run {graph_id}")
 
-        # Compute run hash
-        run_id = _uuid.uuid4()
-        hasher = SimulationHasher()
-        try:
-            run_hash = hasher.compute_hash(
-                graph_state={'graph_id': graph_id, 'version': graph.version},
-                solver_config={k: v for k, v in data.items()
-                               if k not in ('nodes', 'elements')},
-                mesh_stats={},
-            )
-        except Exception as e:
-            logger.error(f"Failed to compute run hash: {e}")
-            run_hash = 'unknown'
-
-        # Inject graph_id into spec
         spec = dict(data)
         spec['graph_id'] = graph_id
-
-        # Create SimulationRun record
         try:
-            run = SimulationRun(
-                id=run_id,
-                graph_id=graph_id,
-                graph_version=graph.version,
-                hash=run_hash,
-                status='queued',
-                tier=int(data.get('tier', 1)),
-                physics=data.get('physics', ['structural']),
-                solver_config={k: v for k, v in data.items()
-                               if k not in ('nodes', 'elements')},
-            )
-            db.session.add(run)
-            db.session.commit()
+            run, job = _create_and_enqueue(graph, spec, purpose='run')
         except Exception as e:
-            logger.error(f"Failed to create SimulationRun record: {e}")
+            logger.error(f"Failed to create SimulationRun record: {e}", exc_info=True)
             db.session.rollback()
             return jsonify({'error': 'Failed to create simulation record', 'detail': str(e)}), 500
 
-        # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker
-        # --queues solve) runs FEMKernel.solve_async and its socket events are
-        # forwarded to room=run_id by the web-side job listener.
-        from app.jobs import enqueue
-        job = enqueue('fem.solve', {'run_id': str(run_id), 'spec': spec},
-                      simulation_run_id=run_id)
-
-        logger.info(f"Launched simulation run {run_id} for graph {graph_id}")
+        logger.info(f"Launched simulation run {run.id} for graph {graph_id}")
         return jsonify({
-            'run_id': str(run_id),
-            'hash': run_hash[:16] if run_hash != 'unknown' else run_hash,
+            'run_id': str(run.id),
+            'hash': run.hash,
             'status': 'queued',
             'graph_id': graph_id,
             'job_id': str(job.id),
+            'parent_run_id': str(run.parent_run_id) if run.parent_run_id else None,
+            'parameter_delta': run.parameter_delta or {},
         }), 202
 
     except Exception as e:
         logger.error(f"Unexpected error in run_simulation: {e}", exc_info=True)
         return jsonify({'error': 'Internal server error', 'detail': str(e)}), 500
+
+
+def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
+    """Create the SimulationRun (hash, canonical inputs, lineage) and enqueue fem.solve.
+
+    Lineage (FASE 7): a normal run's parent is the latest finished run of the same graph and
+    ``parameter_delta`` lists what changed in the canonical inputs; a reproduction's parent is
+    the run being reproduced.
+    """
+    from app.design.models.simulation import SimulationRun
+    from app.design.services.traceability.hasher import fingerprint, parameter_delta, provenance
+    from app.jobs import enqueue
+
+    fp = fingerprint(spec)
+    if parent is None and purpose == 'run':
+        parent = (SimulationRun.query
+                  .filter(SimulationRun.graph_id == graph.id, SimulationRun.status == 'done',
+                          SimulationRun.purpose == 'run')
+                  .order_by(SimulationRun.created_at.desc()).first())
+    run = SimulationRun(
+        id=_uuid.uuid4(),
+        graph_id=graph.id,
+        graph_version=graph.version,
+        hash=fp['hash'],
+        purpose=purpose,
+        inputs=fp['inputs'],
+        environment=fp['environment'],
+        provenance=provenance(),
+        status='queued',
+        tier=int(spec.get('tier', 1)),
+        physics=spec.get('physics', ['structural']),
+        solver_config={k: v for k, v in spec.items() if k not in ('nodes', 'elements', 'graph_id')},
+        parent_run_id=parent.id if parent is not None else None,
+        parameter_delta=(parameter_delta(parent.inputs, fp['inputs'])
+                         if parent is not None and parent.inputs is not None else {}),
+    )
+    db.session.add(run)
+    db.session.commit()
+    # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker --queues solve)
+    # runs FEMKernel.solve_async and its socket events are forwarded to room=run_id.
+    job = enqueue('fem.solve', {'run_id': str(run.id), 'spec': spec}, simulation_run_id=run.id)
+    return run, job
+
+
+# ── Traceability (FASE 7) ─────────────────────────────────────────────────────
+
+@bp.route('/runs', methods=['GET'])
+def list_runs():
+    """Simulation history. Query: graph_id, hash, limit (default 50)."""
+    from app.design.models.simulation import SimulationRun
+    q = SimulationRun.query
+    if request.args.get('graph_id'):
+        q = q.filter(SimulationRun.graph_id == request.args['graph_id'])
+    if request.args.get('hash'):
+        q = q.filter(SimulationRun.hash == request.args['hash'])
+    limit = max(1, min(int(request.args.get('limit', 50)), 500))
+    runs = q.order_by(SimulationRun.created_at.desc()).limit(limit).all()
+    items = [r.to_history_dict() for r in runs]
+    counts = {}
+    for it in items:
+        counts[it['hash']] = counts.get(it['hash'], 0) + 1
+    for it in items:
+        it['same_hash_runs'] = counts[it['hash']]
+    return jsonify({'runs': items, 'count': len(items)}), 200
+
+
+def _load_h5_arrays(run_id, names=('displacement', 'von_mises_nodal')):
+    import h5py
+    import numpy as np
+    path = f"{current_app.config.get('SOLVER_DATA_DIR', 'data/solver')}/{run_id}.h5"
+    out = {}
+    with h5py.File(path, 'r') as f:
+        for n in names:
+            ds = f'fields/{n}/step_0'
+            if ds in f:
+                out[n] = np.asarray(f[ds][:], dtype=float)
+    return out
+
+
+def _delta(a, b):
+    from app.design.services.traceability.hasher import parameter_delta
+    return parameter_delta(a, b) if a is not None and b is not None else {}
+
+
+def _compare_runs(run, ref) -> dict:
+    """Reproducibility of ``run`` against ``ref``: hashes and max field differences."""
+    import numpy as np
+    from app.design.services.traceability.hasher import environment_diff
+    out = {
+        'run_id': str(run.id), 'reference_run_id': str(ref.id),
+        'status': run.status, 'reference_status': ref.status,
+        'same_hash': run.hash == ref.hash,
+        'same_mesh': bool(run.mesh_hash) and run.mesh_hash == ref.mesh_hash,
+        'bitwise_identical': bool(run.result_hash) and run.result_hash == ref.result_hash,
+        'environment_diff': environment_diff(ref.environment or {}, run.environment or {}),
+        'input_diff': _delta(ref.inputs, run.inputs),
+        'max_rel_diff_displacement': None, 'max_rel_diff_von_mises': None,
+    }
+    if run.status == 'done' and ref.status == 'done' and out['same_mesh']:
+        try:
+            a, b = _load_h5_arrays(run.id), _load_h5_arrays(ref.id)
+            for key, name in (('max_rel_diff_displacement', 'displacement'),
+                              ('max_rel_diff_von_mises', 'von_mises_nodal')):
+                if name in a and name in b and a[name].shape == b[name].shape:
+                    scale = max(float(np.abs(b[name]).max()), 1e-300)
+                    out[key] = float(np.abs(a[name] - b[name]).max() / scale)
+        except Exception as e:
+            out['warning'] = f'No se pudieron comparar los campos: {e}'
+    out['reproduced'] = bool(out['same_hash'] and (out['bitwise_identical'] or (
+        out['max_rel_diff_displacement'] is not None and out['max_rel_diff_displacement'] < 1e-9)))
+    return out
+
+
+@bp.route('/<string:run_id>/reproducibility', methods=['GET'])
+def reproducibility(run_id):
+    """Compare a run with ?against=<run_id> (default: its parent)."""
+    from app.design.models.simulation import SimulationRun
+    run = db.session.get(SimulationRun, run_id)
+    if not run:
+        return jsonify({'error': 'Run not found'}), 404
+    ref_id = request.args.get('against') or run.parent_run_id
+    ref = db.session.get(SimulationRun, ref_id) if ref_id else None
+    if not ref:
+        return jsonify({'error': 'No reference run (use ?against=<run_id>)'}), 404
+    return jsonify(_compare_runs(run, ref)), 200
+
+
+@bp.route('/<string:run_id>/report', methods=['GET'])
+def run_report(run_id):
+    """Run report. ?format=markdown (default) | jsonld; ?download=1 as attachment."""
+    from flask import Response
+    from app.design.models.simulation import SimulationRun
+    from app.design.services.traceability.reporter import AutoReporter
+    run = db.session.get(SimulationRun, run_id)
+    if not run:
+        return jsonify({'error': 'Run not found'}), 404
+    fmt = request.args.get('format', 'markdown').lower()
+    reporter = AutoReporter(base_url=request.host_url.rstrip('/'))
+    if fmt == 'jsonld':
+        body = jsonify(reporter.generate_jsonld(run))
+        body.mimetype = 'application/ld+json'
+        if request.args.get('download'):
+            body.headers['Content-Disposition'] = f'attachment; filename=run_{run.hash[:12]}.jsonld'
+        return body, 200
+    repro = None
+    if run.purpose == 'reproduce' and run.parent_run_id:
+        ref = db.session.get(SimulationRun, run.parent_run_id)
+        if ref:
+            repro = _compare_runs(run, ref)
+    md = reporter.generate_markdown(run, reproducibility=repro)
+    headers = {}
+    if request.args.get('download'):
+        headers['Content-Disposition'] = f'attachment; filename=run_{run.hash[:12]}.md'
+    return Response(md, mimetype='text/markdown', headers=headers)
+
+
+@bp.route('/<string:run_id>/reproduce', methods=['POST'])
+def reproduce_run(run_id):
+    """Re-run exactly the stored spec of a run.
+
+    Rejects with 409 if the numerical environment differs from the recorded one (the result
+    would not be comparable), unless the body has {"force": true}.
+    """
+    from app.design.models.graph import DesignGraph
+    from app.design.models.simulation import SimulationRun
+    from app.design.services.traceability.hasher import environment_diff
+    run = db.session.get(SimulationRun, run_id)
+    if not run:
+        return jsonify({'error': 'Run not found'}), 404
+    if run.purpose == 'adaptive':
+        return jsonify({'error': 'Las corridas adaptativas no se pueden reproducir todavía'}), 422
+    if run.solver_config is None or run.inputs is None:
+        return jsonify({'error': 'Corrida anterior a FASE 7: no guarda sus entradas canónicas'}), 422
+    # a reproduction of a reproduction is compared against the original
+    original = run
+    if run.purpose == 'reproduce' and run.parent_run_id:
+        original = db.session.get(SimulationRun, run.parent_run_id) or run
+    body = request.get_json(silent=True) or {}
+    diff = environment_diff(original.environment or {})
+    if diff and not body.get('force'):
+        return jsonify({'error': 'EnvironmentMismatch',
+                        'message': 'El entorno numérico actual difiere del registrado; el resultado '
+                                   'puede no ser idéntico.',
+                        'environment_diff': diff}), 409
+    graph = db.session.get(DesignGraph, run.graph_id)
+    if graph is None:
+        return jsonify({'error': 'Graph not found'}), 404
+    spec = dict(original.solver_config or {})
+    spec['graph_id'] = str(original.graph_id)
+    new, job = _create_and_enqueue(graph, spec, purpose='reproduce', parent=original)
+    return jsonify({'run_id': str(new.id), 'job_id': str(job.id), 'hash': new.hash,
+                    'same_hash': new.hash == original.hash, 'reproduces': str(original.id),
+                    'environment_diff': diff, 'status': 'queued'}), 202
+
+
+@bp.route('/environment', methods=['GET'])
+def current_environment():
+    """Numerical environment of this process (what a new run would hash)."""
+    from app.design.services.traceability.hasher import numerical_environment
+    return jsonify(numerical_environment()), 200
 
 
 # ── Run status & results ──────────────────────────────────────────────────────
@@ -206,6 +371,11 @@ def run_status(run_id):
             'final_residual': run.final_residual,
             'wall_time_s': run.wall_time,
             'created_at': run.created_at.isoformat(),
+            'hash': run.hash,
+            'purpose': run.purpose,
+            'mesh_hash': run.mesh_hash,
+            'result_hash': run.result_hash,
+            'parent_run_id': str(run.parent_run_id) if run.parent_run_id else None,
         }), 200
     except Exception as e:
         logger.error(f"Error getting run status {run_id}: {e}")
@@ -388,7 +558,7 @@ def run_adaptive(graph_id):
     """
     from app.design.models.graph import DesignGraph
     from app.design.models.simulation import SimulationRun
-    from app.design.services.traceability.hasher import SimulationHasher
+    from app.design.services.traceability.hasher import fingerprint, provenance
     from app.design.services.fem.kernel import FEMKernel
 
     graph = DesignGraph.query.filter_by(id=graph_id).first()
@@ -398,23 +568,24 @@ def run_adaptive(graph_id):
     data = request.get_json(silent=True) or {}
 
     run_id = _uuid.uuid4()
-    hasher = SimulationHasher()
-    run_hash = hasher.compute_hash(
-        graph_state={'graph_id': graph_id, 'version': graph.version},
-        solver_config={k: v for k, v in data.items() if k not in ('nodes', 'elements')},
-        mesh_stats={},
-    )
-
     spec = dict(data)
     spec['graph_id'] = graph_id
     spec['mesh_source'] = spec.get('mesh_source', 'cantilever')
     spec['mesh_params'] = spec.get('mesh_params', {'length': 0.05, 'width': 0.01, 'height': 0.01, 'n_along_length': 10})
+    fp = fingerprint(spec, adaptive={'max_cycles': int(data.get('max_cycles', 5)),
+                                     'target_error': float(data.get('target_error', 0.05)),
+                                     'refinement_fraction': float(data.get('refinement_fraction', 0.2))})
+    run_hash = fp['hash']
 
     run = SimulationRun(
         id=run_id,
         graph_id=graph_id,
         graph_version=graph.version,
         hash=run_hash,
+        purpose='adaptive',
+        inputs=fp['inputs'],
+        environment=fp['environment'],
+        provenance=provenance(),
         status='running',
         tier=int(data.get('tier', 1)),
         physics=data.get('physics', ['structural']),
@@ -447,11 +618,13 @@ def run_adaptive(graph_id):
         }
         if 'adaptive_log' in result:
             run.adaptive_log = result['adaptive_log']
+        from app.design.services.fem.kernel import _json_safe
+        run.summary = _json_safe({k: v for k, v in s.items() if k != 'convergence_log'})
         db.session.commit()
 
         return jsonify({
             'run_id': str(run_id),
-            'hash': run_hash[:16],
+            'hash': run_hash,
             'status': 'done',
             'graph_id': graph_id,
             'summary': s,

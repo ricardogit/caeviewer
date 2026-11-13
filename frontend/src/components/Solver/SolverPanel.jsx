@@ -11,13 +11,14 @@ import {
 } from '@mui/material';
 import {
   PlayArrow, Stop, ExpandMore, Science, CheckCircle,
-  Warning, Close, Refresh,
+  Warning, Close, Refresh, History,
 } from '@mui/icons-material';
 
 import useDesignStore from '../../stores/designStore';
 import useSolverStore from '../../stores/solverStore';
 import ConvergenceMonitor from './ConvergenceMonitor';
 import AdaptiveMonitor from './AdaptiveMonitor';
+import SimHistory from './SimHistory';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -40,6 +41,7 @@ export default function SolverPanel({ onClose }) {
   } = useSolverStore();
 
   const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever'
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const isRunning = runStatus === 'running' || runStatus === 'queued';
 
@@ -71,6 +73,14 @@ export default function SolverPanel({ onClose }) {
           color={STATUS_COLOR[runStatus] || 'default'}
           sx={{ mr: 1, height: 20, fontSize: 10 }}
         />
+        <Tooltip title={activeGraphId ? 'Historial de simulaciones' : 'Selecciona un grafo'}>
+          <span>
+            <IconButton size="small" onClick={() => setHistoryOpen(true)} disabled={!activeGraphId}
+              sx={{ color: '#90caf9', mr: 0.5 }}>
+              <History fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
         {onClose && (
           <IconButton size="small" onClick={onClose} sx={{ color: '#888' }}>
             <Close fontSize="small" />
@@ -357,6 +367,7 @@ function CantileverResult({ result }) {
           <Typography variant="caption" sx={{ color: chipColor, fontFamily: 'monospace', fontSize: 10 }}>{v}</Typography>
         </Box>
       ))}
+      <SimHistory open={historyOpen} graphId={activeGraphId} onClose={() => setHistoryOpen(false)} />
     </Box>
   );
 }

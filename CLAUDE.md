@@ -273,6 +273,28 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 Run `python validate_fem.py` and `python -m pytest tests/test_fem_fase2.py` (patch tests, load resultants,
 CG vs direct, hito, conforming bisection).
 
+## Traceability (FASE 7)
+
+`app/design/services/traceability/hasher.py`: the run hash = SHA-256 of **canonical physical inputs**
+(spec without graph/node ids, labels, tier; numbers as floats; defaults made explicit; bcs/loads sorted;
+CAD geometry replaced by the STEP file sha256, inline meshes by their bytes) + **numerical environment**
+(`FEM_KERNEL_VERSION`, `MESHER_VERSION`, numpy, scipy, pyamg, gmsh, Python major.minor). Same parameters →
+same hash, even across graphs (hito). Provenance (host, git commit, platform) is stored, not hashed.
+**Bump `FEM_KERNEL_VERSION`** whenever a code change alters numerical results for the same inputs.
+
+- `simulation_runs` (migration `b3d5f7a9c2e4`): `purpose` (run|reproduce|adaptive), `inputs`, `environment`,
+  `provenance`, `summary`, `mesh_hash` (exact bytes of nodes+elements), `result_hash` (exact bytes of u).
+  Lineage: a run's `parent_run_id` is the previous finished run of the graph and `parameter_delta` lists
+  changed inputs (`material.E: [old, new]`); a reproduction's parent is the reproduced run.
+- The worker re-fingerprints at solve start (its environment is what counts).
+- Solves are bitwise deterministic: Gmsh `NumThreads=1`, and the pyamg setup is seeded (it uses random
+  vectors) while restoring the global RNG. Keep it that way: `tests/test_traceability.py` checks it.
+- API (`/api/design/solver`): `GET /runs?graph_id=`, `GET /<run>/report?format=markdown|jsonld[&download=1]`
+  (`reporter.py`, schema.org/Dataset), `POST /<run>/reproduce` (409 `EnvironmentMismatch` unless
+  `{"force": true}`), `GET /<run>/reproducibility[?against=]`, `GET /environment`.
+- UI: History button in `SolverPanel` → `components/Solver/SimHistory.jsx` (hash colours, deltas,
+  report, reproduce dialog with environment check; test `SimHistory.test.jsx`).
+
 ## Adaptive Meshing (FASE 3)
 
 **Strategy:** Longest-edge bisection h-refinement with Zienkiewicz-Zhu stress recovery error estimation.

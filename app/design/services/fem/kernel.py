@@ -28,6 +28,7 @@ from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limi
                                             rigid_body_modes)
 from app.design.services.fem.error_estimator import compute_error_indicators, mark_elements_for_refinement, compute_global_error
 from app.design.services.fem.mesh_adaptivity import refine_marked_elements_bisection
+from app.design.services.traceability.hasher import mesh_hash, array_hash
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class FEMKernel:
         """Called in a background thread by flask-socketio.start_background_task."""
         with app.app_context():
             self._update_run(run_id, 'running')
+            self._record_fingerprint(run_id, solver_spec)
             socketio.emit('solver_progress',
                           {'run_id': run_id, 'iter': 0, 'status': 'starting',
                            'residual': None, 'wall_time': 0, 'percent': 0},
@@ -254,6 +256,9 @@ class FEMKernel:
             'loads': load_info,
             'n_constrained_dofs': int(len(dofs)),
             'tier': tier,
+            # FASE 7: exact-bytes fingerprints (equal result_hash = bitwise identical result)
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(u),
         })
         if mesh_meta:
             s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
@@ -437,10 +442,33 @@ class FEMKernel:
                     'mesh': s.get('mesh'),
                 }
                 run.convergence_log = si.get('convergence_log', [])
+                run.mesh_hash = s.get('mesh_hash')
+                run.result_hash = s.get('result_hash')
+                run.summary = _json_safe({k: v for k, v in s.items() if k != 'convergence_log'})
 
             db.session.commit()
         except Exception as e:
             logger.warning(f"Could not update SimulationRun {run_id}: {e}")
+
+    def _record_fingerprint(self, run_id: str, solver_spec: dict):
+        """Hash/environment as seen by the process that actually solves (the worker may run
+        other library versions than the web process that enqueued the run)."""
+        try:
+            from app.extensions import db
+            from app.design.models.simulation import SimulationRun
+            from app.design.services.traceability.hasher import fingerprint, provenance
+            run = db.session.get(SimulationRun, run_id)
+            if run is None:
+                return
+            fp = fingerprint(solver_spec)
+            if run.hash and run.hash != fp['hash']:
+                logger.info('Run %s: worker hash %s differs from enqueue hash %s (environment)',
+                            run_id, fp['hash'][:12], run.hash[:12])
+            run.hash, run.inputs, run.environment = fp['hash'], fp['inputs'], fp['environment']
+            run.provenance = provenance()
+            db.session.commit()
+        except Exception as e:
+            logger.warning(f"Could not record fingerprint for run {run_id}: {e}")
 
     # ── Write-back results to RESULT nodes ───────────────────────────────────
 
@@ -501,3 +529,18 @@ class FEMKernel:
             'max_bending_stress_mpa': round(sigma_max / 1e6, 4),
             'I_m4': I,
         }
+
+
+def _json_safe(x):
+    """numpy scalars/arrays → plain JSON types (for JSONB columns)."""
+    if isinstance(x, dict):
+        return {str(k): _json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_json_safe(v) for v in x]
+    if isinstance(x, np.generic):
+        return x.item()
+    if isinstance(x, np.ndarray):
+        return x.tolist()
+    if isinstance(x, float) and not np.isfinite(x):
+        return None
+    return x

@@ -87,7 +87,14 @@ def _amg_preconditioner(K, B=None):
         import pyamg
     except ImportError:
         return None, None
-    ml = pyamg.smoothed_aggregation_solver(K, B=B if B is not None and B.shape[0] == K.shape[0] else None)
+    # pyamg estimates spectral radii from a random start vector (legacy np.random): seed it so
+    # the hierarchy, and therefore the solution, is bitwise reproducible (FASE 7).
+    state = np.random.get_state()
+    np.random.seed(0)
+    try:
+        ml = pyamg.smoothed_aggregation_solver(K, B=B if B is not None and B.shape[0] == K.shape[0] else None)
+    finally:
+        np.random.set_state(state)
     return ml.aspreconditioner(cycle='V'), 'cg_amg'
 
 

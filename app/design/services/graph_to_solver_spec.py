@@ -59,7 +59,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
     }
 
     service = DesignGraphService()
-    nodes = DesignNode.query.filter_by(graph_id=graph_id).all()
+    nodes = DesignNode.query.filter_by(graph_id=graph_id).order_by(DesignNode.created_at, DesignNode.id).all()
     node_map = {str(n.id): n for n in nodes}
 
     # Phase 1 fallback: collect all nodes by type
@@ -106,7 +106,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
 
     ctx = {'geometry_id': spec.get('geometry_id'), 'normals': None}
     use_edge_scoping = False
-    edges = DesignEdge.query.filter_by(graph_id=graph_id).all()
+    edges = DesignEdge.query.filter_by(graph_id=graph_id).order_by(DesignEdge.created_at, DesignEdge.id).all()
 
     # Check if any CONSTRAINS_BC or APPLIED_TO edges exist (Phase 2+ indicator)
     if any(e.edge_type in ('CONSTRAINS_BC', 'APPLIED_TO') for e in edges):
@@ -122,7 +122,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 graph_id=graph_id,
                 target_id=geom.id,
                 edge_type='CONSTRAINS_BC'
-            ).all()
+            ).order_by(DesignEdge.created_at, DesignEdge.id).all()
             for bc_edge in bc_edges:
                 bc_node = node_map.get(str(bc_edge.source_id))
                 if bc_node and bc_node.node_type == 'BC':
@@ -134,7 +134,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 graph_id=graph_id,
                 target_id=geom.id,
                 edge_type='APPLIED_TO'
-            ).all()
+            ).order_by(DesignEdge.created_at, DesignEdge.id).all()
             for load_edge in load_edges:
                 load_node = node_map.get(str(load_edge.source_id))
                 if load_node and load_node.node_type == 'LOAD':
