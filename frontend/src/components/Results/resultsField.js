@@ -8,6 +8,7 @@ export const FIELDS = {
   ux: { label: 'ux', unit: 'mm' },
   uy: { label: 'uy', unit: 'mm' },
   uz: { label: 'uz', unit: 'mm' },
+  ep: { label: 'εp plástica', unit: '' },
   T: { label: 'Temperatura', unit: '°C' },
   q: { label: '|q| flujo', unit: 'W/m²' },
 };
@@ -17,6 +18,7 @@ export function availableFields(pack) {
   const groups = pack?.header?.fields || ['u', 'vm'];
   const out = [];
   if (groups.includes('u')) out.push('vm', 'umag', 'ux', 'uy', 'uz');
+  if (groups.includes('ep')) out.push('ep');
   if (groups.includes('T')) out.push('T', 'q');
   return out;
 }
@@ -25,7 +27,7 @@ export function fieldValues(pack, field) {
   const n = pack.nNodes;
   const out = new Float32Array(n);
   const u = pack.u.data;
-  if (field === 'vm' || field === 'T' || field === 'q') {
+  if (field === 'vm' || field === 'T' || field === 'q' || field === 'ep') {
     out.set(pack[field].data);
   } else if (field === 'umag') {
     for (let i = 0; i < n; i += 1) out[i] = Math.hypot(u[3 * i], u[3 * i + 1], u[3 * i + 2]);

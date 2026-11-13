@@ -13,6 +13,7 @@ import useDesignStore from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
 import FaceSelector, { useStudyGeometryId } from './FaceSelector';
 import CadGeometryFields from './CadGeometryFields';
+import PlasticityFields from './PlasticityFields';
 
 const MATERIAL_TYPES = [
   'linear_elastic_isotropic', 'linear_elastic_orthotropic',
@@ -258,6 +259,7 @@ export default function NodePanel({ node, graphId, onClose }) {
             <Typography variant="caption" sx={{ color: '#777' }}>
               Las desviaciones alimentan la propagación de incertidumbre (Solver → Incertidumbre).
             </Typography>
+            {props.model_type === 'elastoplastic_vonmises' && <PlasticityFields props={props} setProp={setProp} />}
             <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
             {THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}

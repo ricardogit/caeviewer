@@ -82,6 +82,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             'nu': float(props.get('nu') if props.get('nu') is not None else 0.3),
             'rho': float(props.get('rho') if props.get('rho') is not None else 7800.0),
         }
+        if spec['material']['type'] == 'elastoplastic_vonmises':
+            _plastic_material(spec, mat_node)
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -165,6 +167,37 @@ def graph_to_solver_spec(graph_id: str) -> dict:
 
     _set_physics(spec, material_nodes[0] if material_nodes else None)
     return spec
+
+
+def _plastic_material(spec: dict, node) -> None:
+    """J2 plasticity (FASE 2.5): σy and the hardening law from the MATERIAL node. ``hardening_type``
+    perfect | linear (H) | voce (hardening_Q, hardening_b, H) | fit (``hardening_table`` written by the
+    tensile-test fit of the material library); default: fit if a table exists, else linear/perfect."""
+    p = node.properties or {}
+    sy = p.get('yield_strength')
+    if sy in (None, '') or float(sy) <= 0:
+        raise GraphSpecError(f'"{node.label}": el modelo elastoplástico necesita el límite elástico σy.')
+    kind = p.get('hardening_type') or ('fit' if p.get('hardening_table') else 'linear' if p.get('H') else 'perfect')
+    if kind == 'fit':
+        t = p.get('hardening_table')
+        if not t:
+            raise GraphSpecError(f'"{node.label}": no hay curva de endurecimiento ajustada; ajusta un ensayo '
+                                 'de tracción en la biblioteca o elige endurecimiento lineal/Voce.')
+        hard = {'type': 'table', 'ep': t['ep'], 'sy': t['sy']}
+    elif kind == 'linear':
+        hard = {'type': 'linear', 'H': float(p.get('H') or 0.0)}
+    elif kind == 'voce':
+        hard = {'type': 'voce', 'Q': float(p.get('hardening_Q') or 0.0), 'b': float(p.get('hardening_b') or 0.0),
+                'H': float(p.get('H') or 0.0)}
+    elif kind == 'perfect':
+        hard = {'type': 'perfect'}
+    else:
+        raise GraphSpecError(f'"{node.label}": endurecimiento "{kind}" no reconocido.')
+    spec['material']['sigma_y'] = float(sy) if kind != 'fit' else float(hard['sy'][0])
+    spec['material']['hardening'] = hard
+    spec['n_load_steps'] = int(p.get('load_steps') or 10)
+    if p.get('unload'):
+        spec['load_path'] = [1.0, 0.0]
 
 
 def _set_physics(spec: dict, mat_node) -> None:

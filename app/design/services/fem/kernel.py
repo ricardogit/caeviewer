@@ -23,7 +23,7 @@ from app.design.services.fem import tet_batch as tb
 from app.design.services.fem import thermal as th
 from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs, dirichlet,
                                                reduce_system, resolve_free_faces)
-from app.design.services.fem.constitutive import build_material
+from app.design.services.fem.constitutive import build_material, ElastoplasticVonMises
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
@@ -206,6 +206,9 @@ class FEMKernel:
         material = build_material(mat_spec)
         D = material.get_D_matrix()
         is_linear = material.is_linear()
+        if isinstance(material, ElastoplasticVonMises):          # FASE 2.5: J2 plasticity, Newton-Raphson
+            return self._solve_plastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs, all_loads,
+                                       T, thermal, tier, socketio, run_id, t_start)
 
         # 4. Assemble K and F
         logger.info(f"Assembling K ({mesh.n_dof_structural:,} DOF, {mesh.element_type})...")
@@ -299,6 +302,105 @@ class FEMKernel:
             s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return results
 
+    # ── Material non-linearity (FASE 2.5) ─────────────────────────────────────
+
+    def _solve_plastic(self, mesh, mesh_meta, material, mat_spec, spec, all_bcs, all_loads,
+                       T, thermal, tier, socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import plasticity as pl
+        j2 = material.j2
+        bcs = [b for b in all_bcs if not th.is_thermal_bc(b)]
+        rho = float(mat_spec.get('rho', 0.0) or 0.0)
+        loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld)
+                 for ld in all_loads if not th.is_thermal_load(ld)]
+        load_info: list = []
+        F = assemble_F(mesh, loads, load_info)
+        dofs, vals = dirichlet(mesh, bcs)
+        if not len(dofs):
+            raise ValueError('Sin condiciones de frontera: el sistema es singular (movimiento de '
+                             'cuerpo rígido). Agrega al menos un nodo BC.')
+        eps0_gp = None
+        if T is not None:
+            alpha = float(mat_spec.get('alpha') or 0.0)
+            T_ref = float(mat_spec.get('T_ref') or 0.0)
+            pts, _ = pl.gauss_points(mesh.element_type)
+            eps0_gp = np.stack([th.thermal_strain_at(mesh.elements, T, alpha, T_ref, p) for p in pts], axis=1)
+            load_info.append({'index': len(load_info), 'label': 'dilatación térmica',
+                              'kind': 'thermal_strain', 'alpha': alpha, 'T_ref': T_ref})
+        load_path = [float(x) for x in (spec.get('load_path') or [1.0])]
+        n_steps = int(spec.get('n_load_steps') or 10)
+
+        def progress(it, res, lam):
+            pct = 30 + int(60 * min(1.0, abs(lam) / max(abs(x) for x in load_path)))
+            self._emit(socketio, run_id, pct, f'NR it {it} · λ = {lam:.3f}', t_start, iter=it, residual=res)
+
+        self._emit(socketio, run_id, 30, f'elastoplástico: {len(load_path)} tramo(s) × {n_steps} pasos', t_start)
+        r = pl.solve_plastic(mesh, j2, F, dofs, vals, load_path=load_path, n_steps=n_steps,
+                             tol=float(spec.get('nl_tolerance') or 1e-8), max_iter=int(spec.get('nl_max_iter') or 25),
+                             eps0_gp=eps0_gp, tier=tier, near_nullspace=rigid_body_modes(mesh.nodes),
+                             progress_cb=progress)
+        u, lam, info = r['u'], r['load_factor'], r['info']
+        op = r['operator']
+        sig_gp, ep_gp = r['sigma_gp'], r['ep_gp']
+        f_int, _ = op.internal_force_and_tangent(sig_gp, None, mesh.n_dof_structural, need_K=False)
+        Rf = f_int - lam * F
+        reaction = [float(Rf[c::3][dofs[dofs % 3 == c] // 3].sum()) for c in range(3)]
+        applied = [float(lam * F[c::3].sum()) for c in range(3)]
+        scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        if T is not None:
+            scale = max(scale, max(float(np.abs(f_int[c::3]).sum()) for c in range(3)))
+        equilibrium_error = float(np.abs(np.add(reaction, applied)).max() / scale)
+
+        disp = u.reshape(-1, 3)
+        dmag = np.linalg.norm(disp, axis=1)
+        el_sigma = sig_gp.mean(axis=1)
+        el_vm = tb.von_mises_v(el_sigma)
+        nodal_sigma = pl.gp_to_nodal(mesh.n_nodes, mesh.elements, sig_gp)
+        node_vm = tb.von_mises_v(nodal_sigma)
+        ep_nodal = np.maximum(pl.gp_to_nodal(mesh.n_nodes, mesh.elements, ep_gp[:, :, None])[:, 0], 0.0)
+        ep_el = ep_gp.mean(axis=1)
+        vol = op.wdet.sum(axis=1)
+        plastic_vol = float(vol[(ep_gp > 0).any(axis=1)].sum() / vol.sum())
+        s = {
+            'max_displacement_m': float(dmag.max()), 'max_displacement_mm': round(float(dmag.max()) * 1000, 6),
+            'max_von_mises_pa': float(el_vm.max()), 'max_von_mises_mpa': round(float(el_vm.max()) / 1e6, 4),
+            'max_von_mises_nodal_mpa': round(float(node_vm.max()) / 1e6, 4),
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_dof_structural,
+            'element_type': mesh.element_type, 'tier': tier,
+            'converged': info['converged'], 'n_iterations': info['n_iterations'],
+            'final_residual': info['final_residual'], 'solver_method': info['method'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'applied_load_N': applied, 'reaction_N': reaction, 'equilibrium_error': equilibrium_error,
+            'loads': load_info, 'n_constrained_dofs': int(len(dofs)),
+            'material_model': 'elastoplastic_vonmises',
+            'plasticity': {**j2.to_dict(), 'load_factor': lam, 'load_path': load_path,
+                           'limit_load_reached': info['limit_load_reached'], 'n_steps': info['n_steps'],
+                           'cutbacks': info['cutbacks'], 'max_equivalent_plastic_strain': float(ep_gp.max()),
+                           'plastic_volume_fraction': plastic_vol,
+                           'curve': [{k: v for k, v in c.items()} for c in r['curve']]},
+            'max_equivalent_plastic_strain': float(ep_gp.max()),
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(u if T is None else np.concatenate([u, T])),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        results = {
+            'displacement': disp.tolist(), 'displacement_magnitude': dmag.tolist(),
+            'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
+            'sigma_elemental': el_sigma.tolist(), 'equivalent_plastic_strain': ep_nodal.tolist(),
+            'equivalent_plastic_strain_elemental': ep_el.tolist(),
+            'solve_info': info, 'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+        if T is not None:
+            results['temperature'] = T.tolist()
+            results['heat_flux_nodal'] = thermal.pop('heat_flux_nodal')
+            s.update(thermal=thermal, max_temperature=thermal['max_temperature'],
+                     min_temperature=thermal['min_temperature'], max_heat_flux_w_m2=thermal['max_heat_flux_w_m2'],
+                     physics=['structural', 'thermal'])
+        logger.info('Plastic solve: λ=%.4f, %d NR iterations, %d steps, %d cutbacks, εp max %.3e',
+                    lam, info['n_iterations'], info['n_steps'], info['cutbacks'], float(ep_gp.max()))
+        return results
+
     # ── Thermal (FASE 2 multiphysics) ─────────────────────────────────────────
 
     def _solve_thermal(self, mesh: FEMMesh, mat_spec: dict, bcs: list, loads: list,
@@ -380,6 +482,11 @@ class FEMKernel:
             kw = {k: float(p[k]) for k in ('length', 'height', 'thickness', 'mesh_size', 'support_width',
                                             'hole_radius') if p.get(k) is not None}
             return FEMMesh.generate_plate(**kw, order=order), {}
+
+        if source == 'ring':
+            kw = {k: float(p[k]) for k in ('inner_radius', 'outer_radius', 'thickness', 'mesh_size')
+                  if p.get(k) is not None}
+            return FEMMesh.generate_ring(**kw, order=int(p.get('order', 2))), {}
 
         if source == 'geometry':
             from app.design.services.fem.cad_mesh import mesh_geometry
@@ -485,7 +592,8 @@ class FEMKernel:
 
             fields = f.create_group('fields')
             for name in ('displacement', 'displacement_magnitude', 'von_mises_nodal',
-                         'von_mises_elemental', 'temperature', 'heat_flux_nodal'):
+                         'von_mises_elemental', 'temperature', 'heat_flux_nodal',
+                         'equivalent_plastic_strain', 'equivalent_plastic_strain_elemental'):
                 if result.get(name) is not None:
                     fields.create_dataset(f'{name}/step_0', data=np.array(result[name]))
 

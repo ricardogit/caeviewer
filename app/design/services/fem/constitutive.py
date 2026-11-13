@@ -115,8 +115,26 @@ class _Stub:
     def is_linear(self):                        return True   # safe default for dispatch
 
 
-class ElastoplasticVonMises(_Stub):
-    def is_linear(self): return False   # correctly marks as non-linear
+class ElastoplasticVonMises:
+    """J2 plasticity with isotropic hardening (FASE 2.5). The return mapping lives in
+    ``fem.plasticity.J2Material``; this wrapper gives the kernel the elastic D and is_linear() = False."""
+
+    def __init__(self, E: float, nu: float, sigma_y: float, rho: float = 0.0, hardening: dict | None = None):
+        from app.design.services.fem.plasticity import J2Material
+        self.rho = rho
+        self.j2 = J2Material(E, nu, sigma_y, hardening)
+
+    def get_D_matrix(self, state=None) -> np.ndarray:
+        return self.j2.D
+
+    def get_coupling_terms(self, pl): return {}
+    def update_internal_variables(self, si): return {}
+    def is_linear(self): return False
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'ElastoplasticVonMises':
+        return cls(float(d['E']), float(d['nu']), float(d.get('sigma_y') or 0.0), float(d.get('rho', 0.0) or 0.0),
+                   d.get('hardening'))
 
 
 class HyperelasticNeoHookean(_Stub):

@@ -43,6 +43,12 @@ export function SummaryRows({ header }) {
       ['Despl. máx.', header?.max_u_mm != null ? `${fmt(header.max_u_mm)} mm` : '—'],
       ['σvM máx. (nodal)', header?.max_vm_mpa != null ? `${fmt(header.max_vm_mpa)} MPa` : '—'],
     ] : []),
+    ...(s.plasticity ? [
+      ['εp máx.', fmt(s.plasticity.max_equivalent_plastic_strain)],
+      ['Zona plástica', `${fmt(100 * s.plasticity.plastic_volume_fraction)} % vol.`],
+      ['Carga alcanzada', s.plasticity.limit_load_reached
+        ? `${fmt(100 * s.plasticity.load_factor)} % (carga límite)` : 'completa'],
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],

@@ -283,7 +283,9 @@ def node_props_from_material(m: MaterialModel, props: dict) -> dict:
     with std, and σy as the yield strength of the failure criterion)."""
     P = m.parameters or {}
     props = dict(props or {})
-    props['model_type'] = 'linear_elastic_isotropic'
+    # the user may have switched the node to J2 plasticity: keep it (the fit supplies its hardening)
+    if props.get('model_type') != 'elastoplastic_vonmises':
+        props['model_type'] = 'linear_elastic_isotropic'
     for k in ('E', 'nu', 'rho'):
         if k in P:
             props[k] = P[k]['value']
@@ -295,7 +297,31 @@ def node_props_from_material(m: MaterialModel, props: dict) -> dict:
     props['material_id'] = str(m.id)
     props['material_name'] = m.name
     props['constitutive_fit'] = (m.calibration or {}).get('best_model')
+    table = _hardening_table(m)
+    if table:
+        props['hardening_table'] = table          # used when MATERIAL model_type = elastoplastic_vonmises
+    else:
+        props.pop('hardening_table', None)
     return _finite(props)
+
+
+def _hardening_table(m: MaterialModel) -> dict | None:
+    """Plastic branch of the stored tensile fit as a J2 hardening table (FASE 2.5), Pa."""
+    from app.design.services.material.parametric import CURVE_MODELS, MPA as _M
+    from app.design.services.fem.plasticity import hardening_table_from_fit
+    cal = m.calibration or {}
+    model = CURVE_MODELS.get(cal.get('best_model'))
+    fp = cal.get('fit_parameters') or {}
+    if model is None or not model.elastoplastic or not all(n in fp for n in model.param_names):
+        return None
+    try:
+        p = np.array([fp[n]['value'] / (_M if model.param_units.get(n) == 'MPa' else 1) for n in model.param_names])
+        ue = ((cal.get('properties') or {}).get('uniform_elongation') or {})
+        ue = ue.get('value') if isinstance(ue, dict) else ue
+        t = hardening_table_from_fit(model, p, model.E(p), max(float(ue or 0.1), 0.01))
+        return {'ep': t['ep'], 'sy': t['sy'], 'model': model.key} if t else None
+    except Exception:                                   # a bad stored fit must not break the assignment
+        return None
 
 
 def sync_material_nodes(m: MaterialModel) -> list[str]:

@@ -303,6 +303,34 @@ One-way coupling: ε_th = α(T − T_ref)[1,1,1,0,0,0], load ∫BᵀDε_th dV, s
   through the queue. With a full clamp the mid-span σ is +1.7 % over EαΔT (lateral restraint at the end; physical).
   Tests: `tests/test_thermal.py`.
 
+## Material Non-Linearity (FASE 2.5)
+
+`app/design/services/fem/plasticity.py`: small-strain J2 (von Mises) plasticity, isotropic hardening
+(`perfect`, `linear` H, `voce` Q/b/H, `table` piecewise linear and flat after the last point), backward-Euler
+radial return with the **consistent tangent** (checked against finite differences) → quadratic Newton convergence.
+- `solve_plastic`: `load_path` (default [1.0]; [1, 0] = load + unload) × `n_load_steps`, Newton per step
+  (`nl_tolerance` 1e-8 on the residual relative to the **peak** load/reaction scale, so unloading to λ = 0 works),
+  step growth after easy steps, cut-backs on divergence/stagnation; after 8 halvings the run stops at the last
+  converged λ (`plasticity.limit_load_reached`, run still `done`, `converged: false`). Newton systems use the
+  direct solver up to 20K DOF (near a limit load PCG crawls), then AMG-PCG with a cap (non-convergence = cut-back).
+- Kernel: `material.type = 'elastoplastic_vonmises'` (`constitutive.ElastoplasticVonMises` wraps `J2Material`)
+  → `FEMKernel._solve_plastic`; thermal strain (one-way coupling) is supported as an initial strain ramped with λ.
+  Outputs: `equivalent_plastic_strain` (nodal/elemental, HDF5 + `/surface` field `ep`), summary `plasticity`
+  {load_factor, curve (λ, max |u|, reactions, plastic fraction), cutbacks, plastic_volume_fraction, …}.
+  The old penalty Newton path (`apply_bcs` + `NewtonRaphson.solve_assembled`) is no longer reached for J2.
+- Graph: MATERIAL `model_type: 'elastoplastic_vonmises'` + `yield_strength`, `hardening_type`
+  (perfect|linear|voce|fit), `H`, `hardening_Q`, `hardening_b`, `load_steps`, `unload`. `fit` uses
+  `hardening_table`, written by the material library (`node_props_from_material`) from the tensile-test fit
+  (`hardening_table_from_fit`: εp = ε − σ/E of the fitted curve); assigning a library material keeps a node's
+  elastoplastic model type. UI: `DesignGraph/PlasticityFields.jsx`; Results shows εp, load reached, plastic zone.
+- Topology / ROM / uncertainty / adaptive reject elastoplastic studies (422, `prepare_spec(full_kernel=)`).
+- Parametric mesh `mesh_source: 'ring'` (`FEMMesh.generate_ring`: quarter thick-walled cylinder, faces inner,
+  outer, x0, y0, z0, z1).
+- Hito: `python validate_plasticity.py [--server …]` — uniaxial bar exact (linear and Voce hardening, permanent
+  elongation after unloading, no residual stress), Newton order ≈ 2, uniaxial limit σ = σy; thick-walled cylinder
+  (plane strain): first-yield pressure, elastic-zone hoop stress vs Hill (ν = 0.49, Hill assumes incompressibility),
+  collapse pressure (2/√3) σy ln(b/a) within 0.01 %. Tests: `tests/test_plasticity.py`.
+
 ## Topology Optimization (FASE 4)
 
 `app/design/services/topology/`: **SIMP** (`simp.py`) on linear tets — modified SIMP (ε = 1e-6),

@@ -241,6 +241,53 @@ class FEMMesh:
         return cls(nodes_, elements_, face_sets=faces, mids_known=True)
 
     @classmethod
+    def generate_ring(cls, inner_radius: float = 0.01, outer_radius: float = 0.02, thickness: float = 0.002,
+                      mesh_size: float = None, order: int = 2) -> FEMMesh:
+        """Quarter of a thick-walled cylinder (x, y ≥ 0, axis z) for pressure-vessel studies.
+
+        Face sets: 'inner', 'outer' (curved), 'x0' (x = 0), 'y0' (y = 0) — symmetry planes —
+        and 'z0' / 'z1' (end faces; uz = 0 on both = plane strain).
+        """
+        import gmsh
+        a, b = float(inner_radius), float(outer_radius)
+        h = mesh_size or (b - a) / 8
+        with _gmsh_lock:
+            gmsh.initialize()
+            try:
+                gmsh.option.setNumber("General.Terminal", 0)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.model.add("ring")
+                occ = gmsh.model.occ
+                outer = occ.addCylinder(0, 0, 0, 0, 0, thickness, b, angle=np.pi / 2)
+                hole = occ.addCylinder(0, 0, -thickness, 0, 0, 3 * thickness, a)
+                occ.cut([(3, outer)], [(3, hole)])
+                occ.synchronize()
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", h)
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", h)
+                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+                gmsh.option.setNumber("Mesh.Optimize", 1)
+                gmsh.model.mesh.generate(3)
+                if order == 2:
+                    gmsh.model.mesh.setOrder(2)
+                eps = 1e-4 * b
+                surf = {}
+                for _, tag in gmsh.model.getEntities(2):
+                    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
+                    if z1 - z0 < eps:
+                        name = 'z0' if z1 < eps else 'z1'
+                    elif x1 - x0 < eps and x1 < eps:
+                        name = 'x0'
+                    elif y1 - y0 < eps and y1 < eps:
+                        name = 'y0'
+                    else:
+                        name = 'inner' if max(x1, y1) < (a + b) / 2 else 'outer'
+                    surf[name] = tag
+                nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
+            finally:
+                gmsh.finalize()
+        return cls(nodes_, elements_, face_sets=faces_, mids_known=True)
+
+    @classmethod
     def _generate_fallback_cantilever(cls,
                                       length: float = 0.050,
                                       width: float = 0.010,
