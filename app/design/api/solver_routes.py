@@ -167,7 +167,8 @@ def run_simulation(graph_id):
 def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     """Create the SimulationRun (hash, canonical inputs, lineage) and enqueue fem.solve.
 
-    Lineage (FASE 7): a normal run's parent is the latest finished run of the same graph and
+    Lineage (FASE 7): a normal run's parent is the latest finished run of the same graph (or of
+    its earlier versions, FASE 9) and
     ``parameter_delta`` lists what changed in the canonical inputs; a reproduction's parent is
     the run being reproduced.
     """
@@ -177,10 +178,15 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
 
     fp = fingerprint(spec)
     if parent is None and purpose in ('run', 'topology', 'rom', 'uncertainty'):
-        parent = (SimulationRun.query
-                  .filter(SimulationRun.graph_id == graph.id, SimulationRun.status == 'done',
-                          SimulationRun.purpose == purpose)
-                  .order_by(SimulationRun.created_at.desc()).first())
+        # the previous finished run of this version, else of the earlier versions (FASE 9 tree)
+        g, seen = graph, set()
+        while g is not None and parent is None and g.id not in seen:
+            seen.add(g.id)
+            parent = (SimulationRun.query
+                      .filter(SimulationRun.graph_id == g.id, SimulationRun.status == 'done',
+                              SimulationRun.purpose == purpose)
+                      .order_by(SimulationRun.created_at.desc()).first())
+            g = db.session.get(type(graph), g.parent_id) if g.parent_id else None
     run = SimulationRun(
         id=_uuid.uuid4(),
         graph_id=graph.id,

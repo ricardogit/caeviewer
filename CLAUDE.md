@@ -400,8 +400,14 @@ The study (DesignGraph) is the context of the whole UI; tools are modes around i
 - `DELETE /api/design/graph/<id>`: 409 when the study has runs or experiments; `?cascade=1` deletes runs (+ h5 and
   topology/rom/uncertainty dirs), field results, correlations, experiments (+ files), physics configs; library
   materials are kept (graph_id cleared), jobs keep their log. The project list asks before both steps.
-- Not done from the plan: graph version tree in the left panel (no versioning API), a single designStore (§9.3:
-  kept as designStore + solverStore + workspaceStore on purpose).
+- Versions (plan §9.1 tree): `POST /api/design/graph/<id>/versions {note}` copies the study (new node ids, same
+  creation order so "first MATERIAL" etc. hold; `meta.version_of` = new → source node ids), `parent_id` = source,
+  `version` = max of the tree + 1 (PUT no longer bumps it). `GET /<id>/versions` (tree with run counts),
+  `GET /<id>/diff[?against=<ancestor>]` (nodes added/removed/changed with old → new properties, edges). The first
+  run of a version links to the latest run of the earlier versions (parameter_delta). Deleting a version re-attaches
+  later ones to its parent. UI: `GraphProjectList.jsx` groups projects by tree (`versionTree.js`), per version:
+  changes (`VersionDiffDialog.jsx`), new version, delete. Tests: `GraphProjectList.test.jsx`.
+- Not done from the plan: a single designStore (§9.3: kept as designStore + solverStore + workspaceStore on purpose).
 - Hito: `python validate_workflow.py [--server http://127.0.0.1:8080] [--keep]` (server + worker): concept →
   graph (beam 500×25×25 T10, steel, fixed, 1 kN) → preflight → run on the job queue → run list + surface pack
   (tip deflection −0.64 % vs Timoshenko, closed surface) → SPA bundle; deletes its study. ~3 s.

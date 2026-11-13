@@ -103,7 +103,7 @@ def update_graph(graph_id):
     if 'metadata' in data:
         graph.meta = data['metadata']
 
-    graph.version += 1
+    # 'version' is the number in the version tree (POST /<id>/versions), not an edit counter
     graph.hash = _svc.compute_graph_hash(graph_id)
     db.session.commit()
     return jsonify(_graph_summary(graph)), 200
@@ -123,6 +123,53 @@ def delete_graph(graph_id):
                         'dependents': deps}), 409
     removed = delete_graph_cascade(graph.id)
     return jsonify({'success': True, 'deleted_id': graph_id, 'removed': removed}), 200
+
+
+# ── Versions (FASE 9) ─────────────────────────────────────────────────────────
+
+@bp.route('/<string:graph_id>/versions', methods=['POST'])
+def create_version(graph_id):
+    """Body: {note?, name?} → new version of the study (copy, parent = this one)."""
+    from app.design.services.graph_service import create_version as _create
+    if not DesignGraph.query.filter_by(id=graph_id).first():
+        return jsonify({'error': 'Graph not found'}), 404
+    data = request.get_json(silent=True) or {}
+    g = _create(graph_id, note=(data.get('note') or '').strip(), name=(data.get('name') or '').strip() or None)
+    return jsonify(_graph_summary(g)), 201
+
+
+@bp.route('/<string:graph_id>/versions', methods=['GET'])
+def list_versions(graph_id):
+    """The version tree that contains the study, with each version's run count and latest run."""
+    from app.design.services.graph_service import lineage
+    from app.design.models.simulation import SimulationRun
+    tree = lineage(graph_id)
+    if not tree:
+        return jsonify({'error': 'Graph not found'}), 404
+    out = []
+    for g in tree:
+        q = SimulationRun.query.filter(SimulationRun.graph_id == g.id,
+                                       SimulationRun.purpose.in_(('run', 'reproduce', 'adaptive')))
+        last = q.order_by(SimulationRun.created_at.desc()).first()
+        out.append({**_graph_summary(g), 'n_runs': q.count(),
+                    'latest_run': last.to_history_dict() if last else None})
+    return jsonify({'root_id': str(tree[0].id), 'versions': out}), 200
+
+
+@bp.route('/<string:graph_id>/diff', methods=['GET'])
+def diff_versions(graph_id):
+    """?against=<ancestor version id> (default: parent) → nodes/edges added, removed, changed."""
+    from app.design.services.graph_service import diff_graphs
+    g = DesignGraph.query.filter_by(id=graph_id).first()
+    if not g:
+        return jsonify({'error': 'Graph not found'}), 404
+    against = request.args.get('against') or (str(g.parent_id) if g.parent_id else None)
+    if not against:
+        return jsonify({'error': 'Esta es la primera versión: no hay versión anterior con la que comparar.'}), 422
+    try:
+        return jsonify(diff_graphs(graph_id, against)), 200
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 422
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -373,6 +420,8 @@ def _graph_summary(graph) -> dict:
         'name': graph.name,
         'description': graph.description or '',
         'version': graph.version,
+        'parent_id': str(graph.parent_id) if graph.parent_id else None,
+        'version_note': (graph.meta or {}).get('version_note') or '',
         'tier': graph.tier,
         'status': graph.status,
         'hash': graph.hash or '',

@@ -55,6 +55,14 @@ const useDesignStore = create(
         return g;
       },
 
+      /** FASE 9: copy the study into a new version (parent = graphId) and open it. */
+      createVersion: async (graphId, note = '') => {
+        const res = await axios.post(`${BASE}/${graphId}/versions`, { note });
+        await get().fetchGraphs();
+        await get().loadGraph(res.data.id);
+        return res.data;
+      },
+
       /** cascade: also delete the study's simulations and tests (the API answers 409 otherwise). */
       deleteGraph: async (graphId, cascade = false) => {
         await axios.delete(`${BASE}/${graphId}`, cascade ? { params: { cascade: 1 } } : undefined);
