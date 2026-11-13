@@ -11,7 +11,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 PURPOSE_LABEL = {'run': 'Simulación', 'reproduce': 'Reproducción', 'adaptive': 'Adaptativa',
-                 'topology': 'Optimización topológica', 'rom': 'Modelo de orden reducido (ROM)'}
+                 'topology': 'Optimización topológica', 'rom': 'Modelo de orden reducido (ROM)',
+                 'uncertainty': 'Propagación de incertidumbre (Monte Carlo)'}
 STATUS_LABEL = {'queued': 'en cola', 'running': 'calculando', 'done': 'completada',
                 'failed': 'fallida', 'cancelled': 'cancelada'}
 
@@ -31,6 +32,12 @@ KEY_RESULTS = [
     ('n_modes', 'romModes', 'Modos POD retenidos', None, None),
     ('validation_max_error_u', 'romErrorU', 'Error de validación máx. (desplazamientos)', None, None),
     ('validation_max_error_vm', 'romErrorVM', 'Error de validación máx. (von Mises máx.)', None, None),
+    # Uncertainty (FASE 6)
+    ('n_samples', 'mcSamples', 'Muestras Monte Carlo', None, None),
+    ('max_von_mises_mean_mpa', 'meanMaxVonMises', 'Media de σvM máx.', 'MPa', 'MPA'),
+    ('max_von_mises_ci_high_mpa', 'upperMaxVonMises', 'Límite superior IC de σvM máx.', 'MPa', 'MPA'),
+    ('p_failure', 'probabilityOfFailure', 'Probabilidad de fallo', None, None),
+    ('beta', 'reliabilityIndex', 'Índice de fiabilidad β (Cornell)', None, None),
 ]
 
 

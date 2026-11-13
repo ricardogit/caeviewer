@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import struct
 
 import numpy as np
 from flask import Blueprint, Response, jsonify, request
@@ -149,15 +148,8 @@ def rom_pack(rom_id):
               ('tris', rom['surf_tris'].astype(np.uint32)),
               ('phi', rom['surf_phi'].astype(np.float32)),          # (n_s, 3, r)
               ('strain', rom['surf_strain'].astype(np.float32))]    # (n_s, 6, r)
-    meta, blobs, off = [], [], 0
-    for name, a in arrays:
-        a = np.ascontiguousarray(a)
-        meta.append({'name': name, 'dtype': str(a.dtype), 'shape': list(a.shape), 'offset': off})
-        blobs.append(a.tobytes())
-        off += a.nbytes
-    header = json.dumps({'rom_id': rom_id, 'r': int(rom['r']), 'arrays': meta}).encode()
-    pad = (-(4 + len(header))) % 4
-    body = struct.pack('<I', len(header)) + header + b'\0' * pad + b''.join(blobs)
+    from app.design.services.binpack import pack_arrays
+    body = pack_arrays({'rom_id': rom_id, 'r': int(rom['r'])}, arrays)
     return Response(body, mimetype='application/octet-stream',
                     headers={'Cache-Control': 'private, max-age=3600'})
 

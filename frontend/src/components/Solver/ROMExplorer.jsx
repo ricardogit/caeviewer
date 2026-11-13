@@ -17,16 +17,9 @@ import { Close, Bolt, PlayArrow } from '@mui/icons-material';
 
 import useROMStore from '../../stores/romStore';
 import { reconstruct } from '../../utils/romPack';
+import { colormap, COLORBAR_CSS } from '../../utils/colormap';
 
 const label = { color: '#bbb', fontSize: 12 };
-
-function colormap(t) {   // blue → cyan → green → yellow → red
-  const stops = [[0.13, 0.35, 0.85], [0.1, 0.75, 0.9], [0.3, 0.8, 0.3], [0.95, 0.85, 0.2], [0.9, 0.2, 0.15]];
-  const x = Math.min(0.9999, Math.max(0, t)) * 4;
-  const i = Math.floor(x);
-  const f = x - i;
-  return stops[i].map((c, k) => c + f * (stops[i + 1][k] - c));
-}
 
 const fmtParam = (p, v) => {
   const x = v * (p.display_scale || 1);
@@ -228,7 +221,7 @@ export default function ROMExplorer() {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Typography variant="caption" sx={{ color: '#aaa' }}>0</Typography>
               <Box sx={{ width: 140, height: 8, borderRadius: 1,
-                background: 'linear-gradient(90deg, #2159d9, #1abfe6, #4dcc4d, #f2d933, #e63326)' }} />
+                background: COLORBAR_CSS }} />
               <Typography variant="caption" sx={{ color: '#aaa' }}>
                 {fieldData ? (field === 'vm' ? `${(fieldData.maxVm / 1e6).toFixed(1)} MPa (superficie)`
                   : `${(fieldData.maxDisp * 1000).toPrecision(3)} mm`) : ''}

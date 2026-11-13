@@ -40,7 +40,8 @@ NON_PHYSICAL_KEYS = {
 }
 # Keys dropped at any depth (presentation only).
 # Nested 'geometry_id' in bcs/loads is the GEOMETRY *node* id of the graph, not the CAD file.
-LABEL_KEYS = {'label', 'node_id', 'entity_ids', 'unit_label', 'source_node', 'geometry_id'}
+LABEL_KEYS = {'label', 'node_id', 'entity_ids', 'unit_label', 'source_node', 'geometry_id',
+              'rom_id', 'material_id'}     # references: their content is hashed (rom_hash) or copied in
 # Defaults applied by the kernel, made explicit so "omitted" and "explicit default" hash alike.
 SPEC_DEFAULTS = {
     'tolerance': 1e-8,

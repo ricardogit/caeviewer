@@ -68,3 +68,10 @@ def rom_build(ctx, payload):
     """FASE 5: POD-Galerkin ROM for a SimulationRun (purpose='rom')."""
     from app.design.services.rom.runner import run_rom_build
     return run_rom_build(ctx, payload['run_id'], payload['spec'])
+
+
+@handler('uncertainty.mc', queue='solve')
+def uncertainty_mc(ctx, payload):
+    """FASE 6: Monte Carlo uncertainty propagation for a SimulationRun (purpose='uncertainty')."""
+    from app.design.services.material.runner import run_uncertainty
+    return run_uncertainty(ctx, payload['run_id'], payload['spec'])

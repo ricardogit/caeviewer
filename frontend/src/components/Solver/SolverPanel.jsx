@@ -21,6 +21,7 @@ import AdaptiveMonitor from './AdaptiveMonitor';
 import SimHistory from './SimHistory';
 import TopologyPanel from './TopologyPanel';
 import ROMPanel from './ROMPanel';
+import UncertaintyPanel from './UncertaintyPanel';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -103,12 +104,13 @@ export default function SolverPanel({ onClose }) {
         <ToggleButtonGroup
           value={mode} exclusive onChange={(_, v) => v && setMode(v)}
           size="small" fullWidth
+          sx={{ '& .MuiToggleButton-root': { px: 0.5, fontSize: '10.5px !important', textTransform: 'none' } }}
         >
           <ToggleButton value="graph" sx={{ fontSize: 11 }}>
-            Desde grafo
+            Grafo
           </ToggleButton>
           <ToggleButton value="cantilever" sx={{ fontSize: 11 }}>
-            Viga voladizo
+            Viga
           </ToggleButton>
           <ToggleButton value="topology" sx={{ fontSize: 11 }}>
             Topología
@@ -116,10 +118,14 @@ export default function SolverPanel({ onClose }) {
           <ToggleButton value="rom" sx={{ fontSize: 11 }}>
             ROM
           </ToggleButton>
+          <ToggleButton value="uncertainty" sx={{ fontSize: 11 }}>
+            Incertidumbre
+          </ToggleButton>
         </ToggleButtonGroup>
 
         {mode === 'topology' && <TopologyPanel graphId={activeGraphId} />}
         {mode === 'rom' && <ROMPanel graphId={activeGraphId} />}
+        {mode === 'uncertainty' && <UncertaintyPanel graphId={activeGraphId} />}
 
         {/* ── Graph mode ───────────────────────────────────────────────── */}
         {mode === 'graph' && (

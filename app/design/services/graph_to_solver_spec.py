@@ -75,9 +75,9 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         props = mat_node.properties or {}
         spec['material'] = {
             'type': props.get('model_type', 'linear_elastic_isotropic'),
-            'E': float(props.get('E', 210e9)),
-            'nu': float(props.get('nu', 0.3)),
-            'rho': float(props.get('rho', 7800.0)),
+            'E': float(props.get('E') if props.get('E') is not None else 210e9),
+            'nu': float(props.get('nu') if props.get('nu') is not None else 0.3),
+            'rho': float(props.get('rho') if props.get('rho') is not None else 7800.0),
         }
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────

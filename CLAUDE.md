@@ -321,6 +321,39 @@ also scaled by ρ/ρ₀. Parameters: `E`, `nu`, `load_<i>`, `rho` (only with gra
   `localhost` adds ~2 s per request via IPv6 fallback). Measured: cantilever error 1e-7, eval+field p95 <1 ms;
   CAD shaft 56K DOF: 3 modes, build 210 s, socket round-trip p95 30 ms, full run 22 s vs ROM 3 ms.
 
+## Active Materials and Uncertainty (FASE 6)
+
+`app/design/services/material/`:
+- `calibrator.py`: `least_squares_fit` (scipy TRF, bounds, optional weights) → params, std from Σ = s²(JᵀJ)⁻¹
+  computed in **column-scaled** variables (unscaled pinv truncated directions: E ~1e5 MPa vs ε0 ~1e-4), R², RMSE,
+  AICc; `prediction_band` (delta method); `MaterialCalibrator` object interface.
+- `parametric.py`: tensile σ-ε models `linear`, `bilinear`, `ramberg_osgood`, `ludwik`, `voce`, `polynomial_3`
+  (internal MPa; implicit laws inverted by vectorized bisection). Every model is fitted as σ = f(ε − ε0) with the
+  **toe offset ε0 as a parameter** (pre-shifting the data biased E by up to 27 % on gradual-yield curves), residuals
+  weighted by normalized arc length, data truncated at UTS. Best model by AICc. Several specimens → mean ± std
+  across specimens; one → fit standard error. `parse_curve_csv`: delimiter/decimal comma, %, Pa/MPa/GPa/psi/ksi,
+  force-displacement (needs area + gauge length); header keys match at word start (`tensi` ≠ `extension`).
+- `uncertainty.py`: Monte Carlo with truncated normals (inverse CDF, one RNG per variable → prefix-stable samples).
+  `ROMEvaluator` (batched: σvM² = μ² uᵣᵀQuᵣ with per-element Q precomputed → one GEMM per block; 2000 samples on a
+  56K-DOF ROM ≈ 2.5 s) — only for variables varied in the ROM training (E always exact); `FullEvaluator`
+  (affine full solves). Outputs: stats/histograms of max σvM and |u|, Pf with Wilson interval, β (Cornell and
+  −Φ⁻¹(Pf)), Spearman sensitivities, convergence, surface mean/std/upper-quantile fields.
+- `runner.py`: job `uncertainty.mc` (queue `solve`), `SimulationRun(purpose='uncertainty')`, setup under
+  `spec['uncertainty']` (`rom_id`/`material_id` are label keys; `rom_hash` is hashed); files in
+  `SOLVER_DATA_DIR/uncertainty/<run_id>/result.npz`; socket `uncertainty_progress|done|error`.
+  Sample caps: full solves 100/100/500/2000 by tier, ROM 2000 (413 above).
+- API `/api/design/material`: library CRUD (`material_models`, soft delete), `POST /fit-curves`, `POST /<id>/fit`
+  (multipart CSV `files`, optional `model`), `/<id>/predict`, `/<id>/assign` (MATERIAL node gets E, ν, ρ, σy and
+  `*_std`, `yield_strength/yield_std`, `material_id`), `GET /uncertainty/<graph_id>/setup|list`,
+  `POST /uncertainty/<graph_id>/run`, `/<id>/propagate-uncertainty`, `GET /uncertainty/run/<id>[/surface]`.
+  The FEM kernel stays linear elastic: the fitted plastic law supplies σy for the failure criterion.
+- UI: NodePanel MATERIAL → "Biblioteca y ajuste de ensayo…" (`components/Material/MaterialEditor.jsx`,
+  `stores/materialStore.js`); SolverPanel → "Incertidumbre" (`UncertaintyPanel.jsx`, `UncertaintyBand.jsx`,
+  `stores/uncertaintyStore.js`). `services/binpack.py` is the shared binary pack (ROM + uncertainty surfaces).
+- Hito: `python validate_material.py` — synthetic CSV tensile curves (4 materials/formats, noise, toe, necking):
+  elastoplastic model, R² > 0.99, σ0.2 within 3 %, E within 5 % (AISI 304 gradual yield: E −4.4 %, only 10 elastic
+  points); MC Pf vs analytic normal reliability, ROM vs full solves.
+
 ## Traceability (FASE 7)
 
 `app/design/services/traceability/hasher.py`: the run hash = SHA-256 of **canonical physical inputs**

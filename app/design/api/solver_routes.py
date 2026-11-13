@@ -176,7 +176,7 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     from app.jobs import enqueue
 
     fp = fingerprint(spec)
-    if parent is None and purpose in ('run', 'topology', 'rom'):
+    if parent is None and purpose in ('run', 'topology', 'rom', 'uncertainty'):
         parent = (SimulationRun.query
                   .filter(SimulationRun.graph_id == graph.id, SimulationRun.status == 'done',
                           SimulationRun.purpose == purpose)
@@ -202,7 +202,8 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     db.session.commit()
     # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker --queues solve)
     # runs FEMKernel.solve_async and its socket events are forwarded to room=run_id.
-    kind = 'topology.simp' if 'topology' in spec else 'rom.build' if 'rom' in spec else 'fem.solve'
+    kind = ('uncertainty.mc' if 'uncertainty' in spec else 'topology.simp' if 'topology' in spec
+            else 'rom.build' if 'rom' in spec else 'fem.solve')
     job = enqueue(kind, {'run_id': str(run.id), 'spec': spec}, simulation_run_id=run.id)
     return run, job
 

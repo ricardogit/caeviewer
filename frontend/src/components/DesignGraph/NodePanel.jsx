@@ -8,6 +8,7 @@ import {
   Divider, IconButton, Chip, Button, Slider, Tooltip,
 } from '@mui/material';
 import { Close, Delete } from '@mui/icons-material';
+import MaterialEditor from '../Material/MaterialEditor';
 import useDesignStore from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
 import FaceSelector, { useStudyGeometryId } from './FaceSelector';
@@ -38,6 +39,7 @@ export default function NodePanel({ node, graphId, onClose }) {
   const [props, setProps] = useState(node.data.properties || {});
   const [level, setLevel] = useState(node.data.level || 0);
   const [dirty, setDirty] = useState(false);
+  const [matEditor, setMatEditor] = useState(false);
 
   const nodeType = node.data.node_type;
   const color = NODE_COLORS[nodeType] || '#888';
@@ -214,18 +216,54 @@ export default function NodePanel({ node, graphId, onClose }) {
                 {MATERIAL_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
               </Select>
             </FormControl>
+            {props.material_name && (
+              <Chip size="small" label={`Biblioteca: ${props.material_name}${props.constitutive_fit ? ` (${props.constitutive_fit})` : ''}`}
+                sx={{ bgcolor: '#263238', color: '#90caf9', fontSize: 10, alignSelf: 'flex-start' }} />
+            )}
             {[['E', 'Módulo de Young [Pa]', 70e9],
               ['nu', 'Coeficiente de Poisson', 0.33],
-              ['rho', 'Densidad [kg/m³]', 2700]].map(([k, lbl, def]) => (
-              <TextField
-                key={k} label={lbl} size="small" fullWidth
-                type="number"
-                value={props[k] ?? def}
-                onChange={e => setProp(k, parseFloat(e.target.value))}
-                inputProps={{ style: { color: '#fff' } }}
-                InputLabelProps={{ style: { color: '#888' } }}
-              />
+              ['rho', 'Densidad [kg/m³]', 2700],
+              ['yield_strength', 'Límite elástico σy [Pa]', '']].map(([k, lbl, def]) => (
+              <Box key={k} sx={{ display: 'flex', gap: 0.5 }}>
+                <TextField
+                  label={lbl} size="small" sx={{ flex: 2 }}
+                  type="number"
+                  value={props[k] ?? def}
+                  onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+                <TextField
+                  label="± desv." size="small" sx={{ flex: 1 }}
+                  type="number"
+                  value={props[k === 'yield_strength' ? 'yield_std' : `${k}_std`] ?? ''}
+                  onChange={e => setProp(k === 'yield_strength' ? 'yield_std' : `${k}_std`,
+                    e.target.value === '' ? null : parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+              </Box>
             ))}
+            <Typography variant="caption" sx={{ color: '#777' }}>
+              Las desviaciones alimentan la propagación de incertidumbre (Solver → Incertidumbre).
+            </Typography>
+            <Button size="small" variant="outlined" onClick={() => setMatEditor(true)}>
+              Biblioteca y ajuste de ensayo…
+            </Button>
+            {matEditor && (
+              <MaterialEditor open graphId={graphId} nodeId={node.id} onClose={() => setMatEditor(false)}
+                onAssigned={(p) => {
+                  setProps(p);
+                  setDirty(false);
+                  useDesignStore.setState((st) => ({
+                    graphData: {
+                      ...st.graphData,
+                      nodes: st.graphData.nodes.map((n) => (n.id === node.id
+                        ? { ...n, data: { ...n.data, properties: p } } : n)),
+                    },
+                  }));
+                }} />
+            )}
           </>
         )}
 

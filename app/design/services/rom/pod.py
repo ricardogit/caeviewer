@@ -279,16 +279,8 @@ class PODROMBuilder:
         # strain modes at element centroids (n_el, 6, r)
         strain = np.stack([tb.strain_at(m.nodes, m.elements, Phi[:, k], CENTROID) for k in range(r)], axis=2)
         # surface: nodes, triangles, displacement and (volume-averaged) strain modes
-        tris = np.asarray(m.extract_surface_triangles(), dtype=np.int64).reshape(-1, 3)
-        snodes, tri_local = np.unique(tris, return_inverse=True)
-        tri_local = tri_local.reshape(-1, 3)
-        vol = tb.volumes(m.nodes, m.elements)
-        el = m.elements
-        A = sp.csr_matrix((np.repeat(vol, el.shape[1]), (el.ravel(), np.repeat(np.arange(len(el)), el.shape[1]))),
-                          shape=(m.n_nodes, len(el)))
-        A = A[snodes]
-        A = sp.diags(1.0 / np.maximum(np.asarray(A.sum(axis=1)).ravel(), 1e-300)) @ A
-        s_strain = (A @ strain.reshape(len(el), -1)).reshape(len(snodes), 6, r)
+        snodes, tri_local, A = surface_operator(m)
+        s_strain = (A @ strain.reshape(len(m.elements), -1)).reshape(len(snodes), 6, r)
         s_phi = Phi.reshape(-1, 3, r)[snodes]
         return {
             'r': r, 'free': self.free, 'Phi': Phi,
@@ -302,6 +294,21 @@ class PODROMBuilder:
             'params_json': json.dumps(list(self.params.values())),
             'space_json': json.dumps(self.space),
         }
+
+
+def surface_operator(mesh):
+    """Boundary nodes, local triangles and the volume-weighted averaging matrix A
+    (n_surface × n_elements) that turns element-centroid values into surface nodal values."""
+    tris = np.asarray(mesh.extract_surface_triangles(), dtype=np.int64).reshape(-1, 3)
+    snodes, tri_local = np.unique(tris, return_inverse=True)
+    tri_local = tri_local.reshape(-1, 3)
+    vol = tb.volumes(mesh.nodes, mesh.elements)
+    el = mesh.elements
+    A = sp.csr_matrix((np.repeat(vol, el.shape[1]), (el.ravel(), np.repeat(np.arange(len(el)), el.shape[1]))),
+                      shape=(mesh.n_nodes, len(el)))
+    A = A[snodes]
+    A = sp.diags(1.0 / np.maximum(np.asarray(A.sum(axis=1)).ravel(), 1e-300)) @ A
+    return snodes, tri_local, A.tocsr()
 
 
 def load_scales_from(rom: dict, q: dict) -> np.ndarray:
