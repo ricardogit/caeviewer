@@ -149,6 +149,9 @@ export default function NodePanel({ node, graphId, onClose }) {
           <>
             <CadGeometryFields props={props} setProp={setProp} />
             <Divider sx={{ borderColor: '#333' }} />
+            {!props.geometry_id && !props.mesh_id && (
+              <ParametricShapeFields props={props} setProp={setProp} />
+            )}
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Tipo de representación</InputLabel>
               <Select
@@ -525,6 +528,51 @@ export default function NodePanel({ node, graphId, onClose }) {
             Guardar cambios
           </Button>
         </Box>
+      )}
+    </Box>
+  );
+}
+
+
+/** FASE 9: parametric geometry defined in the graph (no CAD): a beam fixed at x = 0, loaded at x = L.
+ *  BC/LOAD nodes without faces use the default sets 'fixed' / 'tip'. */
+function ParametricShapeFields({ props, setProp }) {
+  const tf = {
+    size: 'small', type: 'number', inputProps: { style: { color: '#fff', fontSize: 12 } },
+    InputLabelProps: { style: { color: '#888' } },
+  };
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <FormControl size="small" fullWidth>
+        <InputLabel sx={{ color: '#888' }}>Forma paramétrica (sin CAD)</InputLabel>
+        <Select value={props.shape || ''} label="Forma paramétrica (sin CAD)" sx={{ color: '#fff' }}
+          onChange={(e) => setProp('shape', e.target.value || undefined)}>
+          <MenuItem value="">— ninguna (viga de prueba 50×10×10 T4) —</MenuItem>
+          <MenuItem value="beam">Viga prismática (empotrada en x = 0)</MenuItem>
+        </Select>
+      </FormControl>
+      {props.shape === 'beam' && (
+        <>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField {...tf} label="L [mm]" value={props.length_mm ?? 50} onChange={(e) => setProp('length_mm', Number(e.target.value))} />
+            <TextField {...tf} label="b [mm]" value={props.width_mm ?? 10} onChange={(e) => setProp('width_mm', Number(e.target.value))} />
+            <TextField {...tf} label="h [mm]" value={props.height_mm ?? 10} onChange={(e) => setProp('height_mm', Number(e.target.value))} />
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField {...tf} label="Divisiones a lo largo" value={props.n_div ?? 12} onChange={(e) => setProp('n_div', Number(e.target.value))} />
+            <FormControl size="small" fullWidth>
+              <InputLabel sx={{ color: '#888' }}>Elemento</InputLabel>
+              <Select value={props.element_order ?? 2} label="Elemento" sx={{ color: '#fff' }}
+                onChange={(e) => setProp('element_order', e.target.value)}>
+                <MenuItem value={2}>T10 (cuadrático)</MenuItem>
+                <MenuItem value={1}>T4 (lineal, rígido en flexión)</MenuItem>
+              </Select>
+            </FormControl>
+          </Box>
+          <Typography sx={{ color: '#777', fontSize: 11 }}>
+            Caras: «fixed» (x = 0) y «tip» (x = L) para BC y cargas sin caras CAD.
+          </Typography>
+        </>
       )}
     </Box>
   );

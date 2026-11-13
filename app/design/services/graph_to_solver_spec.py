@@ -98,6 +98,16 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         elif mesh_id:
             spec['mesh_source'] = 'cae_mesh'
             spec['mesh_id'] = mesh_id
+        elif props.get('shape') == 'beam':
+            # FASE 9: parametric beam defined in the graph (no CAD). Dimensions in mm; faces
+            # 'fixed' (x = 0) and 'tip' (x = L) are the default BC / LOAD sets. T10 by default.
+            spec['mesh_params'] = {
+                'length': float(props.get('length_mm') or 50) / 1000.0,
+                'width': float(props.get('width_mm') or 10) / 1000.0,
+                'height': float(props.get('height_mm') or 10) / 1000.0,
+                'n_along_length': int(props.get('n_div') or 12),
+                'order': int(props.get('element_order') or 2),
+            }
 
         tier = geom_node.tier if geom_node.tier is not None else props.get('tier', 1)
         spec['tier'] = int(tier)

@@ -115,9 +115,14 @@ def delete_graph(graph_id):
     if not graph:
         return jsonify({'error': 'Graph not found'}), 404
 
-    db.session.delete(graph)
-    db.session.commit()
-    return jsonify({'success': True, 'deleted_id': graph_id}), 200
+    from app.design.services.graph_service import graph_dependents, delete_graph_cascade
+    deps = graph_dependents(graph.id)
+    if (deps['runs'] or deps['experiments']) and request.args.get('cascade') not in ('1', 'true'):
+        return jsonify({'error': (f"El estudio tiene {deps['runs']} simulación(es) y {deps['experiments']} ensayo(s). "
+                                  'Bórralo con cascade=1 para eliminar también su historial.'),
+                        'dependents': deps}), 409
+    removed = delete_graph_cascade(graph.id)
+    return jsonify({'success': True, 'deleted_id': graph_id, 'removed': removed}), 200
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CAE Viewer is a full-stack engineering platform with three integrated modes:
 
+- **Results mode** (FASE 9): 3D field viewer of the active study's finished runs (Design → Simular → Resultados).
 - **Design mode** (FASE 1-3): Engineering concept graph editor + FEM solver. Build design graphs (GEOMETRY, MATERIAL, BC, LOAD, RESULT nodes), run structural simulations with adaptive meshing, stream solver progress via WebSocket.
 - **STEP mode**: Upload/view STEP files (.stp/.step/.p21), browse entity graphs, annotate with PMI, measure, section-cut, and export.
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
@@ -142,7 +143,7 @@ config/config.py          # DevelopmentConfig / ProductionConfig / TestingConfig
 
 ```
 src/
-  App.jsx              # Root: three-mode (appMode: design|step|cae), all state, drawers
+  App.jsx              # Root: appMode (workspaceStore) design|results|geometry|step|cae|hub, drawers
   main.jsx
   components/
     DesignGraph/
@@ -185,7 +186,9 @@ src/
 ```
 
 **Key frontend patterns:**
-- `App.jsx` manages all panel open/closed state centrally and passes callbacks down. `caeMode` switches between `CAEViewer` (vtk.js) and `StepViewer3D` (Three.js/R3F).
+- `appMode`, the solver context panel (open + section), the history dialog and the study preflight live in
+  `stores/workspaceStore.js` (FASE 9) so TopBar actions can drive other modes; the STEP-viewer panels are still
+  local state in `App.jsx`. `caeMode` switches between `CAEViewer` (vtk.js) and `StepViewer3D` (Three.js/R3F).
 - `CAEViewer.jsx` uses `@kitware/vtk.js` directly (not R3F) — requires `import '@kitware/vtk.js/Rendering/Profiles/Geometry'` as the first VTK import to register rendering classes.
 - `StepViewer3D.jsx` uses `@react-three/fiber` + `three`. STEP files are served as Draco-compressed GLB from `/api/step-view/geometry/<header_id>/glb`. The Draco decoder WASM files live in `public/draco/` and `dist/draco/`.
 - State management: mostly React `useState` in `App.jsx` + Zustand in `viewerStore.js` for viewer-specific state.
@@ -201,7 +204,7 @@ src/
 | `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |
 | `/api/design/validation` | `validation_routes.py` | Experiments, correlation, recalibration (FASE 8) |
-| `/api/design/solver` | `solver_routes.py` | Launch FEM simulations (async), stream progress, get results |
+| `/api/design/solver` | `solver_routes.py` | Launch FEM simulations (async), stream progress, results, `/surface`, `/preflight` |
 | `/api/cae` | `cae_routes.py` | Mesh CRUD, field data, download |
 | `/api/cae` | `ai_routes.py` | AI analysis |
 | `/api/cae` | `mesh_from_step_routes.py` | STEP→mesh trigger |
@@ -376,6 +379,33 @@ same hash, even across graphs (hito). Provenance (host, git commit, platform) is
   `{"force": true}`), `GET /<run>/reproducibility[?against=]`, `GET /environment`.
 - UI: History button in `SolverPanel` → `components/Solver/SimHistory.jsx` (hash colours, deltas,
   report, reproduce dialog with environment check; test `SimHistory.test.jsx`).
+
+## Unified Workspace (FASE 9)
+
+The study (DesignGraph) is the context of the whole UI; tools are modes around it.
+- `TopBar.jsx`: 1) mode chips Design | Resultados | Geometría | STEP | CAE/FEA | Catálogo; 2) project context
+  (name · version · status · ✓ listo / ⚠ n · tier needed vs declared); 3) actions Validar · Simular (validates, opens
+  the solver panel, launches the run; an incomplete graph shows the validation instead) · Historial · Exportar
+  (Markdown / JSON-LD report of the latest run, graph JSON-LD).
+- `GET /api/design/solver/<graph_id>/preflight`: completeness issues, physics, size estimate + smallest tier that
+  fits vs declared, confidence factor (FASE 8 correlator), latest run. Shown by `Workspace/GraphStatusStrip.jsx`
+  (plan §9.4, bottom-left of the graph editor, refreshed debounced on graph content changes) and the TopBar.
+- Results mode: `Results/ResultsRunList.jsx` (runs `run|reproduce|adaptive` of the study; opens the newest done) +
+  `Results/ResultsViewer.jsx` (Three.js; σvM, |u|, ux/uy/uz with symmetric range for components, deformed shape:
+  auto = max |u| drawn as 8 % of the model, never < 1×, 1:1 button). Data: `GET /api/design/solver/<run>/surface`
+  (binpack: xyz mm, tris, u mm, vm MPa over compacted surface nodes). "Ver resultados 3D" in the solver panel.
+- GEOMETRY node `shape: 'beam'` (`length_mm`, `width_mm`, `height_mm`, `n_div`, `element_order` default 2 = T10):
+  parametric beam defined in the graph (faces `fixed` x = 0, `tip` x = L). Without `shape`, no geometry_id and no
+  mesh_id the legacy default (50×10×10 mm T4 cantilever) is kept.
+- `DELETE /api/design/graph/<id>`: 409 when the study has runs or experiments; `?cascade=1` deletes runs (+ h5 and
+  topology/rom/uncertainty dirs), field results, correlations, experiments (+ files), physics configs; library
+  materials are kept (graph_id cleared), jobs keep their log. The project list asks before both steps.
+- Not done from the plan: graph version tree in the left panel (no versioning API), a single designStore (§9.3:
+  kept as designStore + solverStore + workspaceStore on purpose).
+- Hito: `python validate_workflow.py [--server http://127.0.0.1:8080] [--keep]` (server + worker): concept →
+  graph (beam 500×25×25 T10, steel, fixed, 1 kN) → preflight → run on the job queue → run list + surface pack
+  (tip deflection −0.64 % vs Timoshenko, closed surface) → SPA bundle; deletes its study. ~3 s.
+  Tests: `components/Workspace/Workspace.test.jsx`.
 
 ## Continuous Validation (FASE 8)
 

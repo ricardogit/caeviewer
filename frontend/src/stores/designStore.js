@@ -55,8 +55,9 @@ const useDesignStore = create(
         return g;
       },
 
-      deleteGraph: async (graphId) => {
-        await axios.delete(`${BASE}/${graphId}`);
+      /** cascade: also delete the study's simulations and tests (the API answers 409 otherwise). */
+      deleteGraph: async (graphId, cascade = false) => {
+        await axios.delete(`${BASE}/${graphId}`, cascade ? { params: { cascade: 1 } } : undefined);
         set(s => ({
           graphs: s.graphs.filter(g => g.id !== graphId),
           ...(s.activeGraphId === graphId

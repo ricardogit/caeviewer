@@ -46,6 +46,10 @@ import HubPage from './components/Hub/HubPage';
 import HubFilters from './components/Hub/HubFilters';
 import GeometryViewer from './components/Geometry/GeometryViewer';
 import FacePanel from './components/Geometry/FacePanel';
+import ResultsViewer from './components/Results/ResultsViewer';
+import ResultsRunList from './components/Results/ResultsRunList';
+import useWorkspaceStore from './stores/workspaceStore';
+import useDesignStore from './stores/designStore';
 
 const darkTheme = createTheme({
   palette: {
@@ -70,9 +74,11 @@ export default function App() {
   const [featurePanelOpen, setFeaturePanelOpen] = useState(false);
   const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
-  // ── App mode: 'design' | 'step' | 'cae' ────────────────────────────────
-  const [appMode, setAppMode] = useState('design');   // Design Graph is the default (PLAN_CAE_NUEVA_GENERACION §1.5); Hub = catalog
-  const [solverOpen, setSolverOpen] = useState(false);
+  // ── App mode (FASE 9: workspace store, so TopBar actions and panels can switch it) ──
+  // design | results | geometry | step | cae | hub — Design Graph is the default (§1.5)
+  const { appMode, setAppMode, solverOpen, setSolverOpen, toggleSolver, loadPreflight } = useWorkspaceStore();
+  const activeGraphId = useDesignStore((st) => st.activeGraphId);
+  useEffect(() => { loadPreflight(activeGraphId); }, [activeGraphId, loadPreflight]);
   const caeMode = appMode === 'cae';     // kept for internal logic compatibility
 
   // ── CAE mode ─────────────────────────────────────────────────────────────
@@ -200,10 +206,9 @@ export default function App() {
           onMenuClick={() => setFileListOpen(!fileListOpen)}
           selectedFile={selectedFile}
           selectedMesh={selectedMesh}
-          appMode={appMode}
           onSetMode={(mode) => {
             setAppMode(mode);
-            if (mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+            if (mode === 'design' || mode === 'results') { setSelectedFile(null); setSelectedMesh(null); }
             // Keep selectedFile when switching to CAE (for mesh provenance display)
           }}
         />
@@ -216,6 +221,8 @@ export default function App() {
             ? <HubFilters />
             : appMode === 'design'
             ? <GraphProjectList />
+            : appMode === 'results'
+            ? <ResultsRunList />
             : appMode === 'geometry'
             ? <GeometryList />
             : appMode === 'cae'
@@ -240,13 +247,15 @@ export default function App() {
               if (launch.mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
               setAppMode(launch.mode);
             }} />
+          ) : appMode === 'results' ? (
+            <ResultsViewer />
           ) : appMode === 'design' ? (
             <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
               <GraphEditor />
               {/* Solver panel toggle */}
               <Box sx={{ position: 'absolute', top: 16, right: 16, zIndex: 25 }}>
                 <IconButton
-                  onClick={() => setSolverOpen(o => !o)}
+                  onClick={toggleSolver}
                   sx={{
                     bgcolor: solverOpen ? '#1565c0' : '#1e1e1e',
                     border: `1px solid ${solverOpen ? '#2196f3' : '#444'}`,

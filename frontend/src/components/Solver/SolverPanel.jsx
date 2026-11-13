@@ -2,7 +2,7 @@
  * SolverPanel — FEM solver configuration and launcher.
  * FASE 2: structural linear elastic + cantilever validation.
  */
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
 import {
   Box, Typography, TextField, Select, MenuItem, FormControl,
   InputLabel, Button, Chip, Divider, CircularProgress, Alert,
@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import {
   PlayArrow, Stop, ExpandMore, Science, CheckCircle,
-  Warning, Close, Refresh, History,
+  Warning, Close, Refresh, History, ViewInAr,
 } from '@mui/icons-material';
 
 import useDesignStore from '../../stores/designStore';
@@ -23,6 +23,8 @@ import TopologyPanel from './TopologyPanel';
 import ROMPanel from './ROMPanel';
 import UncertaintyPanel from './UncertaintyPanel';
 import ValidationPanel from '../Validation/ValidationPanel';
+import useWorkspaceStore from '../../stores/workspaceStore';
+import useResultsStore from '../../stores/resultsStore';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -44,8 +46,16 @@ export default function SolverPanel({ onClose }) {
     startRun, cancelRun, runCantileverTest, resetRun, clearError,
   } = useSolverStore();
 
-  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever' | 'topology' | 'rom' | 'uncertainty' | 'validation'
-  const [historyOpen, setHistoryOpen] = useState(false);
+  // section and history dialog live in the workspace store (FASE 9) so TopBar actions can drive them
+  const mode = useWorkspaceStore((st) => st.solverMode);
+  const setMode = useWorkspaceStore((st) => st.setSolverMode);
+  const historyOpen = useWorkspaceStore((st) => st.historyOpen);
+  const setHistoryOpen = useWorkspaceStore((st) => st.setHistoryOpen);
+  const activeRunId = useSolverStore((st) => st.activeRunId);
+  const loadPreflight = useWorkspaceStore((st) => st.loadPreflight);
+  useEffect(() => {
+    if (runStatus === 'done' && activeGraphId) loadPreflight(activeGraphId);
+  }, [runStatus, activeGraphId, loadPreflight]);
 
   const isRunning = runStatus === 'running' || runStatus === 'queued';
 
@@ -302,7 +312,7 @@ export default function SolverPanel({ onClose }) {
             )}
 
             {runStatus === 'done' && resultSummary && (
-              <ResultSummary summary={resultSummary} />
+              <ResultSummary summary={resultSummary} runId={activeRunId} />
             )}
           </>
         )}
@@ -330,7 +340,13 @@ export default function SolverPanel({ onClose }) {
   );
 }
 
-function ResultSummary({ summary }) {
+function ResultSummary({ summary, runId }) {
+  const setAppMode = useWorkspaceStore((st) => st.setAppMode);
+  const openRun = useResultsStore((st) => st.open);
+  const showResults = () => {
+    openRun(runId);
+    setAppMode('results');
+  };
   const rows = [
     ['Despl. máx', `${summary.max_displacement_mm?.toFixed(4)} mm`],
     ['σ_vm máx', `${summary.max_von_mises_mpa?.toFixed(2)} MPa`],
@@ -350,6 +366,12 @@ function ResultSummary({ summary }) {
           <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', fontSize: 10 }}>{val}</Typography>
         </Box>
       ))}
+      {runId && (
+        <Button size="small" fullWidth variant="outlined" startIcon={<ViewInAr />} onClick={showResults}
+          sx={{ mt: 1, fontSize: 11, color: '#a5d6a7', borderColor: '#2e7d32' }}>
+          Ver resultados 3D
+        </Button>
+      )}
     </Box>
   );
 }

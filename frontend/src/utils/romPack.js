@@ -20,7 +20,7 @@ export function parsePack(buffer) {
     const n = shape.reduce((a, b) => a * b, 1);
     arrays[name] = { data: new T(buffer, start + offset, n), shape };
   });
-  return { r: header.r, nNodes: arrays.xyz.shape[0], ...arrays };
+  return { r: header.r, header, nNodes: arrays.xyz.shape[0], ...arrays };
 }
 
 /**

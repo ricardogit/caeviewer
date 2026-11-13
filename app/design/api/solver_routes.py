@@ -762,3 +762,116 @@ def test_cantilever():
     except Exception as exc:
         logger.error(f"Cantilever test failed: {exc}", exc_info=True)
         return jsonify({'error': str(exc)}), 500
+
+
+# ── FASE 9: unified workspace ────────────────────────────────────────────────
+
+@bp.route('/<string:run_id>/surface', methods=['GET'])
+def run_surface(run_id):
+    """Binary surface pack of a finished run for the Results viewer (binpack layout):
+    xyz [mm] float32 (n,3) · tris uint32 (m,3) · u [mm] float32 (n,3) · vm [MPa] float32 (n,)
+    over the surface nodes only (indices compacted)."""
+    import json
+    import os
+    import h5py
+    import numpy as np
+    from flask import Response
+    from app.design.models.simulation import SimulationRun
+    from app.design.services.binpack import pack_arrays
+    try:
+        import uuid as _u
+        run = SimulationRun.query.filter_by(id=_u.UUID(run_id)).first()
+    except ValueError:
+        run = None
+    if run is None:
+        return jsonify({'error': 'Run not found'}), 404
+    if run.status != 'done':
+        return jsonify({'error': f'El run no ha terminado ({run.status}).', 'status': run.status}), 409
+    path = os.path.join(str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver')), f'{run.id}.h5')
+    if not os.path.exists(path):
+        return jsonify({'error': 'Este run no tiene campos 3D (archivo de resultados no encontrado).'}), 404
+    with h5py.File(path, 'r') as f:
+        if 'surface_triangles' not in f or 'fields/displacement/step_0' not in f:
+            return jsonify({'error': 'El run no tiene superficie o desplazamientos guardados.'}), 404
+        X = f['nodes'][:]
+        tris = np.asarray(f['surface_triangles'][:], np.int64)
+        U = f['fields/displacement/step_0'][:]
+        vm = f['fields/von_mises_nodal/step_0'][:] if 'fields/von_mises_nodal/step_0' in f else np.zeros(len(X))
+        summary = {}
+        if 'summary_json' in f.attrs:
+            summary = json.loads(f.attrs['summary_json'])
+    used, inv = np.unique(tris.ravel(), return_inverse=True)
+    t = inv.reshape(-1, 3).astype(np.uint32)
+    xyz = (X[used] * 1000.0).astype(np.float32)
+    u = (U[used] * 1000.0).astype(np.float32)
+    v = (np.asarray(vm, float)[used] / 1e6).astype(np.float32)
+    umag_all = np.linalg.norm(U, axis=1)
+    header = {
+        'run_id': str(run.id), 'graph_id': str(run.graph_id), 'purpose': run.purpose,
+        'created_at': run.created_at.isoformat() if run.created_at else None,
+        'units': {'xyz': 'mm', 'u': 'mm', 'vm': 'MPa'},
+        'n_surface_nodes': int(len(used)), 'n_triangles': int(len(t)),
+        'max_u_mm': float(umag_all.max() * 1000.0), 'max_vm_mpa': float(np.max(vm) / 1e6) if len(vm) else 0.0,
+        'bbox_mm': [xyz.min(0).tolist(), xyz.max(0).tolist()],
+        'summary': summary, 'material': ((run.solver_config or {}).get('material') or {}),
+    }
+    body = pack_arrays(header, [('xyz', xyz), ('tris', t), ('u', u), ('vm', v)])
+    return Response(body, mimetype='application/octet-stream',
+                    headers={'Cache-Control': 'private, max-age=3600'})
+
+
+@bp.route('/<string:graph_id>/preflight', methods=['GET'])
+def preflight(graph_id):
+    """Everything the workspace shows about a study before simulating (plan §9.4): graph
+    completeness, physics, problem size and the smallest tier that fits vs the declared one,
+    confidence factor from validated similar cases, and the latest run."""
+    from app.design.models.graph import DesignGraph
+    from app.design.models.simulation import SimulationRun
+    from app.design.services.graph_service import DesignGraphService
+    from app.design.services.graph_to_solver_spec import graph_to_solver_spec, GraphSpecError
+    from app.design.services.fem.sizing import estimate_problem_size
+    from app.design.services.fem.solver import TIER_LIMITS
+    try:
+        import uuid as _u
+        g = DesignGraph.query.filter_by(id=_u.UUID(graph_id)).first()
+    except ValueError:
+        g = None
+    if g is None:
+        return jsonify({'error': 'Graph not found'}), 404
+    issues = DesignGraphService().validate_completeness(graph_id)
+    out = {'graph_id': graph_id, 'name': g.name, 'version': g.version, 'status': g.status,
+           'issues': issues, 'ready': not any(i['severity'] == 'error' for i in issues),
+           'physics': ['structural'], 'physics_label': 'Estructural 3D (elástico lineal)',
+           'size': None, 'tier_declared': None, 'tier_needed': None, 'tier_ok': None,
+           'confidence': None, 'latest_run': None}
+    try:
+        spec = graph_to_solver_spec(graph_id)
+        out['physics'] = spec.get('physics') or ['structural']
+        out['tier_declared'] = int(spec.get('tier', g.tier if g.tier is not None else 1))
+        out['mesh_source'] = spec.get('mesh_source')
+        size = estimate_problem_size(spec)
+        if size:
+            out['size'] = size
+            need = next((t for t in sorted(TIER_LIMITS) if size['n_dof'] <= TIER_LIMITS[t]['max_dof']
+                         and size['n_nodes'] <= TIER_LIMITS[t]['max_nodes']
+                         and size['n_elements'] <= TIER_LIMITS[t]['max_elements']), None)
+            out['tier_needed'] = need
+            out['tier_ok'] = need is not None and need <= out['tier_declared']
+    except GraphSpecError as e:
+        out['issues'] = issues + [{'severity': 'error', 'message': str(e), 'node_id': None}]
+        out['ready'] = False
+    except Exception as e:                                         # size estimate is best-effort
+        logger.warning(f'preflight size estimate failed for {graph_id}: {e}')
+    try:
+        from app.design.services.validation.correlator import SimulationCorrelator
+        sc = SimulationCorrelator()
+        similar = sc.find_similar_runs(graph_id, top_k=5)
+        out['confidence'] = {'factor': sc.compute_confidence_factor(similar), 'n_similar': len(similar)}
+    except Exception as e:
+        logger.info(f'preflight confidence unavailable for {graph_id}: {e}')
+    run = (SimulationRun.query.filter(SimulationRun.graph_id == g.id,
+                                      SimulationRun.purpose.in_(('run', 'reproduce', 'adaptive')))
+           .order_by(SimulationRun.created_at.desc()).first())
+    if run is not None:
+        out['latest_run'] = run.to_history_dict()
+    return jsonify(out), 200

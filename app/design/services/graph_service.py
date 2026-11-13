@@ -413,3 +413,68 @@ class DesignGraphService:
         if graph:
             graph.hash = self.compute_graph_hash(graph_id)
             db.session.commit()
+
+
+def graph_dependents(graph_id) -> dict:
+    """Rows that keep a study alive besides its nodes/edges (none of the FKs cascade)."""
+    from app.design.models.simulation import SimulationRun
+    from app.design.models.validation import ExperimentalRecord
+    return {'runs': SimulationRun.query.filter_by(graph_id=graph_id).count(),
+            'experiments': ExperimentalRecord.query.filter_by(graph_id=graph_id).count()}
+
+
+def delete_graph_cascade(graph_id) -> dict:
+    """Delete a study with its simulation history: runs (+ result files), field results,
+    correlations, experiments (+ files), physics configs. Library materials are kept (their
+    graph_id is cleared), jobs keep their log (simulation_run_id → NULL), versions of the graph
+    lose their parent link. Commits."""
+    import os
+    import shutil
+    from flask import current_app
+    from app.extensions import db
+    from app.design.models.graph import DesignGraph
+    from app.design.models.simulation import SimulationRun
+    from app.design.models.validation import ExperimentalRecord, SimExperimentCorrelation
+    from app.design.models.result import FieldResult
+    from app.design.models.physics import PhysicsConfig
+    from app.design.models.material import MaterialModel
+    from app.jobs.models import Job
+
+    g = db.session.get(DesignGraph, graph_id)
+    if g is None:
+        raise ValueError('Graph not found')
+    run_ids = [r.id for r in SimulationRun.query.with_entities(SimulationRun.id).filter_by(graph_id=g.id)]
+    exp_ids = [e.id for e in ExperimentalRecord.query.with_entities(ExperimentalRecord.id).filter_by(graph_id=g.id)]
+    if run_ids:
+        SimExperimentCorrelation.query.filter(SimExperimentCorrelation.run_id.in_(run_ids)).delete(synchronize_session=False)
+        FieldResult.query.filter(FieldResult.run_id.in_(run_ids)).delete(synchronize_session=False)
+        Job.query.filter(Job.simulation_run_id.in_(run_ids)).update({'simulation_run_id': None}, synchronize_session=False)
+        SimulationRun.query.filter(SimulationRun.parent_run_id.in_(run_ids)).update(
+            {'parent_run_id': None}, synchronize_session=False)
+    cond = SimExperimentCorrelation.graph_id == g.id
+    if exp_ids:
+        cond = cond | SimExperimentCorrelation.experiment_id.in_(exp_ids)
+    SimExperimentCorrelation.query.filter(cond).delete(synchronize_session=False)
+    ExperimentalRecord.query.filter(ExperimentalRecord.graph_id == g.id).delete(synchronize_session=False)
+    if run_ids:
+        SimulationRun.query.filter(SimulationRun.id.in_(run_ids)).delete(synchronize_session=False)
+    PhysicsConfig.query.filter_by(graph_id=g.id).delete(synchronize_session=False)
+    MaterialModel.query.filter_by(graph_id=g.id).update({'graph_id': None}, synchronize_session=False)
+    DesignGraph.query.filter_by(parent_id=g.id).update({'parent_id': None}, synchronize_session=False)
+    db.session.flush()
+    db.session.expire_all()
+    db.session.delete(db.session.get(DesignGraph, graph_id))
+    db.session.commit()
+
+    solver_dir = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
+    data_dir = str(current_app.config.get('DATA_DIR', 'data'))
+    for rid in run_ids:
+        try:
+            os.remove(os.path.join(solver_dir, f'{rid}.h5'))
+        except OSError:
+            pass
+        for sub in ('topology', 'rom', 'uncertainty'):
+            shutil.rmtree(os.path.join(solver_dir, sub, str(rid)), ignore_errors=True)
+    for eid in exp_ids:
+        shutil.rmtree(os.path.join(data_dir, 'experiments', str(eid)), ignore_errors=True)
+    return {'runs': len(run_ids), 'experiments': len(exp_ids)}

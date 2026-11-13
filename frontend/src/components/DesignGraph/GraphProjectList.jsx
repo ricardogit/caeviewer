@@ -32,6 +32,22 @@ export default function GraphProjectList() {
 
   useEffect(() => { fetchGraphs(); }, []);
 
+  const confirmDelete = async (g) => {
+    if (!window.confirm(`¿Borrar el estudio «${g.name}»?`)) return;
+    try {
+      await deleteGraph(g.id);
+    } catch (e) {
+      const d = e.response?.data;
+      if (e.response?.status === 409 && window.confirm(`${d.error}
+
+¿Borrar también todo su historial?`)) {
+        await deleteGraph(g.id, true).catch((err) => window.alert(err.response?.data?.error || err.message));
+      } else if (e.response?.status !== 409) {
+        window.alert(d?.error || e.message);
+      }
+    }
+  };
+
   const handleCreate = async () => {
     if (!newName.trim()) return;
     const g = await createGraph(newName.trim(), '', newTier);
@@ -90,7 +106,7 @@ export default function GraphProjectList() {
                 <Tooltip title="Eliminar proyecto">
                   <IconButton
                     edge="end" size="small"
-                    onClick={e => { e.stopPropagation(); deleteGraph(g.id); }}
+                    onClick={e => { e.stopPropagation(); confirmDelete(g); }}
                     sx={{ color: '#555', '&:hover': { color: '#f44336' } }}
                   >
                     <Delete fontSize="small" />

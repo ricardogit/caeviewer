@@ -22,6 +22,8 @@ import EdgeTypeDialog from './EdgeTypeDialog';
 import DesignNodeComponent from './DesignNodeComponent';
 import DesignEdgeComponent from './DesignEdgeComponent';
 import ValidationOverlay from './ValidationOverlay';
+import GraphStatusStrip from '../Workspace/GraphStatusStrip';
+import useWorkspaceStore from '../../stores/workspaceStore';
 
 // Register custom types once (outside component to avoid re-renders)
 const NODE_TYPES = { designNode: DesignNodeComponent };
@@ -33,7 +35,8 @@ function GraphEditorInner() {
   const { screenToFlowPosition } = useReactFlow();
   const connectingRef = useRef({ sourceId: null });
   const [edgeDialog, setEdgeDialog] = useState(null); // { sourceId, targetId }
-  const [showValidation, setShowValidation] = useState(false);
+  const showValidation = useWorkspaceStore((st) => st.showValidation);
+  const setShowValidation = useWorkspaceStore((st) => st.setShowValidation);
 
   const {
     activeGraphId: graphId,
@@ -203,6 +206,9 @@ function GraphEditorInner() {
           onClose={clearSelection}
         />
       )}
+
+      {/* Study status (FASE 9 §9.4) */}
+      <GraphStatusStrip />
 
       {/* Validation overlay */}
       {showValidation && validationErrors.length > 0 && (
