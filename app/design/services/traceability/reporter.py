@@ -23,6 +23,10 @@ KEY_RESULTS = [
     ('max_von_mises_nodal_mpa', 'maxVonMisesNodal', 'Von Mises máximo (nodal)', 'MPa', 'MPA'),
     ('equilibrium_error', 'equilibriumError', 'Error de equilibrio (relativo)', None, None),
     ('final_residual', 'finalResidual', 'Residuo final', None, None),
+    # thermal (FASE 2 multiphysics)
+    ('max_temperature', 'maxTemperature', 'Temperatura máxima', '°C', 'CEL'),
+    ('min_temperature', 'minTemperature', 'Temperatura mínima', '°C', 'CEL'),
+    ('max_heat_flux_w_m2', 'maxHeatFlux', 'Flujo de calor máximo', 'W/m²', 'D54'),
     # topology optimization (FASE 4); compliance = Fᵀu [J]
     ('compliance_initial', 'complianceInitial', 'Flexibilidad inicial (densidad uniforme)', 'J', 'JOU'),
     ('compliance_bw', 'complianceOptimum', 'Flexibilidad del diseño 0/1', 'J', 'JOU'),
@@ -123,6 +127,8 @@ class AutoReporter:
             parts.append(f"von Mises máx. {s['max_von_mises_mpa']:.4g} MPa")
         if s.get('max_displacement_mm') is not None:
             parts.append(f"desplazamiento máx. {s['max_displacement_mm']:.4g} mm")
+        if s.get('max_temperature') is not None:
+            parts.append(f"T {s['min_temperature']:.4g} … {s['max_temperature']:.4g} °C")
         return '; '.join(parts) + '.'
 
     # ── Markdown ──────────────────────────────────────────────────────────────

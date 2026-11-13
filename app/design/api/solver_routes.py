@@ -28,10 +28,18 @@ def status():
     }), 200
 
 
-def prepare_spec(graph_id: str, data: dict, adjust=None):
+PHYSICS_LABELS = {
+    ('structural',): 'Estructural 3D (elástico lineal)',
+    ('thermal',): 'Térmico estacionario 3D (conducción)',
+    ('structural', 'thermal'): 'Termo-mecánico 3D (térmico → estructural)',
+}
+
+
+def prepare_spec(graph_id: str, data: dict, adjust=None, allow_thermal: bool = False):
     """Merge the graph's solver spec under the request body, validate tier and check tier
     limits (413) before anything is enqueued. ``adjust(data)`` runs before the size check
     (e.g. topology forces linear elements). Returns (spec, None) or (None, (response, code)).
+    Topology / ROM / uncertainty are structural only: thermal studies get a clear 422.
     """
     from app.design.services.graph_to_solver_spec import graph_to_solver_spec
     # Validate tier if provided
@@ -60,6 +68,10 @@ def prepare_spec(graph_id: str, data: dict, adjust=None):
                 continue        # the body chose its own mesh; don't mix in the graph's
             data.setdefault(k, v)
 
+    if not allow_thermal and 'thermal' in (data.get('physics') or []):
+        return None, (jsonify({'error': 'Esta herramienta solo admite estudios estructurales; el estudio '
+                                        'tiene condiciones térmicas (usa Simular).',
+                               'kind': 'physics_unsupported', 'physics': data.get('physics')}), 422)
     if adjust:
         adjust(data)
         adjust = None
@@ -135,7 +147,7 @@ def run_simulation(graph_id):
             logger.error(f"Failed to parse JSON: {e}")
             return jsonify({'error': 'Invalid JSON in request body'}), 400
 
-        data, err = prepare_spec(graph_id, data)
+        data, err = prepare_spec(graph_id, data, allow_thermal=True)
         if err:
             return err
 
@@ -597,6 +609,9 @@ def run_adaptive(graph_id):
         return jsonify({'error': 'Graph not found'}), 404
 
     data = request.get_json(silent=True) or {}
+    if 'thermal' in (data.get('physics') or []):
+        return jsonify({'error': 'El refinamiento adaptativo solo admite análisis estructural.',
+                        'kind': 'physics_unsupported'}), 422
 
     run_id = _uuid.uuid4()
     spec = dict(data)
@@ -797,12 +812,16 @@ def run_surface(run_id):
     if not os.path.exists(path):
         return jsonify({'error': 'Este run no tiene campos 3D (archivo de resultados no encontrado).'}), 404
     with h5py.File(path, 'r') as f:
-        if 'surface_triangles' not in f or 'fields/displacement/step_0' not in f:
-            return jsonify({'error': 'El run no tiene superficie o desplazamientos guardados.'}), 404
+        has_u = 'fields/displacement/step_0' in f
+        has_t = 'fields/temperature/step_0' in f
+        if 'surface_triangles' not in f or not (has_u or has_t):
+            return jsonify({'error': 'El run no tiene superficie ni campos guardados.'}), 404
         X = f['nodes'][:]
         tris = np.asarray(f['surface_triangles'][:], np.int64)
-        U = f['fields/displacement/step_0'][:]
+        U = f['fields/displacement/step_0'][:] if has_u else np.zeros((len(X), 3))
         vm = f['fields/von_mises_nodal/step_0'][:] if 'fields/von_mises_nodal/step_0' in f else np.zeros(len(X))
+        T = f['fields/temperature/step_0'][:] if has_t else None
+        Q = f['fields/heat_flux_nodal/step_0'][:] if 'fields/heat_flux_nodal/step_0' in f else None
         summary = {}
         if 'summary_json' in f.attrs:
             summary = json.loads(f.attrs['summary_json'])
@@ -812,16 +831,25 @@ def run_surface(run_id):
     u = (U[used] * 1000.0).astype(np.float32)
     v = (np.asarray(vm, float)[used] / 1e6).astype(np.float32)
     umag_all = np.linalg.norm(U, axis=1)
+    fields = (['u', 'vm'] if has_u else []) + (['T', 'q'] if has_t else [])
     header = {
         'run_id': str(run.id), 'graph_id': str(run.graph_id), 'purpose': run.purpose,
         'created_at': run.created_at.isoformat() if run.created_at else None,
-        'units': {'xyz': 'mm', 'u': 'mm', 'vm': 'MPa'},
+        'units': {'xyz': 'mm', 'u': 'mm', 'vm': 'MPa', **({'T': '°C', 'q': 'W/m²'} if has_t else {})},
+        'fields': fields, 'physics': summary.get('physics') or ['structural'],
         'n_surface_nodes': int(len(used)), 'n_triangles': int(len(t)),
         'max_u_mm': float(umag_all.max() * 1000.0), 'max_vm_mpa': float(np.max(vm) / 1e6) if len(vm) else 0.0,
         'bbox_mm': [xyz.min(0).tolist(), xyz.max(0).tolist()],
         'summary': summary, 'material': ((run.solver_config or {}).get('material') or {}),
     }
-    body = pack_arrays(header, [('xyz', xyz), ('tris', t), ('u', u), ('vm', v)])
+    arrays = [('xyz', xyz), ('tris', t), ('u', u), ('vm', v)]
+    if has_t:
+        header['min_T'], header['max_T'] = float(T.min()), float(T.max())
+        arrays.append(('T', np.asarray(T, float)[used].astype(np.float32)))
+        qm = np.linalg.norm(Q, axis=1) if Q is not None else np.zeros(len(X))
+        header['max_q'] = float(qm.max()) if len(qm) else 0.0
+        arrays.append(('q', qm[used].astype(np.float32)))
+    body = pack_arrays(header, arrays)
     return Response(body, mimetype='application/octet-stream',
                     headers={'Cache-Control': 'private, max-age=3600'})
 
@@ -852,7 +880,8 @@ def preflight(graph_id):
            'confidence': None, 'latest_run': None}
     try:
         spec = graph_to_solver_spec(graph_id)
-        out['physics'] = spec.get('physics') or ['structural']
+        out['physics'] = sorted(spec.get('physics') or ['structural'])
+        out['physics_label'] = PHYSICS_LABELS.get(tuple(out['physics']), ' + '.join(out['physics']))
         out['tier_declared'] = int(spec.get('tier', g.tier if g.tier is not None else 1))
         out['mesh_source'] = spec.get('mesh_source')
         size = estimate_problem_size(spec)

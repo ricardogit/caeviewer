@@ -20,8 +20,9 @@ import time
 import numpy as np
 
 from app.design.services.fem import tet_batch as tb
+from app.design.services.fem import thermal as th
 from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs, dirichlet,
-                                               reduce_system)
+                                               reduce_system, resolve_free_faces)
 from app.design.services.fem.constitutive import build_material
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
@@ -183,23 +184,47 @@ class FEMKernel:
         mat_spec = solver_spec.get('material', {
             'type': 'linear_elastic_isotropic', 'E': 210e9, 'nu': 0.3, 'rho': 7800.0
         })
+        physics = set(solver_spec.get('physics') or ['structural'])
+        all_bcs = solver_spec.get('bcs', [])
+        all_loads = solver_spec.get('loads', [])
+        resolve_free_faces(mesh, all_bcs + all_loads)
+        self._emit(socketio, run_id, 5, f'mesh built: {mesh.n_nodes:,} nodes, '
+                   f'{mesh.n_elements:,} {mesh.element_type} elements', t_start)
+
+        # 3b. Thermal field (FASE 2 multiphysics): steady conduction, then one-way coupling
+        T = thermal = None
+        if 'thermal' in physics:
+            T, thermal = self._solve_thermal(mesh, mat_spec, [b for b in all_bcs if th.is_thermal_bc(b)],
+                                             [ld for ld in all_loads if th.is_thermal_load(ld)], tier,
+                                             float(solver_spec.get('tolerance', 1e-8)))
+            self._emit(socketio, run_id, 20 if 'structural' in physics else 90,
+                       f"thermal solved: T {thermal['min_temperature']:.4g} .. "
+                       f"{thermal['max_temperature']:.4g}", t_start)
+            if 'structural' not in physics:
+                return self._thermal_only_results(mesh, mesh_meta, T, thermal, tier, t_start)
+
         material = build_material(mat_spec)
         D = material.get_D_matrix()
         is_linear = material.is_linear()
-
-        self._emit(socketio, run_id, 5, f'mesh built: {mesh.n_nodes:,} nodes, '
-                   f'{mesh.n_elements:,} {mesh.element_type} elements', t_start)
 
         # 4. Assemble K and F
         logger.info(f"Assembling K ({mesh.n_dof_structural:,} DOF, {mesh.element_type})...")
         t_asm = time.perf_counter()
         K = assemble_K(mesh, D)
-        bcs = solver_spec.get('bcs', [])
+        bcs = [b for b in all_bcs if not th.is_thermal_bc(b)]
         rho = float(mat_spec.get('rho', 0.0) or 0.0)
         loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld)
-                 for ld in solver_spec.get('loads', [])]
+                 for ld in all_loads if not th.is_thermal_load(ld)]
         load_info: list = []
         F = assemble_F(mesh, loads, load_info)
+        eps0 = None
+        if T is not None:
+            alpha = float(mat_spec.get('alpha') or 0.0)
+            T_ref = float(mat_spec.get('T_ref') or 0.0)
+            F = F + th.thermal_load(mesh, D, T, alpha, T_ref)
+            eps0 = lambda p: th.thermal_strain_at(mesh.elements, T, alpha, T_ref, p)  # noqa: E731
+            load_info.append({'index': len(load_info), 'label': 'dilatación térmica',
+                              'kind': 'thermal_strain', 'alpha': alpha, 'T_ref': T_ref})
         t_asm = time.perf_counter() - t_asm
         self._emit(socketio, run_id, 30, 'assembly complete, applying BCs', t_start)
 
@@ -238,6 +263,8 @@ class FEMKernel:
         reaction = [float(R[c::3][dofs[dofs % 3 == c] // 3].sum()) for c in range(3)]
         applied = [float(F[c::3].sum()) for c in range(3)]
         scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        if T is not None:      # the thermal load is self-equilibrated: compare with its gross size
+            scale = max(scale, max(float(np.abs(F[c::3]).sum()) for c in range(3)))
         equilibrium_error = float(np.abs(np.add(reaction, applied)).max() / scale)
         solve_info['assembly_s'] = round(t_asm, 3)
 
@@ -245,9 +272,17 @@ class FEMKernel:
                     f"wall={solve_info['wall_time']:.2f}s, equilibrium={equilibrium_error:.2e}")
 
         # 7. Post-processing
-        results = self._postprocess(mesh, D, u, solve_info, t_start)
+        results = self._postprocess(mesh, D, u, solve_info, t_start, eps0=eps0)
         results['mesh'] = mesh
         s = results['summary']
+        if T is not None:
+            results['temperature'] = T.tolist()
+            results['heat_flux_nodal'] = thermal.pop('heat_flux_nodal')
+            s['thermal'] = thermal
+            s['max_temperature'] = thermal['max_temperature']
+            s['min_temperature'] = thermal['min_temperature']
+            s['max_heat_flux_w_m2'] = thermal['max_heat_flux_w_m2']
+            s['physics'] = sorted(physics)
         s.update({
             'element_type': mesh.element_type,
             'applied_load_N': applied,
@@ -258,11 +293,72 @@ class FEMKernel:
             'tier': tier,
             # FASE 7: exact-bytes fingerprints (equal result_hash = bitwise identical result)
             'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
-            'result_hash': array_hash(u),
+            'result_hash': array_hash(u if T is None else np.concatenate([u, T])),
         })
         if mesh_meta:
             s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return results
+
+    # ── Thermal (FASE 2 multiphysics) ─────────────────────────────────────────
+
+    def _solve_thermal(self, mesh: FEMMesh, mat_spec: dict, bcs: list, loads: list,
+                       tier: int, tol: float) -> tuple[np.ndarray, dict]:
+        """Steady conduction → nodal temperature + summary (heat balance, flux)."""
+        k = float(mat_spec.get('k') or 0.0)
+        t0 = time.perf_counter()
+        load_info: list = []
+        K, F, conv = th.assemble_thermal(mesh, k, loads, load_info)
+        dofs, vals = th.temperature_dirichlet(mesh, bcs)
+        if not len(dofs) and not conv:
+            raise ValueError('Problema térmico sin temperatura impuesta ni convección: la temperatura '
+                             'queda indeterminada. Agrega un BC de temperatura o una carga de convección.')
+        Kf, rhs, free = reduce_system(K, F, dofs, vals)
+        Tf, info = FEMSolverDispatcher().solve_linear(Kf, rhs, tier=tier, tol=tol)
+        T = np.zeros(mesh.n_nodes)
+        T[free] = Tf
+        T[dofs] = vals
+        # heat balance [W]: sources + flux + heat entering at fixed-T faces = convective loss
+        R = K @ T - F
+        q_fixed = float(R[dofs].sum()) if len(dofs) else 0.0
+        q_conv = th.convective_heat(mesh, T, conv)
+        q_src = sum(m.get('heat_W', 0.0) for m in load_info if m.get('kind') == 'heat_source')
+        q_flux = sum(m.get('heat_W', 0.0) for m in load_info if m.get('kind') == 'heat_flux')
+        scale = max(1e-30, abs(q_src), abs(q_flux), abs(q_fixed), abs(q_conv))
+        _, qn = th.heat_flux(mesh.nodes, mesh.elements, T, k)
+        qmag = np.linalg.norm(qn, axis=1)
+        return T, {
+            'k': k, 'n_dof': int(mesh.n_nodes), 'n_fixed_temperature_nodes': int(len(dofs)),
+            'min_temperature': float(T.min()), 'max_temperature': float(T.max()),
+            'max_heat_flux_w_m2': float(qmag.max()) if len(qmag) else 0.0,
+            'heat_balance_W': {'source': q_src, 'flux_in': q_flux, 'fixed_T_in': q_fixed,
+                               'convection_out': q_conv},
+            'heat_balance_error': abs(q_src + q_flux + q_fixed - q_conv) / scale,
+            'loads': load_info, 'solver_method': info.get('method'),
+            'converged': info.get('converged', False), 'wall_time_s': round(time.perf_counter() - t0, 3),
+            'heat_flux_nodal': qn.tolist(),
+        }
+
+    def _thermal_only_results(self, mesh, mesh_meta, T, thermal, tier, t_start) -> dict:
+        qn = thermal.pop('heat_flux_nodal')
+        s = {
+            'physics': ['thermal'], 'thermal': thermal,
+            'max_temperature': thermal['max_temperature'], 'min_temperature': thermal['min_temperature'],
+            'max_heat_flux_w_m2': thermal['max_heat_flux_w_m2'],
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_nodes,
+            'element_type': mesh.element_type, 'tier': tier,
+            'converged': thermal['converged'], 'n_iterations': 1, 'final_residual': None,
+            'solver_method': thermal['solver_method'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements), 'result_hash': array_hash(T),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'temperature': T.tolist(), 'heat_flux_nodal': qn, 'mesh': mesh,
+            'solve_info': {'method': thermal['solver_method'], 'converged': thermal['converged']},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s,
+        }
 
     # ── Mesh builder ──────────────────────────────────────────────────────────
 
@@ -327,13 +423,13 @@ class FEMKernel:
     # ── Post-processing ───────────────────────────────────────────────────────
 
     def _postprocess(self, mesh: FEMMesh, D: np.ndarray,
-                     u: np.ndarray, solve_info: dict, t_start: float) -> dict:
-        """Displacement and stress fields (vectorised, T4 and T10)."""
+                     u: np.ndarray, solve_info: dict, t_start: float, eps0=None) -> dict:
+        """Displacement and stress fields (vectorised, T4 and T10); ``eps0`` = thermal strain."""
         disp = u.reshape(-1, 3)
         disp_mag = np.linalg.norm(disp, axis=1)
         max_disp = float(disp_mag.max()) if len(disp_mag) else 0.0
 
-        el_sigma, nodal_sigma = tb.nodal_stress(mesh.nodes, mesh.elements, u, D)
+        el_sigma, nodal_sigma = tb.nodal_stress(mesh.nodes, mesh.elements, u, D, eps0=eps0)
         el_von_mises = tb.von_mises_v(el_sigma)
         node_vm = tb.von_mises_v(nodal_sigma)
         max_vm = float(el_von_mises.max()) if len(el_von_mises) else 0.0
@@ -388,22 +484,19 @@ class FEMKernel:
             f.create_dataset('elements', data=np.array(result['elements']))
 
             fields = f.create_group('fields')
-            fields.create_dataset('displacement/step_0',
-                                  data=np.array(result['displacement']))
-            fields.create_dataset('displacement_magnitude/step_0',
-                                  data=np.array(result['displacement_magnitude']))
-            fields.create_dataset('von_mises_nodal/step_0',
-                                  data=np.array(result['von_mises_nodal']))
-            fields.create_dataset('von_mises_elemental/step_0',
-                                  data=np.array(result['von_mises_elemental']))
+            for name in ('displacement', 'displacement_magnitude', 'von_mises_nodal',
+                         'von_mises_elemental', 'temperature', 'heat_flux_nodal'):
+                if result.get(name) is not None:
+                    fields.create_dataset(f'{name}/step_0', data=np.array(result[name]))
 
             surf = result.get('surface_triangles', [])
             if surf:
                 f.create_dataset('surface_triangles', data=np.array(surf))
 
             # Metadata
-            f.attrs['max_displacement_m'] = result['summary']['max_displacement_m']
-            f.attrs['max_von_mises_pa']   = result['summary']['max_von_mises_pa']
+            for key in ('max_displacement_m', 'max_von_mises_pa', 'max_temperature', 'min_temperature'):
+                if result['summary'].get(key) is not None:
+                    f.attrs[key] = result['summary'][key]
             f.attrs['converged']           = int(result['summary']['converged'])
             f.attrs['element_type']        = result['summary'].get('element_type', 'T4')
             import json as _json

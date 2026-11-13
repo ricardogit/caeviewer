@@ -216,20 +216,26 @@ _GP_BARY = np.array([[1 - p.sum(), *p] for p in GAUSS_TET4])
 _GP_TO_CORNER = np.linalg.inv(_GP_BARY)
 
 
-def nodal_stress(nodes, elements, u, D) -> tuple[np.ndarray, np.ndarray]:
+def nodal_stress(nodes, elements, u, D, eps0=None) -> tuple[np.ndarray, np.ndarray]:
     """Element stress (m,6) and nodal-averaged stress (N,6).
 
     T4: constant stress per element. T10: stress at the 4 Gauss points (where the
     Jacobian is guaranteed positive, unlike the vertices of curved elements),
     linearly extrapolated to the corners; mid-edge nodes take the mean of their
     edge's corners. Element value = mean of the Gauss-point stresses.
+    ``eps0(p)`` (optional) returns an initial strain (m,6) at natural point p, e.g. the
+    thermal strain: σ = D (ε − ε0).
     """
+    def eps(p):
+        e = strain_at(nodes, elements, u, p)
+        return e if eps0 is None else e - eps0(p)
+
     et = etype_of(elements)
     if et == 'T4':
-        elem = strain_at(nodes, elements, u, (0.25, 0.25, 0.25)) @ D.T
+        elem = eps((0.25, 0.25, 0.25)) @ D.T
         per_node = np.repeat(elem[:, None, :], 4, axis=1)                       # (m,4,6)
     else:
-        gp = np.stack([strain_at(nodes, elements, u, p) @ D.T for p in GAUSS_TET4], axis=1)  # (m,4,6)
+        gp = np.stack([eps(p) @ D.T for p in GAUSS_TET4], axis=1)  # (m,4,6)
         elem = gp.mean(axis=1)
         corners = np.einsum('cg,mgk->mck', _GP_TO_CORNER, gp)                   # (m,4,6)
         mids = (corners[:, T10_EDGES[:, 0]] + corners[:, T10_EDGES[:, 1]]) / 2  # (m,6,6)

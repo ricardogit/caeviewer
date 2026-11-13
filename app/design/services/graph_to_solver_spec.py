@@ -20,6 +20,9 @@ class GraphSpecError(ValueError):
 FORCE_UNITS = {'N': 1.0, 'kN': 1e3, 'MN': 1e6, 'lbf': 4.4482216152605}
 PRESSURE_UNITS = {'Pa': 1.0, 'kPa': 1e3, 'MPa': 1e6, 'GPa': 1e9, 'psi': 6894.757293168, 'bar': 1e5}
 ACCEL_UNITS = {'m/s²': 1.0, 'm/s2': 1.0, 'g': 9.80665}
+FLUX_UNITS = {'W/m²': 1.0, 'W/m2': 1.0, 'kW/m²': 1e3, 'kW/m2': 1e3}
+SOURCE_UNITS = {'W/m³': 1.0, 'W/m3': 1.0, 'kW/m³': 1e3, 'kW/m3': 1e3, 'MW/m³': 1e6, 'MW/m3': 1e6}
+THERMAL_LOAD_TYPES = ('heat_flux', 'convection', 'heat_source')
 BC_TYPE_DOFS = {'fixed': [0, 1, 2], 'pinned': [0, 1, 2],
                 'roller_x': [0], 'roller_y': [1], 'roller_z': [2]}
 
@@ -160,7 +163,34 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             load_entry = _load_node_to_entry(ctx, load_node)
             spec['loads'].append(load_entry)
 
+    _set_physics(spec, material_nodes[0] if material_nodes else None)
     return spec
+
+
+def _set_physics(spec: dict, mat_node) -> None:
+    """Physics inferred from the conditions (FASE 2 multiphysics): temperature BCs / heat loads →
+    thermal; supports / mechanical loads → structural; both → one-way thermo-mechanical.
+    Thermal material keys are only added when thermal is active (structural hashes unchanged)."""
+    from app.design.services.fem.thermal import is_thermal_bc, is_thermal_load
+    thermal = any(is_thermal_bc(b) for b in spec['bcs']) or any(is_thermal_load(ld) for ld in spec['loads'])
+    structural = (any(not is_thermal_bc(b) for b in spec['bcs'])
+                  or any(not is_thermal_load(ld) for ld in spec['loads']))
+    if not thermal:
+        return
+    spec['physics'] = ['structural', 'thermal'] if structural else ['thermal']
+    props = (mat_node.properties or {}) if mat_node is not None else {}
+    label = mat_node.label if mat_node is not None else 'MATERIAL'
+    k = props.get('k')
+    if k in (None, '') or float(k) <= 0:
+        raise GraphSpecError(f'"{label}": el análisis térmico necesita la conductividad k (W/m·K).')
+    spec['material']['k'] = float(k)
+    if structural:
+        a = props.get('alpha')
+        if a in (None, ''):
+            raise GraphSpecError(f'"{label}": el análisis termo-mecánico necesita el coeficiente de '
+                                 'dilatación α (1/K).')
+        spec['material']['alpha'] = float(a)
+        spec['material']['T_ref'] = float(props.get('T_ref') if props.get('T_ref') not in (None, '') else 20.0)
 
 
 def _faces(ctx: dict, node: DesignNode) -> list | None:
@@ -207,6 +237,15 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     props = node.properties or {}
     faces = _faces(ctx, node)
     bc_type = props.get('bc_type', 'fixed')
+    if bc_type == 'temperature':
+        t = props.get('temperature', props.get('value'))
+        if t in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta la temperatura impuesta (°C).')
+        entry = {'temperature': float(t), 'label': node.label}
+        _target(entry, faces, props, 'fixed')
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if props.get('dofs'):
         dofs = sorted({int(d) for d in props['dofs'] if int(d) in (0, 1, 2)})
         if not dofs:
@@ -233,6 +272,17 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     return entry
 
 
+def _target(entry: dict, faces, props: dict, default: str, face: bool = False) -> None:
+    """Selected CAD faces, else the node's ``face_set`` / ``node_set`` (parametric beam:
+    'fixed', 'tip', '@free' = rest of the surface)."""
+    if faces:
+        entry['face_set'] = faces
+    elif face or props.get('face_set'):
+        entry['face_set'] = props.get('face_set') or default
+    else:
+        entry['node_set'] = props.get('node_set', default)
+
+
 def _unit(table: dict, unit: str, node: DesignNode, default: str) -> float:
     u = (unit or default).strip()
     if u not in table:
@@ -255,13 +305,30 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
         dx, dy, dz = dx / norm, dy / norm, dz / norm
 
     entry = {'label': node.label}
+    if load_type in THERMAL_LOAD_TYPES:
+        faces = _faces(ctx, node)
+        if load_type == 'heat_source':
+            entry['heat_source'] = mag * _unit(SOURCE_UNITS, props.get('unit'), node, 'W/m³')
+            return entry
+        if load_type == 'heat_flux':
+            entry['heat_flux'] = mag * _unit(FLUX_UNITS, props.get('unit'), node, 'W/m²')
+            _target(entry, faces, props, 'tip', face=True)
+        else:   # convection
+            h = props.get('h')
+            if h in (None, '') or float(h) <= 0:
+                raise GraphSpecError(f'"{node.label}": la convección necesita h > 0 (W/m²·K).')
+            entry['convection'] = {'h': float(h), 'T_inf': float(props.get('T_inf') or 0.0)}
+            _target(entry, faces, props, '@free', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if load_type == 'gravity':
         g = mag * _unit(ACCEL_UNITS, props.get('unit'), node, 'm/s²') if mag else 9.80665
         entry['gravity'] = [g * dx, g * dy, g * dz]
         return entry
     if load_type not in ('force', 'pressure'):
         raise GraphSpecError(f'"{node.label}": el tipo de carga "{load_type}" aún no está soportado '
-                             '(disponibles: force, pressure, gravity).')
+                             '(disponibles: force, pressure, gravity, heat_flux, convection, heat_source).')
 
     faces = _faces(ctx, node)
     if load_type == 'pressure':

@@ -15,7 +15,7 @@ import { AccountTree } from '@mui/icons-material';
 import useResultsStore from '../../stores/resultsStore';
 import useWorkspaceStore from '../../stores/workspaceStore';
 import { colormap, COLORBAR_CSS } from '../../utils/colormap';
-import { FIELDS, autoScale, fieldValues, fmt, normalizer, range } from './resultsField';
+import { FIELDS, autoScale, availableFields, fieldValues, fmt, normalizer, range } from './resultsField';
 
 function FitOnce({ box, keyId }) {
   const { camera, controls } = useThree();
@@ -37,13 +37,23 @@ function FitOnce({ box, keyId }) {
 
 export function SummaryRows({ header }) {
   const s = header?.summary || {};
+  const hasU = (header?.fields || ['u']).includes('u');
   const rows = [
-    ['Despl. máx.', header?.max_u_mm != null ? `${fmt(header.max_u_mm)} mm` : '—'],
-    ['σvM máx. (nodal)', header?.max_vm_mpa != null ? `${fmt(header.max_vm_mpa)} MPa` : '—'],
+    ...(hasU ? [
+      ['Despl. máx.', header?.max_u_mm != null ? `${fmt(header.max_u_mm)} mm` : '—'],
+      ['σvM máx. (nodal)', header?.max_vm_mpa != null ? `${fmt(header.max_vm_mpa)} MPa` : '—'],
+    ] : []),
+    ...(header?.max_T != null ? [
+      ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
+      ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
+      ['Balance de calor', s.thermal?.heat_balance_error != null ? `${fmt(100 * s.thermal.heat_balance_error)} %` : '—'],
+    ] : []),
     ['Elemento', s.element_type || '—'],
     ['Nodos / elementos', s.n_nodes ? `${s.n_nodes.toLocaleString()} / ${(s.n_elements || 0).toLocaleString()}` : '—'],
-    ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
-    ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
+    ...(hasU ? [
+      ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
+      ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
+    ] : [['k', header?.material?.k ? `${fmt(header.material.k)} W/m·K` : '—']]),
   ];
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: 'auto auto', columnGap: 1.5, rowGap: 0.25 }}>
@@ -58,7 +68,10 @@ export function SummaryRows({ header }) {
 }
 
 export default function ResultsViewer() {
-  const { pack, runId, loading, error, field, setField, scale, setScale } = useResultsStore();
+  const { pack, runId, loading, error, field: chosen, setField, scale, setScale } = useResultsStore();
+  const fields = useMemo(() => availableFields(pack), [pack]);
+  const field = fields.includes(chosen) ? chosen : (fields[0] || 'vm');
+  const hasU = fields.includes('umag');
   const setAppMode = useWorkspaceStore((s) => s.setAppMode);
 
   const geometry = useMemo(() => {
@@ -135,8 +148,8 @@ export default function ResultsViewer() {
             gap: 2, flexWrap: 'wrap' }}>
             <ToggleButtonGroup size="small" exclusive value={field} onChange={(_, v) => v && setField(v)}
               sx={{ bgcolor: '#1a1a1a' }}>
-              {Object.entries(FIELDS).map(([key, d]) => (
-                <ToggleButton key={key} value={key} sx={{ fontSize: 11, py: 0.25, textTransform: 'none' }}>{d.label}</ToggleButton>
+              {fields.map((key) => (
+                <ToggleButton key={key} value={key} sx={{ fontSize: 11, py: 0.25, textTransform: 'none' }}>{FIELDS[key].label}</ToggleButton>
               ))}
             </ToggleButtonGroup>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, bgcolor: '#1a1a1acc', px: 1, borderRadius: 1 }}
@@ -145,7 +158,7 @@ export default function ResultsViewer() {
               <Box sx={{ width: 160, height: 10, borderRadius: 1, background: COLORBAR_CSS }} />
               <Typography variant="caption" sx={{ color: '#ccc' }}>{fmt(norm.max)} {f.unit}</Typography>
             </Box>
-            <Tooltip title="Factor de deformación (auto = desplazamiento máximo dibujado como 8 % del modelo)">
+            {hasU && <Tooltip title="Factor de deformación (auto = desplazamiento máximo dibujado como 8 % del modelo)">
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: 260, bgcolor: '#1a1a1acc', px: 1,
                 borderRadius: 1 }}>
                 <Typography variant="caption" sx={{ color: '#ccc', whiteSpace: 'nowrap' }} data-testid="scale">
@@ -155,7 +168,7 @@ export default function ResultsViewer() {
                   onChange={(_, v) => setScale(v * auto)} />
                 <Button size="small" sx={{ fontSize: 10, minWidth: 0 }} onClick={() => setScale(1)}>1:1</Button>
               </Box>
-            </Tooltip>
+            </Tooltip>}
           </Box>
           <Box sx={{ position: 'absolute', bottom: 12, right: 12, bgcolor: '#1a1a1add', p: 1, borderRadius: 1,
             border: '1px solid #333', minWidth: 220 }}>

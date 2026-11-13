@@ -63,10 +63,32 @@ def assemble_K(mesh: FEMMesh, D: np.ndarray) -> sp.csr_matrix:
     return K
 
 
+def _boundary_alias(mesh: FEMMesh, name: str) -> np.ndarray | None:
+    """'@all' = every boundary face. ('@free' is resolved per spec: ``resolve_free_faces``.)"""
+    return tb.boundary_faces(mesh.elements) if name == '@all' else None
+
+
+def resolve_free_faces(mesh: FEMMesh, entries: list) -> None:
+    """Define face set '@free' = boundary faces not referenced by any other entry (the rest of
+    the surface, e.g. convection everywhere except the faces with other conditions)."""
+    if not any('@free' in _names(e.get('face_set', [])) for e in entries):
+        return
+    used = set()
+    for e in entries:
+        for n in _names(e.get('face_set', [])):
+            if n not in ('@free', '@all') and n in mesh.face_sets:
+                used.update(tuple(sorted(f[:3])) for f in np.asarray(mesh.face_sets[n]))
+    bf = tb.boundary_faces(mesh.elements)
+    keep = np.array([tuple(sorted(f[:3])) not in used for f in bf], dtype=bool)
+    mesh.face_sets['@free'] = bf[keep]
+
+
 def _face_tris(mesh: FEMMesh, names) -> np.ndarray:
     parts = []
     for n in _names(names):
-        t = mesh.face_sets.get(n)
+        t = _boundary_alias(mesh, n)
+        if t is None:
+            t = mesh.face_sets.get(n)
         if t is None or not len(t):
             raise BoundaryConditionError(f"Conjunto de caras '{n}' inexistente o vacío en la malla.")
         parts.append(t)

@@ -6,7 +6,8 @@ import axios from 'axios';
 import TopBar from '../TopBar';
 import { statusLines } from './GraphStatusStrip';
 import ResultsRunList from '../Results/ResultsRunList';
-import { autoScale, fieldValues, normalizer, range } from '../Results/resultsField';
+import { autoScale, availableFields, fieldValues, normalizer, range } from '../Results/resultsField';
+import { SummaryRows } from '../Results/ResultsViewer';
 import useDesignStore from '../../stores/designStore';
 import useSolverStore from '../../stores/solverStore';
 import useWorkspaceStore from '../../stores/workspaceStore';
@@ -66,6 +67,19 @@ describe('results field helpers', () => {
     const diag = Math.hypot(100, 10, 10);
     expect(autoScale(p)).toBeCloseTo((0.08 * diag) / Math.hypot(4, 1), 4);
     expect(autoScale(pack({ u: [0, 50, 0], vm: [1] }))).toBe(1);
+  });
+  it('offers only the stored fields: thermal runs show temperature and heat flux', () => {
+    expect(availableFields(p)).toEqual(['vm', 'umag', 'ux', 'uy', 'uz']);
+    const t = { ...pack({ u: [0, 0, 0, 0, 0, 0], vm: [0, 0] }), T: { data: Float32Array.from([20, 120]) },
+      q: { data: Float32Array.from([5, 9]) } };
+    t.header = { ...t.header, fields: ['T', 'q'], max_T: 120, min_T: 20, max_q: 9 };
+    expect(availableFields(t)).toEqual(['T', 'q']);
+    expect(Array.from(fieldValues(t, 'T'))).toEqual([20, 120]);
+    t.header.fields = ['u', 'vm', 'T', 'q'];
+    expect(availableFields(t)).toEqual(['vm', 'umag', 'ux', 'uy', 'uz', 'T', 'q']);
+    render(<SummaryRows header={{ ...t.header, fields: ['T', 'q'], summary: { thermal: { heat_balance_error: 0 } } }} />);
+    expect(screen.getByText('20 … 120 °C')).toBeTruthy();
+    expect(screen.queryByText('Despl. máx.')).toBeNull();
   });
 });
 

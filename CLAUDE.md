@@ -277,6 +277,32 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 Run `python validate_fem.py` and `python -m pytest tests/test_fem_fase2.py` (patch tests, load resultants,
 CG vs direct, hito, conforming bisection).
 
+## Thermal and Thermo-Mechanical (FASE 2 multiphysics)
+
+`app/design/services/fem/thermal.py`: steady conduction on T4/T10 (1 DOF/node, `assemble_thermal`), uniform
+source ∫QN dV, heat flux ∫qN dA (positive = into the body), convection ∫hNNᵀ dA + ∫hT∞N dA (Dunavant degree-4
+rule: exact for T6), Dirichlet temperature; heat flux q = −k∇T (T10 via Gauss points like stress).
+One-way coupling: ε_th = α(T − T_ref)[1,1,1,0,0,0], load ∫BᵀDε_th dV, stress σ = D(ε − ε_th)
+(`tb.nodal_stress(..., eps0=)`; default unchanged → structural hashes unchanged, no kernel version bump).
+- Spec: `physics` ['thermal'] | ['structural','thermal']; thermal entries live in the same `bcs`/`loads` lists,
+  recognised by key: BC `temperature` (°C), loads `heat_flux` (W/m²), `convection` {h, T_inf}, `heat_source` (W/m³).
+  Material `k`, `alpha`, `T_ref` (only added to the spec when thermal is active).
+- Face set `@free` = boundary faces not referenced by any other BC/LOAD (resolved per spec in the kernel,
+  `resolve_free_faces`); `@all` = whole boundary.
+- `graph_to_solver_spec` infers the physics: BC `bc_type: 'temperature'`, LOAD `heat_flux|convection|heat_source`
+  → thermal; supports/mechanical loads → structural; both → thermo-mechanical. Missing k (or α when coupled) → 422.
+  Convection without faces = `@free`; heat flux without faces = `tip` (parametric beam).
+- Summary: `thermal` {min/max T, heat_balance_W (source, flux_in, fixed_T_in, convection_out), heat_balance_error},
+  `max_temperature`, `min_temperature`, `max_heat_flux_w_m2`. HDF5 fields `temperature`, `heat_flux_nodal`;
+  `/surface` adds `T` [°C] and `q` [W/m²] (header `fields`, `min_T`/`max_T`/`max_q`). Results viewer shows only
+  the stored fields. Preflight `physics_label`. The coupled equilibrium check is scaled by the gross thermal load.
+- Topology / ROM / uncertainty / adaptive are structural only: thermal studies get 422 (`prepare_spec(allow_thermal=)`).
+- Hito: `python validate_thermal.py [--server http://127.0.0.1:8080] [--keep]` — linear conduction, internal source
+  (parabolic, exact), imposed flux, tip convection (exact to 1e-9), lateral-convection fin (0.15 % vs 1-D theory),
+  free expansion (stress-free), constrained bar σ = −EαΔT (1e-8); server: thermal and thermo-mechanical studies
+  through the queue. With a full clamp the mid-span σ is +1.7 % over EαΔT (lateral restraint at the end; physical).
+  Tests: `tests/test_thermal.py`.
+
 ## Topology Optimization (FASE 4)
 
 `app/design/services/topology/`: **SIMP** (`simp.py`) on linear tets — modified SIMP (ε = 1e-6),
