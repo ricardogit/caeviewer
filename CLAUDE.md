@@ -273,6 +273,32 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 Run `python validate_fem.py` and `python -m pytest tests/test_fem_fase2.py` (patch tests, load resultants,
 CG vs direct, hito, conforming bisection).
 
+## Topology Optimization (FASE 4)
+
+`app/design/services/topology/`: **SIMP** (`simp.py`) on linear tets — modified SIMP (ε = 1e-6),
+volume-weighted density filter (`filter.py`, KD-tree, r = 2 × mean edge by default), Heaviside
+projection with β continuation 1 → 16, OC update with bisection evaluated through filter+projection.
+Ke⁰ of every element is stored once; each iteration rescales it into a fixed reduced (free-DOF) CSR
+pattern with one `bincount`. Solves: direct ≤ 3000 DOF, else PCG with a seeded pyamg hierarchy reused
+for a few iterations (warm start). Limit `MAX_ELEMENTS` = 150 000. T10 study meshes are reduced to T4.
+- Elements touching BC/load sets are passive solid, except BCs flagged `symmetry` or `keep_solid: False`
+  (`graph_to_solver_spec` sets them; plane/symmetry constraints must not freeze material).
+- Not supported (clear 422): gravity/body loads, non-zero prescribed displacements. Level Set and AM
+  constraints are still stubs (501 / disabled in UI).
+- `isosurface.py`: marching tetrahedra on nodal density + clipped domain-boundary caps → watertight,
+  outward-oriented surface (STL/GLB export, mm).
+- Job `topology.simp` (queue `solve`, `runner.py`): files in `SOLVER_DATA_DIR/topology/<run_id>/`
+  (`mesh.npz`, `latest.npz` snapshots, `result.npz`, cached `iso_*.npz`); socket events
+  `topology_progress|snapshot|done|error` in room = run_id. Runs are `SimulationRun(purpose='topology')`
+  with the settings under `spec['topology']` (hashed, reproducible bit for bit).
+- API `/api/design/topology`: `POST /<graph_id>/run-simp` (settings from the body over the graph's
+  OPTIMIZATION node, which is created/updated), `GET /<run>/state|densities|isosurface|domain`,
+  `POST /<run>/extract-mesh` (STL + GEOMETRY node, edge OPTIMIZATION -PRODUCES-> GEOMETRY).
+- Parametric `FEMMesh.generate_plate()` (mesh_source `plate`, optional hole) for the hito.
+- UI: SolverPanel → "Topología" (`TopologyPanel.jsx`, `stores/topologyStore.js`, `DensityField.jsx`).
+- Hito: `python validate_topology.py` — plate with pinned bottom supports and deck load gives the
+  deck-arch bridge (volume, grayness, compliance, symmetry, connectivity checks). ~100 s.
+
 ## Traceability (FASE 7)
 
 `app/design/services/traceability/hasher.py`: the run hash = SHA-256 of **canonical physical inputs**

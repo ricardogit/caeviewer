@@ -28,6 +28,71 @@ def status():
     }), 200
 
 
+def prepare_spec(graph_id: str, data: dict, adjust=None):
+    """Merge the graph's solver spec under the request body, validate tier and check tier
+    limits (413) before anything is enqueued. ``adjust(data)`` runs before the size check
+    (e.g. topology forces linear elements). Returns (spec, None) or (None, (response, code)).
+    """
+    from app.design.services.graph_to_solver_spec import graph_to_solver_spec
+    # Validate tier if provided
+    if 'tier' in data:
+        try:
+            tier = int(data['tier'])
+            if tier not in (0, 1, 2, 3):
+                return None, (jsonify({'error': 'Tier must be 0-3', 'got': tier}), 422)
+        except (ValueError, TypeError) as e:
+            logger.error(f"Invalid tier: {e}")
+            return None, (jsonify({'error': 'Tier must be integer 0-3'}), 422)
+
+    # Read spec from graph if needed (request body values have priority)
+    if 'material' not in data or 'bcs' not in data or 'loads' not in data:
+        from app.design.services.graph_to_solver_spec import GraphSpecError
+        try:
+            graph_spec = graph_to_solver_spec(graph_id)
+        except GraphSpecError as e:
+            return None, (jsonify({'error': str(e), 'kind': 'graph_spec'}), 422)
+        except Exception as e:
+            logger.warning(f"Could not read graph spec for {graph_id}: {e}", exc_info=True)
+            graph_spec = {}
+        body_mesh = 'mesh_source' in data
+        for k, v in graph_spec.items():
+            if k in ('mesh_params', 'mesh_id', 'geometry_id') and body_mesh:
+                continue        # the body chose its own mesh; don't mix in the graph's
+            data.setdefault(k, v)
+
+    if adjust:
+        adjust(data)
+        adjust = None
+    # Tier limits before enqueueing (plan: reject with 413). Exact when the mesh
+    # is known/cached, otherwise a pre-meshing estimate; the worker re-checks exactly.
+    from app.design.services.fem.sizing import estimate_problem_size
+    from app.design.services.fem.solver import TIER_LIMITS, check_tier_limits, TierLimitExceeded
+    try:
+        size = estimate_problem_size(data)
+    except Exception as e:
+        logger.warning(f"Size estimate failed for graph {graph_id}: {e}")
+        size = None
+    if size:
+        # no declared tier = auto (smallest that fits), so only the absolute limit applies
+        tier_req = int(data['tier']) if 'tier' in data else 3
+        try:
+            check_tier_limits(size['n_nodes'], size['n_elements'], size['n_dof'], tier_req)
+        except TierLimitExceeded as e:
+            return None, (jsonify({**e.to_dict(), 'tier': tier_req, 'size': size,
+                            'limits': TIER_LIMITS[tier_req],
+                            'message': ('Tamaño estimado' if size.get('estimated') else 'Tamaño')
+                            + f" fuera del Tier {tier_req}: " + '; '.join(e.violations)}), 413)
+
+    # Validate required parameters
+    if not data.get('material'):
+        data['material'] = {'type': 'linear_elastic_isotropic', 'E': 210e9, 'nu': 0.3, 'rho': 7800}
+    if not data.get('bcs'):
+        logger.warning(f"No boundary conditions for run {graph_id}")
+    if not data.get('loads'):
+        logger.warning(f"No loads for run {graph_id}")
+    return data, None
+
+
 # ── Launch simulation ─────────────────────────────────────────────────────────
 
 @bp.route('/<string:graph_id>/run', methods=['POST'])
@@ -70,59 +135,9 @@ def run_simulation(graph_id):
             logger.error(f"Failed to parse JSON: {e}")
             return jsonify({'error': 'Invalid JSON in request body'}), 400
 
-        # Validate tier if provided
-        if 'tier' in data:
-            try:
-                tier = int(data['tier'])
-                if tier not in (0, 1, 2, 3):
-                    return jsonify({'error': 'Tier must be 0-3', 'got': tier}), 422
-            except (ValueError, TypeError) as e:
-                logger.error(f"Invalid tier: {e}")
-                return jsonify({'error': 'Tier must be integer 0-3'}), 422
-
-        # Read spec from graph if needed (request body values have priority)
-        if 'material' not in data or 'bcs' not in data or 'loads' not in data:
-            from app.design.services.graph_to_solver_spec import GraphSpecError
-            try:
-                graph_spec = graph_to_solver_spec(graph_id)
-            except GraphSpecError as e:
-                return jsonify({'error': str(e), 'kind': 'graph_spec'}), 422
-            except Exception as e:
-                logger.warning(f"Could not read graph spec for {graph_id}: {e}", exc_info=True)
-                graph_spec = {}
-            body_mesh = 'mesh_source' in data
-            for k, v in graph_spec.items():
-                if k in ('mesh_params', 'mesh_id', 'geometry_id') and body_mesh:
-                    continue        # the body chose its own mesh; don't mix in the graph's
-                data.setdefault(k, v)
-
-        # Tier limits before enqueueing (plan: reject with 413). Exact when the mesh
-        # is known/cached, otherwise a pre-meshing estimate; the worker re-checks exactly.
-        from app.design.services.fem.sizing import estimate_problem_size
-        from app.design.services.fem.solver import TIER_LIMITS, check_tier_limits, TierLimitExceeded
-        try:
-            size = estimate_problem_size(data)
-        except Exception as e:
-            logger.warning(f"Size estimate failed for graph {graph_id}: {e}")
-            size = None
-        if size:
-            # no declared tier = auto (smallest that fits), so only the absolute limit applies
-            tier_req = int(data['tier']) if 'tier' in data else 3
-            try:
-                check_tier_limits(size['n_nodes'], size['n_elements'], size['n_dof'], tier_req)
-            except TierLimitExceeded as e:
-                return jsonify({**e.to_dict(), 'tier': tier_req, 'size': size,
-                                'limits': TIER_LIMITS[tier_req],
-                                'message': ('Tamaño estimado' if size.get('estimated') else 'Tamaño')
-                                + f" fuera del Tier {tier_req}: " + '; '.join(e.violations)}), 413
-
-        # Validate required parameters
-        if not data.get('material'):
-            data['material'] = {'type': 'linear_elastic_isotropic', 'E': 210e9, 'nu': 0.3, 'rho': 7800}
-        if not data.get('bcs'):
-            logger.warning(f"No boundary conditions for run {graph_id}")
-        if not data.get('loads'):
-            logger.warning(f"No loads for run {graph_id}")
+        data, err = prepare_spec(graph_id, data)
+        if err:
+            return err
 
         spec = dict(data)
         spec['graph_id'] = graph_id
@@ -161,10 +176,10 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     from app.jobs import enqueue
 
     fp = fingerprint(spec)
-    if parent is None and purpose == 'run':
+    if parent is None and purpose in ('run', 'topology'):
         parent = (SimulationRun.query
                   .filter(SimulationRun.graph_id == graph.id, SimulationRun.status == 'done',
-                          SimulationRun.purpose == 'run')
+                          SimulationRun.purpose == purpose)
                   .order_by(SimulationRun.created_at.desc()).first())
     run = SimulationRun(
         id=_uuid.uuid4(),
@@ -187,7 +202,8 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     db.session.commit()
     # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker --queues solve)
     # runs FEMKernel.solve_async and its socket events are forwarded to room=run_id.
-    job = enqueue('fem.solve', {'run_id': str(run.id), 'spec': spec}, simulation_run_id=run.id)
+    kind = 'topology.simp' if 'topology' in spec else 'fem.solve'
+    job = enqueue(kind, {'run_id': str(run.id), 'spec': spec}, simulation_run_id=run.id)
     return run, job
 
 
@@ -214,8 +230,14 @@ def list_runs():
 
 
 def _load_h5_arrays(run_id, names=('displacement', 'von_mises_nodal')):
+    import os
     import h5py
     import numpy as np
+    from app.design.services.topology.runner import result_path
+    topo = result_path(run_id)
+    if os.path.exists(topo):                      # topology run: compare densities + displacement
+        with np.load(topo, allow_pickle=False) as z:
+            return {'displacement': z['u'], 'von_mises_nodal': z['densities']}
     path = f"{current_app.config.get('SOLVER_DATA_DIR', 'data/solver')}/{run_id}.h5"
     out = {}
     with h5py.File(path, 'r') as f:
@@ -318,6 +340,8 @@ def reproduce_run(run_id):
         return jsonify({'error': 'Run not found'}), 404
     if run.purpose == 'adaptive':
         return jsonify({'error': 'Las corridas adaptativas no se pueden reproducir todavía'}), 422
+    if run.status != 'done':
+        return jsonify({'error': 'Solo se reproducen corridas completadas'}), 422
     if run.solver_config is None or run.inputs is None:
         return jsonify({'error': 'Corrida anterior a FASE 7: no guarda sus entradas canónicas'}), 422
     # a reproduction of a reproduction is compared against the original

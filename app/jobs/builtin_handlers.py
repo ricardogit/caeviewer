@@ -54,3 +54,10 @@ def fem_solve(ctx, payload):
         raise RuntimeError(proxy.last_error or f"Solver terminó con estado '{run.status}'")
     return {'run_id': run_id, 'status': run.status, 'wall_time': run.wall_time,
             'converged': run.converged, 'n_iterations': run.n_iterations}
+
+
+@handler('topology.simp', queue='solve')
+def topology_simp(ctx, payload):
+    """FASE 4: SIMP topology optimization for a SimulationRun (purpose='topology')."""
+    from app.design.services.topology.runner import run_topology
+    return run_topology(ctx, payload['run_id'], payload['spec'])

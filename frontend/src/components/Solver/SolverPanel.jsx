@@ -19,6 +19,7 @@ import useSolverStore from '../../stores/solverStore';
 import ConvergenceMonitor from './ConvergenceMonitor';
 import AdaptiveMonitor from './AdaptiveMonitor';
 import SimHistory from './SimHistory';
+import TopologyPanel from './TopologyPanel';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -40,7 +41,7 @@ export default function SolverPanel({ onClose }) {
     startRun, cancelRun, runCantileverTest, resetRun, clearError,
   } = useSolverStore();
 
-  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever'
+  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever' | 'topology'
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const isRunning = runStatus === 'running' || runStatus === 'queued';
@@ -108,7 +109,12 @@ export default function SolverPanel({ onClose }) {
           <ToggleButton value="cantilever" sx={{ fontSize: 11 }}>
             Viga voladizo
           </ToggleButton>
+          <ToggleButton value="topology" sx={{ fontSize: 11 }}>
+            Topología
+          </ToggleButton>
         </ToggleButtonGroup>
+
+        {mode === 'topology' && <TopologyPanel graphId={activeGraphId} />}
 
         {/* ── Graph mode ───────────────────────────────────────────────── */}
         {mode === 'graph' && (

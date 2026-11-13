@@ -172,6 +172,75 @@ class FEMMesh:
             raise
 
     @classmethod
+    def generate_plate(cls, length: float = 0.2, height: float = 0.1, thickness: float = 0.01,
+                       mesh_size: float = 0.005, support_width: float = None,
+                       hole_radius: float = 0.0, hole_center: tuple = None, order: int = 1) -> FEMMesh:
+        """Thick plate in the XY plane (x: length, y: height, z: thickness), split in three
+        blocks along x so the bottom support patches are separate faces (FASE 4 bridge hito).
+
+        Face sets: 'top' (y = height), 'bottom' (y = 0), 'support_left' / 'support_right'
+        (bottom patches of width ``support_width`` at both ends), 'left', 'right', 'hole',
+        'back' (z = 0) and 'front' (z = thickness).
+        """
+        import gmsh
+        sw = support_width or 0.05 * length
+        with _gmsh_lock:
+            gmsh.initialize()
+            try:
+                gmsh.option.setNumber("General.Terminal", 0)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.model.add("plate")
+                occ = gmsh.model.occ
+                b = [occ.addBox(0, 0, 0, sw, height, thickness),
+                     occ.addBox(sw, 0, 0, length - 2 * sw, height, thickness),
+                     occ.addBox(length - sw, 0, 0, sw, height, thickness)]
+                vols = [(3, t) for t in b]
+                if hole_radius and hole_radius > 0:
+                    cx, cy = hole_center or (length / 2, height / 2)
+                    cyl = occ.addCylinder(cx, cy, -thickness, 0, 0, 3 * thickness, hole_radius)
+                    vols, _ = occ.cut([(3, b[1])], [(3, cyl)])
+                    vols = [(3, b[0])] + vols + [(3, b[2])]
+                occ.fragment(vols, [])
+                occ.synchronize()
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+                gmsh.option.setNumber("Mesh.Optimize", 1)
+                gmsh.model.mesh.generate(3)
+                if order == 2:
+                    gmsh.model.mesh.setOrder(2)
+                eps = 1e-4 * length
+                groups: dict = {}
+                for _, tag in gmsh.model.getEntities(2):
+                    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
+                    if y1 - y0 < eps and y0 > height - eps:
+                        name = 'top'
+                    elif y1 - y0 < eps and y1 < eps:
+                        name = 'support_left' if x1 < sw + eps else 'support_right' if x0 > length - sw - eps                             else 'bottom'
+                    elif x1 - x0 < eps and x1 < eps:
+                        name = 'left'
+                    elif x1 - x0 < eps and x0 > length - eps:
+                        name = 'right'
+                    elif z1 - z0 < eps:
+                        name = 'back' if z1 < eps else 'front'
+                    elif (x1 - x0 < eps) or (y1 - y0 < eps):
+                        continue                       # internal block walls
+                    else:
+                        name = 'hole'
+                    groups.setdefault(name, []).append(tag)
+                surf = {f'{n}#{i}': t for n, tags in groups.items() for i, t in enumerate(tags)}
+                nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
+            finally:
+                gmsh.finalize()
+        merged: dict = {}
+        for k, tris in faces_.items():
+            merged.setdefault(k.split('#')[0], []).append(tris)
+        faces = {k: np.concatenate(v) for k, v in merged.items()}
+        faces['bottom'] = np.concatenate([faces[k] for k in ('bottom', 'support_left', 'support_right')
+                                          if k in faces])
+        return cls(nodes_, elements_, face_sets=faces, mids_known=True)
+
+    @classmethod
     def _generate_fallback_cantilever(cls,
                                       length: float = 0.050,
                                       width: float = 0.010,

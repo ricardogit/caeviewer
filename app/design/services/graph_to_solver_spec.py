@@ -209,6 +209,11 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     values = [float(props.get('value', 0) or 0)] * len(dofs)
 
     entry = {'dofs': dofs, 'values': values, 'label': node.label}
+    # topology optimization keeps support regions solid, but not symmetry/plane constraints
+    if bc_type == 'symmetry':
+        entry['symmetry'] = True
+    elif props.get('keep_solid') is False:
+        entry['keep_solid'] = False
     if faces:
         entry['face_set'] = faces
     else:

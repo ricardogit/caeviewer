@@ -280,6 +280,11 @@ class FEMKernel:
                 order=order,
             ), {}
 
+        if source == 'plate':
+            kw = {k: float(p[k]) for k in ('length', 'height', 'thickness', 'mesh_size', 'support_width',
+                                            'hole_radius') if p.get(k) is not None}
+            return FEMMesh.generate_plate(**kw, order=order), {}
+
         if source == 'geometry':
             from app.design.services.fem.cad_mesh import mesh_geometry
             return mesh_geometry(spec['geometry_id'], mesh_size=p.get('mesh_size'),
