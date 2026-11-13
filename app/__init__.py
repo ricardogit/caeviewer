@@ -77,6 +77,7 @@ def _register_models(app):
         from app.jobs.models import Job  # noqa
         from app.auth.models import User, Project  # noqa
         from app.geometry.models import Geometry, GeometryEntity  # noqa
+        from app.catalog.models import SolverCatalog  # noqa
         try:
             from app.design.models import (  # noqa
                 DesignGraph, DesignNode, DesignEdge,
@@ -111,6 +112,8 @@ def _register_blueprints(app):
     init_auth(app)
     from app.geometry.api import bp as geometry_bp
     app.register_blueprint(geometry_bp, url_prefix='/api/geometry', strict_slashes=False)
+    from app.catalog import init_catalog
+    init_catalog(app)
 
     # Design module — new-generation CAE (FASE 0+)
     try:

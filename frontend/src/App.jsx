@@ -42,6 +42,8 @@ import GraphEditor from './components/DesignGraph/GraphEditor';
 import GraphProjectList from './components/DesignGraph/GraphProjectList';
 import SolverPanel from './components/Solver/SolverPanel';
 import GeometryList from './components/Geometry/GeometryList';
+import HubPage from './components/Hub/HubPage';
+import HubFilters from './components/Hub/HubFilters';
 import GeometryViewer from './components/Geometry/GeometryViewer';
 import FacePanel from './components/Geometry/FacePanel';
 
@@ -69,7 +71,7 @@ export default function App() {
   const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
   // ── App mode: 'design' | 'step' | 'cae' ────────────────────────────────
-  const [appMode, setAppMode] = useState('cae');
+  const [appMode, setAppMode] = useState('design');   // Design Graph is the default (PLAN_CAE_NUEVA_GENERACION §1.5); Hub = catalog
   const [solverOpen, setSolverOpen] = useState(false);
   const caeMode = appMode === 'cae';     // kept for internal logic compatibility
 
@@ -210,7 +212,9 @@ export default function App() {
         <Drawer variant="persistent" anchor="left" open={fileListOpen}
           sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8 } }}
         >
-          {appMode === 'design'
+          {appMode === 'hub'
+            ? <HubFilters />
+            : appMode === 'design'
             ? <GraphProjectList />
             : appMode === 'geometry'
             ? <GeometryList />
@@ -230,7 +234,13 @@ export default function App() {
           overflow: 'hidden',
           transition: 'left 0.2s',
         }}>
-          {appMode === 'design' ? (
+          {appMode === 'hub' ? (
+            <HubPage onLaunch={(launch) => {
+              if (!launch?.mode) return;
+              if (launch.mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+              setAppMode(launch.mode);
+            }} />
+          ) : appMode === 'design' ? (
             <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
               <GraphEditor />
               {/* Solver panel toggle */}

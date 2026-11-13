@@ -10,6 +10,10 @@ CAE Viewer is a full-stack engineering platform with three integrated modes:
 - **STEP mode**: Upload/view STEP files (.stp/.step/.p21), browse entity graphs, annotate with PMI, measure, section-cut, and export.
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
 
+**Roadmap:** `PLAN_CAE_NUEVA_GENERACION.md` is the master plan (phases FASE 0-9; "nothing happens outside
+the DesignGraph"). The Engineering Hub work (job queue, versioned geometry, catalog) is numbered H0-H1d to
+avoid clashing; it is infrastructure for that plan. The own FEM kernel comes before external solver adapters.
+
 ## Running the Application
 
 **Backend (Flask, port 8080):**
@@ -39,15 +43,19 @@ python -m app.jobs.worker --queues default,solve
 Progress flows worker → `NOTIFY job_events` → web listener (started in `run.py`) → socket.io
 (`job_update` broadcast, plus wrapped events like `solver_progress` to their room).
 
-**Geometry (Fase 1b):** `app/geometry/` — STEP files are stored content-addressed under `data/geometry/files/`;
+**Geometry (Hub H1b):** `app/geometry/` — STEP files are stored content-addressed under `data/geometry/files/`;
 the `geometry.import` job (queue `geometry`, needs pythonOCC → run the worker in the Docker image) fills
 `geometry_entities` with one row per face/solid (TopExp index + signature). Re-import keeps entity UUIDs;
 a new version (`parent_id`) links faces to the previous version by signature (`parent_entity_id`,
-`match_kind`). The import also writes `geometry/<id>/view.glb` (Fase 1c): uncompressed, one vertex block
+`match_kind`). The import also writes `geometry/<id>/view.glb` (H1c): uncompressed, one vertex block
 per CAD face, vertex attribute `_FACE_ID` = 1-based face index (Three.js reads it as `_face_id`). Never
 Draco-compress it (Draco reorders vertices). Frontend: **Geometría** mode → `components/Geometry/*` +
 `stores/geometryStore.js` (picking/highlight via per-vertex colors). DB file URIs are relative to `DATA_DIR`. `occ_import`/`gmsh_bridge` must never be
 imported at module level from web code.
+
+**Hub catalog (H1d):** the Hub (Catálogo mode; Design stays the default mode) renders cards from the `solver_catalog` table. Add or
+edit tools in `app/catalog/seed_data.py`, then run `flask catalog seed` (idempotent upsert by slug;
+`--prune` disables removed slugs). Run it once after `flask db upgrade` on a fresh database.
 
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
 image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.
@@ -188,6 +196,7 @@ src/
 | Prefix | Module | Purpose |
 |--------|--------|---------|
 | `/api/jobs` | `app/jobs/api.py` | Job list/get/log/cancel/stats; POST only for `dummy` |
+| `/api/catalog` | `app/catalog/api.py` | Hub tool catalog (`solver_catalog`) + filter facets |
 | `/api/geometry` | `app/geometry/api.py` | Versioned STEP upload → `geometry.import` job (OCC worker); entities, versions, remap |
 | `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |

@@ -3,7 +3,7 @@ import {
   AppBar, Toolbar, IconButton, Typography, Box,
   Badge, Popover, Chip, Tooltip,
 } from '@mui/material';
-import { Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree, Category } from '@mui/icons-material';
+import { Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree, Category, Apps } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
 import useJobStore, { selectActiveCount } from '../stores/jobStore';
 
@@ -25,6 +25,7 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, appMod
     { key: 'geometry', label: 'Geometría', Icon: Category, color: '#ffb74d' },
     { key: 'step',   label: 'STEP',    Icon: ViewInAr,    color: '#90caf9' },
     { key: 'cae',    label: 'CAE/FEA', Icon: GridOn,      color: '#80cbc4' },
+    { key: 'hub',    label: 'Catálogo', Icon: Apps,       color: '#ce93d8' },
   ];
 
   return (
