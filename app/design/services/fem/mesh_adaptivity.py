@@ -9,111 +9,67 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def refine_marked_elements_bisection(nodes, elements, mark_refine):
-    """Refine marked T4 elements via longest-edge bisection.
-    
-    Args:
-        nodes: (n_nodes, 3)
-        elements: (n_elem, 4) T4 connectivity
-        mark_refine: (n_elem,) bool
-        
-    Returns:
-        nodes_new, elements_new
+_TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+
+
+def _edge(a, b):
+    return (a, b) if a < b else (b, a)
+
+
+def refine_marked_elements_bisection(nodes, elements, mark_refine, return_midpoints: bool = False):
+    """Conforming longest-edge bisection of marked T4 elements.
+
+    1. Each marked element contributes its longest edge to the split set.
+    2. Every element that contains any split edge (marked or not) is bisected
+       recursively, always at its longest split edge (ties broken by node ids).
+       Splitting neighbours too removes hanging nodes, and the deterministic
+       order makes the two sides of every shared face triangulate identically,
+       so the result is conforming.
+
+    (FASE 2 fix: the previous version only split marked elements — leaving
+    hanging nodes — and produced a zero-volume tet when bisecting edge (1,3).)
+
+    Returns nodes_new, elements_new[, midpoints {edge (a,b): mid node}].
     """
+    nodes = np.asarray(nodes, dtype=np.float64)
+    elements = np.asarray(elements, dtype=np.int64)
     if not np.any(mark_refine):
-        return nodes.copy(), elements.copy()
+        out = (nodes.copy(), elements.copy())
+        return (*out, {}) if return_midpoints else out
 
-    # Edge → elements map
-    edge_to_el = {}
-    for el, conn in enumerate(elements):
-        edges = [
-            (min(conn[i], conn[j]), max(conn[i], conn[j]))
-            for i, j in [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]
-        ]
-        for edge in edges:
-            if edge not in edge_to_el:
-                edge_to_el[edge] = []
-            edge_to_el[edge].append(el)
+    def length_key(e):
+        return (float(np.linalg.norm(nodes_list[e[1]] - nodes_list[e[0]])), -e[0], -e[1])
 
-    # Mark edges to split: longest edge of each refined element
-    edges_to_split = set()
-    for el in np.where(mark_refine)[0]:
+    nodes_list = [p for p in nodes]
+    split: set = set()
+    for el in np.flatnonzero(mark_refine):
         conn = elements[el]
-        edges = [(min(conn[i], conn[j]), max(conn[i], conn[j])) 
-                 for i, j in [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]]
-        lengths = [np.linalg.norm(nodes[e[1]] - nodes[e[0]]) for e in edges]
-        longest_edge = edges[np.argmax(lengths)]
-        edges_to_split.add(longest_edge)
+        edges = [_edge(conn[i], conn[j]) for i, j in _TET_EDGES]
+        split.add(max(edges, key=length_key))
 
-    # Create midpoints
-    new_nodes = nodes.tolist()
-    edge_midpoints = {}
-    next_id = len(nodes)
+    midpoints: dict = {}
+    for e in sorted(split):
+        midpoints[e] = len(nodes_list)
+        nodes_list.append((nodes[e[0]] + nodes[e[1]]) / 2.0)
 
-    for edge in edges_to_split:
-        mid = (nodes[edge[0]] + nodes[edge[1]]) / 2.0
-        edge_midpoints[edge] = next_id
-        new_nodes.append(mid)
-        next_id += 1
+    out_elements = []
+    stack = [list(map(int, c)) for c in elements]
+    while stack:
+        conn = stack.pop()
+        cand = [(conn[i], conn[j], i, j) for i, j in _TET_EDGES if _edge(conn[i], conn[j]) in midpoints]
+        if not cand:
+            out_elements.append(conn)
+            continue
+        a, b, i, j = max(cand, key=lambda c: length_key(_edge(c[0], c[1])))
+        m = midpoints[_edge(a, b)]
+        c1 = list(conn); c1[j] = m      # keeps node i, replaces j by the midpoint
+        c2 = list(conn); c2[i] = m      # keeps node j
+        stack.append(c1)
+        stack.append(c2)
 
-    # Refine elements - use regular 1-to-8 subdivision for simplicity
-    elements_new = []
-    for el, conn in enumerate(elements):
-        if not mark_refine[el]:
-            elements_new.append(conn.tolist())
-        else:
-            n0, n1, n2, n3 = conn
-            edges_on_el = [(min(conn[i], conn[j]), max(conn[i], conn[j]))
-                           for i, j in [(0,1), (0,2), (0,3), (1,2), (1,3), (2,3)]]
-            split_edges = [e for e in edges_on_el if e in edges_to_split]
+    out = (np.array(nodes_list, dtype=np.float64), np.array(out_elements, dtype=np.int64))
+    return (*out, midpoints) if return_midpoints else out
 
-            if split_edges:
-                # Create midpoints for all edges that will be split
-                mid_01 = edge_midpoints.get((min(n0,n1), max(n0,n1)), None)
-                mid_02 = edge_midpoints.get((min(n0,n2), max(n0,n2)), None)
-                mid_03 = edge_midpoints.get((min(n0,n3), max(n0,n3)), None)
-                mid_12 = edge_midpoints.get((min(n1,n2), max(n1,n2)), None)
-                mid_13 = edge_midpoints.get((min(n1,n3), max(n1,n3)), None)
-                mid_23 = edge_midpoints.get((min(n2,n3), max(n2,n3)), None)
-
-                # 1-to-8 subdivision (refine all edges that touch split edges)
-                # Create 8 new tetrahedra from corners + edge midpoints + center
-                has_split = [e in edges_to_split for e in edges_on_el]
-
-                # Simple strategy: if any edge splits, create 2 new elements by bisecting longest edge
-                longest_edge = split_edges[np.argmax([np.linalg.norm(nodes[e[1]]-nodes[e[0]])
-                                                        for e in split_edges])]
-                mid_id = edge_midpoints[longest_edge]
-
-                # Standard bisection: split by longest edge
-                if longest_edge == (min(n0, n1), max(n0, n1)):
-                    m = mid_id
-                    elements_new.append([n0, m, n2, n3])
-                    elements_new.append([m, n1, n2, n3])
-                elif longest_edge == (min(n0, n2), max(n0, n2)):
-                    m = mid_id
-                    elements_new.append([n0, n1, m, n3])
-                    elements_new.append([m, n1, n2, n3])
-                elif longest_edge == (min(n0, n3), max(n0, n3)):
-                    m = mid_id
-                    elements_new.append([n0, n1, n2, m])
-                    elements_new.append([m, n1, n2, n3])
-                elif longest_edge == (min(n1, n2), max(n1, n2)):
-                    m = mid_id
-                    elements_new.append([n0, n1, m, n3])
-                    elements_new.append([n0, m, n2, n3])
-                elif longest_edge == (min(n1, n3), max(n1, n3)):
-                    m = mid_id
-                    elements_new.append([n0, n1, m, n3])
-                    elements_new.append([n0, n2, n3, m])
-                else:  # (n2, n3)
-                    m = mid_id
-                    elements_new.append([n0, n1, n2, m])
-                    elements_new.append([n0, n1, m, n3])
-            else:
-                elements_new.append(conn.tolist())
-
-    return np.array(new_nodes, dtype=np.float64), np.array(elements_new, dtype=np.int32)
 
 def coarsen_mesh(nodes, elements, coarsen_ratio=0.7):
     """Simple coarsening via random node removal (stub for FASE 3+).

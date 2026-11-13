@@ -1,6 +1,7 @@
 """Finite element library — shape functions, B matrices, element stiffness.
 
-FASE 2 implementations: T4 (3D linear tet), T3 (2D linear triangle).
+FASE 2 implementations: T4 (3D linear tet), T3 (2D linear triangle); T10 (quadratic tet)
+lives in tet_batch.py (vectorised, shared by T4 and T10 in the kernel).
 Other elements: stubs only.
 """
 from __future__ import annotations
@@ -160,15 +161,9 @@ class H20:
         raise NotImplementedError("H20 implemented in FASE 2")
 
 
-class T10:
-    """Quadratic tetrahedron — implemented in FASE 2 (accuracy upgrade)."""
-    @staticmethod
-    def stiffness(coords, D):
-        raise NotImplementedError("T10 implemented in FASE 2")
-
-
 ELEMENT_REGISTRY = {
-    'T3': {'n_nodes': 3, 'dim': 2, 'n_dof': 6,  'stiffness': t3_stiffness},
-    'T4': {'n_nodes': 4, 'dim': 3, 'n_dof': 12, 'stiffness': t4_stiffness},
-    'H8': {'n_nodes': 8, 'dim': 3, 'n_dof': 24, 'stiffness': H8.stiffness},
+    'T3':  {'n_nodes': 3,  'dim': 2, 'n_dof': 6,  'stiffness': t3_stiffness},
+    'T4':  {'n_nodes': 4,  'dim': 3, 'n_dof': 12, 'stiffness': t4_stiffness},
+    'T10': {'n_nodes': 10, 'dim': 3, 'n_dof': 30, 'stiffness': None},   # batched: tet_batch.stiffness_batch
+    'H8':  {'n_nodes': 8,  'dim': 3, 'n_dof': 24, 'stiffness': H8.stiffness},
 }

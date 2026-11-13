@@ -202,7 +202,8 @@ export default function SolverPanel({ onClose }) {
         {mode === 'cantilever' && (
           <>
             <Typography variant="caption" sx={{ color: '#888' }}>
-              Viga voladizo (validación FASE 2) — compara con solución analítica Euler-Bernoulli
+              Viga en voladizo (hito FASE 2): flecha media de la cara de punta contra Timoshenko.
+              Usa L/h ≥ 10; en vigas cortas el empotramiento 3D rigidiza ~1-2 %.
             </Typography>
 
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
@@ -222,6 +223,15 @@ export default function SolverPanel({ onClose }) {
                 />
               ))}
             </Box>
+
+            <ToggleButtonGroup
+              size="small" exclusive fullWidth
+              value={cantileverParams.order ?? 2}
+              onChange={(_, v) => v && setCantileverParam('order', v)}
+            >
+              <ToggleButton value={1} sx={{ fontSize: 11 }}>T4 lineal</ToggleButton>
+              <ToggleButton value={2} sx={{ fontSize: 11 }}>T10 cuadrático</ToggleButton>
+            </ToggleButtonGroup>
 
             <Button
               variant="contained" fullWidth color="secondary"
@@ -314,7 +324,7 @@ function ResultSummary({ summary }) {
 
 function CantileverResult({ result }) {
   const { fem, analytical, validation } = result;
-  const pass = validation.pass_5pct;
+  const pass = validation.pass_1pct;
   const color = pass ? '#2e7d32' : '#c62828';
   const bgColor = pass ? '#0d1b0d' : '#1b0d0d';
   const chipColor = pass ? '#81c784' : '#ef9a9a';
@@ -323,7 +333,7 @@ function CantileverResult({ result }) {
     <Box sx={{ bgcolor: bgColor, border: `1px solid ${color}`, borderRadius: 1, p: 1 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="caption" sx={{ color: chipColor, fontWeight: 700 }}>
-          {pass ? '✓ Validación OK' : '⚠ Error > 5%'}
+          {pass ? '✓ Hito ±1 % cumplido' : '⚠ Error > 1 %'}
         </Typography>
         <Chip
           label={`Error: ${validation.relative_error_pct?.toFixed(2)}%`}
@@ -333,8 +343,10 @@ function CantileverResult({ result }) {
       </Box>
 
       {[
-        ['FEM tip deflexión', `${fem.tip_deflection_mm?.toFixed(4)} mm`],
-        ['Analítico (EB)', `${analytical.tip_deflection_mm?.toFixed(4)} mm`],
+        ['FEM flecha (' + (fem.element_type || '') + ')', `${fem.tip_deflection_mm?.toFixed(4)} mm`],
+        ['Timoshenko', `${analytical.timoshenko_tip_deflection_mm?.toFixed(4)} mm`],
+        ['Euler-Bernoulli', `${analytical.tip_deflection_mm?.toFixed(4)} mm (${validation.relative_error_eb_pct?.toFixed(2)} %)`],
+        ['L/h', analytical.slenderness],
         ['FEM σ_vm máx', `${fem.max_von_mises_mpa?.toFixed(2)} MPa`],
         ['Nodos / Elem.', `${fem.n_nodes?.toLocaleString()} / ${fem.n_elements?.toLocaleString()}`],
         ['Solver', fem.solver],

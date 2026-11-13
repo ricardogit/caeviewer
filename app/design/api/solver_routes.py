@@ -23,7 +23,8 @@ def status():
         'status': 'ok',
         'tier_limits': TIER_LIMITS,
         'supported_physics': ['structural', 'thermal'],
-        'supported_elements': ['T4', 'T3'],
+        'supported_elements': ['T4', 'T10', 'T3'],
+        'mesh_sources': ['geometry', 'cantilever', 'cae_mesh', 'inline'],
     }), 200
 
 
@@ -80,26 +81,41 @@ def run_simulation(graph_id):
                 logger.error(f"Invalid tier: {e}")
                 return jsonify({'error': 'Tier must be integer 0-3'}), 422
 
-        # Read spec from graph if needed
+        # Read spec from graph if needed (request body values have priority)
         if 'material' not in data or 'bcs' not in data or 'loads' not in data:
+            from app.design.services.graph_to_solver_spec import GraphSpecError
             try:
                 graph_spec = graph_to_solver_spec(graph_id)
-                # Merge: request body values have priority
-                if 'material' not in data:
-                    data['material'] = graph_spec.get('material', data.get('material'))
-                if 'bcs' not in data:
-                    data['bcs'] = graph_spec.get('bcs', data.get('bcs', []))
-                if 'loads' not in data:
-                    data['loads'] = graph_spec.get('loads', data.get('loads', []))
-                if 'mesh_source' not in data and 'mesh_source' in graph_spec:
-                    data['mesh_source'] = graph_spec['mesh_source']
-                if 'mesh_id' not in data and 'mesh_id' in graph_spec:
-                    data['mesh_id'] = graph_spec['mesh_id']
-                if 'tier' not in data and 'tier' in graph_spec:
-                    data['tier'] = graph_spec['tier']
+            except GraphSpecError as e:
+                return jsonify({'error': str(e), 'kind': 'graph_spec'}), 422
             except Exception as e:
-                logger.warning(f"Could not read graph spec for {graph_id}: {e}")
-                # Fallback to request body defaults
+                logger.warning(f"Could not read graph spec for {graph_id}: {e}", exc_info=True)
+                graph_spec = {}
+            body_mesh = 'mesh_source' in data
+            for k, v in graph_spec.items():
+                if k in ('mesh_params', 'mesh_id', 'geometry_id') and body_mesh:
+                    continue        # the body chose its own mesh; don't mix in the graph's
+                data.setdefault(k, v)
+
+        # Tier limits before enqueueing (plan: reject with 413). Exact when the mesh
+        # is known/cached, otherwise a pre-meshing estimate; the worker re-checks exactly.
+        from app.design.services.fem.sizing import estimate_problem_size
+        from app.design.services.fem.solver import TIER_LIMITS, check_tier_limits, TierLimitExceeded
+        try:
+            size = estimate_problem_size(data)
+        except Exception as e:
+            logger.warning(f"Size estimate failed for graph {graph_id}: {e}")
+            size = None
+        if size:
+            # no declared tier = auto (smallest that fits), so only the absolute limit applies
+            tier_req = int(data['tier']) if 'tier' in data else 3
+            try:
+                check_tier_limits(size['n_nodes'], size['n_elements'], size['n_dof'], tier_req)
+            except TierLimitExceeded as e:
+                return jsonify({**e.to_dict(), 'tier': tier_req, 'size': size,
+                                'limits': TIER_LIMITS[tier_req],
+                                'message': ('Tamaño estimado' if size.get('estimated') else 'Tamaño')
+                                + f" fuera del Tier {tier_req}: " + '; '.join(e.violations)}), 413
 
         # Validate required parameters
         if not data.get('material'):
@@ -217,10 +233,15 @@ def run_results(run_id):
 
         if run.status == 'failed':
             logger.warning(f"Run {run_id} failed")
+            err = (run.mesh_stats or {}).get('error')
+            if not err:
+                from app.jobs.models import Job
+                job = Job.query.filter_by(simulation_run_id=run.id).order_by(Job.created_at.desc()).first()
+                err = job.error if job else None
             return jsonify({
                 'run_id': str(run.id),
                 'status': 'failed',
-                'error_message': run.error_message or 'Unknown error',
+                'error_message': err or 'Unknown error',
                 'wall_time_s': run.wall_time,
             }), 200  # Return 200 with failed status
 
@@ -258,8 +279,9 @@ def run_results(run_id):
                             })
                         except Exception as e:
                             logger.warning(f"Could not read field {fname}: {e}")
-                if 'attributes' in f:
-                    summary = dict(f.attrs)
+                if 'summary_json' in f.attrs:
+                    import json as _json
+                    summary = _json.loads(f.attrs['summary_json'])
         except Exception as e:
             logger.error(f"Could not read HDF5 results for run {run_id}: {e}")
             # Return partial results with warning
@@ -459,56 +481,60 @@ def convergence_log(run_id):
 
 @bp.route('/test/cantilever', methods=['GET'])
 def test_cantilever():
-    """Run the canonical cantilever beam validation synchronously.
+    """Canonical cantilever validation (synchronous).
 
-    Compares FEM tip deflection with Euler-Bernoulli analytical solution.
-    Hito FASE 2: error < 5% for T4 mesh.
+    Tip deflection = mean uy over the tip face, compared with Euler-Bernoulli and
+    Timoshenko (shear coefficient k = 10(1+ν)/(12+11ν), rectangular section).
+    FASE 2 hito: T10 within ±1 % of Timoshenko on a slender beam (L/h ≥ 10); on
+    stubby beams the fully clamped face stiffens the 3D model by ~1-2 % (Poisson
+    restraint), which neither beam theory captures.
 
-    Query params:
-        length:  [m]  default 0.05
-        width:   [m]  default 0.01
-        height:  [m]  default 0.01
-        E:       [Pa] default 210e9
-        nu:            default 0.3
-        force_y: [N]  default 1000 (applied in -Y direction at tip)
-        n_div:         default 12 (elements along length)
+    Query params: length/width/height [m] (0.2/0.01/0.01), E [Pa], nu, force_y [N]
+    (applied in -Y at the tip face), n_div (20), order (1 = T4, 2 = T10; default 2).
     """
     from app.design.services.fem.kernel import FEMKernel
-    import time
+    import numpy as np
 
-    L  = float(request.args.get('length',  0.050))
+    L  = float(request.args.get('length',  0.200))
     W  = float(request.args.get('width',   0.010))
     H  = float(request.args.get('height',  0.010))
     E  = float(request.args.get('E',       210e9))
     nu = float(request.args.get('nu',      0.3))
     Fy = float(request.args.get('force_y', 1000.0))
-    nd = int(request.args.get('n_div',     12))
+    nd = int(request.args.get('n_div',     20))
+    order = int(request.args.get('order',  2))
+    if order not in (1, 2):
+        return jsonify({'error': 'order debe ser 1 (T4) o 2 (T10)'}), 400
 
     spec = {
         'physics': ['structural'],
         'mesh_source': 'cantilever',
-        'mesh_params': {'length': L, 'width': W, 'height': H, 'n_along_length': nd},
+        'mesh_params': {'length': L, 'width': W, 'height': H, 'n_along_length': nd, 'order': order},
         'material': {'type': 'linear_elastic_isotropic', 'E': E, 'nu': nu, 'rho': 7800.0},
-        'bcs':  [{'node_set': 'fixed', 'dofs': [0, 1, 2], 'values': [0.0, 0.0, 0.0]}],
-        'loads': [{'node_set': 'tip', 'force': [0.0, -Fy, 0.0]}],
+        'bcs':  [{'face_set': 'fixed', 'dofs': [0, 1, 2], 'values': [0.0, 0.0, 0.0]}],
+        'loads': [{'face_set': 'tip', 'force': [0.0, -Fy, 0.0]}],
     }
 
-    t0 = time.perf_counter()
     try:
-        kernel = FEMKernel()
-        result = kernel.solve_sync(spec)
+        result = FEMKernel().solve_sync(spec)
         s = result['summary']
+        mesh = result['mesh']
+        tip_nodes = np.unique(mesh.face_sets['tip'])
+        uy = np.asarray(result['displacement'])[tip_nodes, 1]
+        fem_tip_mm = float(-uy.mean() * 1000.0)
 
-        analytical = FEMKernel.cantilever_analytical(E, nu, L, W, H, Fy)
-
-        fem_tip_mm = s['max_displacement_mm']
-        ana_tip_mm = analytical['tip_deflection_mm']
-        rel_err_pct = abs(fem_tip_mm - ana_tip_mm) / ana_tip_mm * 100.0
+        ana = FEMKernel.cantilever_analytical(E, nu, L, W, H, Fy)
+        G = E / (2.0 * (1.0 + nu))
+        k = 10.0 * (1.0 + nu) / (12.0 + 11.0 * nu)
+        timo_mm = (ana['tip_deflection_m'] + Fy * L / (k * G * W * H)) * 1000.0
+        err_eb = (fem_tip_mm - ana['tip_deflection_mm']) / ana['tip_deflection_mm'] * 100.0
+        err_ti = (fem_tip_mm - timo_mm) / timo_mm * 100.0
 
         return jsonify({
             'status': 'ok',
             'fem': {
-                'tip_deflection_mm': fem_tip_mm,
+                'tip_deflection_mm': round(fem_tip_mm, 6),
+                'element_type': s['element_type'],
                 'max_von_mises_mpa': s['max_von_mises_mpa'],
                 'n_nodes': s['n_nodes'],
                 'n_elements': s['n_elements'],
@@ -516,18 +542,23 @@ def test_cantilever():
                 'converged': s['converged'],
                 'solver': s['solver_method'],
                 'wall_time_s': s['wall_time_s'],
+                'equilibrium_error': s['equilibrium_error'],
             },
             'analytical': {
-                'tip_deflection_mm': ana_tip_mm,
-                'max_bending_stress_mpa': analytical['max_bending_stress_mpa'],
-                'I_m4': analytical['I_m4'],
+                'tip_deflection_mm': ana['tip_deflection_mm'],
+                'timoshenko_tip_deflection_mm': round(timo_mm, 6),
+                'max_bending_stress_mpa': ana['max_bending_stress_mpa'],
+                'I_m4': ana['I_m4'],
+                'slenderness': round(L / H, 2),
             },
             'validation': {
-                'relative_error_pct': round(rel_err_pct, 3),
-                'pass_5pct': rel_err_pct <= 5.0,
-                'pass_1pct': rel_err_pct <= 1.0,
+                'reference': 'timoshenko',
+                'relative_error_pct': round(err_ti, 3),
+                'relative_error_eb_pct': round(err_eb, 3),
+                'pass_5pct': abs(err_ti) <= 5.0,
+                'pass_1pct': abs(err_ti) <= 1.0,
             },
-            'params': {'L': L, 'W': W, 'H': H, 'E': E, 'nu': nu, 'F': Fy, 'n_div': nd},
+            'params': {'L': L, 'W': W, 'H': H, 'E': E, 'nu': nu, 'F': Fy, 'n_div': nd, 'order': order},
         }), 200
 
     except Exception as exc:

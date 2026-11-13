@@ -38,11 +38,13 @@ const useSolverStore = create(
       selectedField: 'von_mises_nodal',
 
       // ── Cantilever test ─────────────────────────────────────────────────────
+      // FASE 2 hito defaults: slender beam (L/h = 20), T10, compared with Timoshenko
       cantileverParams: {
-        length: 50, width: 10, height: 10,   // mm
+        length: 200, width: 10, height: 10,  // mm
         E: 210, nu: 0.3,                      // GPa, dimensionless
         force_y: 1000,                         // N
-        n_div: 12,
+        n_div: 20,
+        order: 2,                              // 1 = T4, 2 = T10
       },
       cantileverResult: null,
       cantileverLoading: false,
@@ -92,7 +94,11 @@ const useSolverStore = create(
           get()._subscribeToRun(runId);
           return runId;
         } catch (e) {
-          const msg = e.response?.data?.error || e.message;
+          // 413 = tier exceeded (message + suggested tier), 422 = graph not solvable
+          const d = e.response?.data || {};
+          const msg = d.message
+            ? `${d.message}${d.suggested_tier != null ? ` — usa Tier ${d.suggested_tier}` : ''}`
+            : (d.error || e.message);
           set({ runStatus: 'failed', error: msg });
           return null;
         }
@@ -116,32 +122,11 @@ const useSolverStore = create(
         set({ cantileverLoading: true, cantileverResult: null, error: null });
 
         try {
-          // Launch via run endpoint with cantilever spec
-          const spec = {
-            physics: ['structural'],
-            tier: 0,
-            mesh_source: 'cantilever',
-            mesh_params: {
-              length: p.length / 1000,   // mm → m
-              width:  p.width  / 1000,
-              height: p.height / 1000,
-              n_along_length: p.n_div,
-            },
-            material: {
-              type: 'linear_elastic_isotropic',
-              E:  p.E * 1e9,             // GPa → Pa
-              nu: p.nu,
-              rho: 7800,
-            },
-            bcs:  [{ node_set: 'fixed', dofs: [0, 1, 2], values: [0, 0, 0] }],
-            loads: [{ node_set: 'tip',  force: [0, -p.force_y, 0] }],
-          };
-
           // Quick validation via dedicated test endpoint (synchronous)
           const qp = new URLSearchParams({
             length: p.length / 1000, width: p.width / 1000,
             height: p.height / 1000, E: p.E * 1e9, nu: p.nu,
-            force_y: p.force_y, n_div: p.n_div,
+            force_y: p.force_y, n_div: p.n_div, order: p.order ?? 2,
           });
           const res = await axios.get(`/api/design/solver/test/cantilever/?${qp}`);
           set({ cantileverResult: res.data, cantileverLoading: false });

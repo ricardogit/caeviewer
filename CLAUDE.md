@@ -220,19 +220,44 @@ src/
 ## FEM Solver (FASE 2+)
 
 **Mesh & Elements:**
-- `FEMMesh`: Unified container for nodes + elements + node_sets. Supports inline arrays, GMSH-generated cantilever, CAE mesh imports.
-- `T4` (linear tet): 4 nodes, 12 DOFs; complete B-matrix, stiffness, von Mises implementation. **Note:** shear locking in bending; convergence slow but monotone.
-- `T10` (quadratic tet): Stub, FASE 2 extension for ±1% accuracy on bending without over-refinement.
+- `FEMMesh(nodes, elements, node_sets, face_sets)`: element type inferred from columns (4 → T4, 10 → T10).
+  Elements are canonicalized on construction (positive orientation; T10 mids in VTK order
+  4:(0,1) 5:(1,2) 6:(0,2) 7:(0,3) 8:(1,3) 9:(2,3); Gmsh tet10 swaps 8/9 → `GMSH_TET10_TO_INTERNAL`).
+  `face_sets` = boundary triangles (T4: 3 nodes, T10: 6) and also create matching `node_sets`.
+- `tet_batch.py`: vectorized T4/T10 kernels (stiffness, volumes, Gauss-point strains, consistent
+  surface/body loads, outward-normal orientation). T10 nodal stress = Gauss-point extrapolation (vertex
+  Jacobians of curved elements may be negative, never evaluate there).
+- `T4` locks in bending (−58 % at L/h=20). **T10 is the default** for CAD geometry.
+
+**CAD meshing (`cad_mesh.py`):** `mesh_geometry(geometry_id, mesh_size_mm, order)` meshes the stored BREP
+with Gmsh, maps Gmsh surfaces to persistent CAD faces through the H1a bridge (DB signatures, no pythonOCC),
+converts mm → m and caches the result in `DATA_DIR/meshes/<geometry_id>/<key>.npz` (key includes Gmsh
+version and `MESHER_VERSION`; bump it when options change). `NumThreads=1` (multithreaded Gmsh is not
+deterministic). Curved T10 falls back to straight mids if any Jacobian ≤ 0. Mesh options per order in
+`MESH_OPTS`. `estimate_size()` is only an estimate (observed −25 %…+140 %); exact size once cached.
+Some parts (e.g. examples "tapa entredos", "Cuerpo") cannot be meshed: self-intersecting surface mesh.
+
+**BC/LOAD on CAD faces:** BC/LOAD nodes store `entity_ids` (persistent face UUIDs from `geometry_entities`).
+`app/geometry/resolve.py` resolves them to the study geometry version (following `parent_entity_id`);
+`graph_to_solver_spec.py` turns them into `face_set` entries and raises `GraphSpecError` (→ 422) for
+missing faces. Loads: `force` (total force spread by area; units N/kN/MN/lbf), `pressure` (normal,
+positive pushes inward), `gravity` (uses material rho). Solid elements have translational DOFs only.
 
 **Constitutive Models:**
 - `LinearElasticIsotropic`: 6×6 D matrix; E, nu, rho. Fully implemented.
 - `LinearElasticOrthotropic`, `Fourier`, `Thermoelastic`, etc.: Stubs with correct registry for FASE 2+.
 
 **Assembly & Solving:**
-- `assemble_K()`: COO→CSR sparse stiffness, handles multi-element contributions.
-- `assemble_F()`: Distributed loads via node_sets; single-node forces.
-- `apply_bcs()`: Dirichlet BCs via penalty method (K_diag = 1e30, F = value × 1e30).
-- `FEMSolverDispatcher`: Routes to **direct spsolve** (Tier 0-1) or **CG-ILU** (Tier 2-3).
+- `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,
+  node/node_set forces; records applied resultant.
+- Linear solves eliminate Dirichlet DOFs (`dirichlet()` + `reduce_system()`); the penalty `apply_bcs()`
+  is only used by Newton-Raphson. The kernel reports reactions and an equilibrium check.
+- `solve_linear`: direct `spsolve` up to 6000 DOF, else PCG (AMG preconditioner with rigid-body
+  near-nullspace via `pyamg`, in requirements; Jacobi fallback if missing). Jacobi does not converge in reasonable time
+  on large/slender CAD models (shaft 75K DOF: AMG 155 it, 11 s). SciPy 1.11: `cg` uses `tol`, pass `atol=0`.
+- Tier check before enqueue: `sizing.estimate_problem_size(spec)` → `413 TierLimitExceeded`
+  (`POST /api/design/solver/<graph_id>/run`); the worker re-checks the exact size.
+- `simulation_runs.hash` is not unique (migration `a7c9e2f4b6d1`): the same graph can be run again.
 
 **Tier Limits** (non-negotiable):
 ```python
@@ -244,7 +269,9 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 - Backend: `flask-socketio` with `start_background_task()` for async solves.
 - Frontend: `socket.io-client` in `solverStore.js`; emits `solver_progress`, `solver_done`, `solver_error` per-run room.
 
-**Validation Hito (FASE 2):** Cantilever beam T4 mesh, n_div=35 (2225 nodes, 8938 elements): error <4% (analytical vs FEM). Run via `python validate_fem.py`.
+**Validation Hito (FASE 2):** Cantilever T10, L/h=20, n_div=20: −0.64 % vs Timoshenko (requirement ±1 %).
+Run `python validate_fem.py` and `python -m pytest tests/test_fem_fase2.py` (patch tests, load resultants,
+CG vs direct, hito, conforming bisection).
 
 ## Adaptive Meshing (FASE 3)
 
@@ -269,11 +296,9 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 **API:**
 - `POST /<graph_id>/run-adaptive` → synchronous adaptive solve, returns `adaptive_log` array
 
-**Validation Hito (FASE 3):** Cantilever T4, n_div=5 initial:
-- Cycle 0: ~46 nodes, error ~40%
-- Cycle 1: ~150 nodes, error ~25%
-- Cycle 2: ~400 nodes, error ~12%
-- Cycle 3: ~900 nodes, error <5% ✓
+**Validation (FASE 3), measured:** adaptive runs use T4 (bisection is T4-only). `validate_adaptive.py`
+gives ZZ error 21.9 % → 18.3 % over 5 cycles; the old "<5 % at cycle 3" claim does not reproduce.
+Refinement is conforming (recursive longest-edge bisection); node/face sets are carried to new meshes.
 
 ### Supported CAE Mesh Formats
 

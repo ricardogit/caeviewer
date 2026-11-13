@@ -1,13 +1,29 @@
-"""Global FEM assembler — K, F matrices and BC application.
+"""Global FEM assembler — K, F and Dirichlet boundary conditions.
 
-FASE 2: full implementation for T4 structural problems.
+FASE 2: vectorised T4/T10 assembly (tet_batch), consistent surface and body
+loads, and Dirichlet BCs by elimination (exact, keeps K well conditioned for
+CG). The penalty variant ``apply_bcs`` is kept for the Newton-Raphson path.
+
+Load entries (one dict per load):
+  * ``node`` + ``force``                      single node, [Fx,Fy,Fz] N
+  * ``node_set`` + ``force``                  total force split equally over the set's nodes
+  * ``node_set`` + ``force_per_node``         force applied to each node
+  * ``face_set`` + ``force``                  total force as uniform traction F/A (consistent)
+  * ``face_set`` + ``pressure``               Pa, positive pushes into the body
+  * ``body_force``: [bx,by,bz] N/m³           over the whole mesh
+  * ``gravity``: [gx,gy,gz] m/s² + ``density`` kg/m³
+``face_set`` may be a name or a list of names (several CAD faces = one load).
+
+BC entries: ``node_set`` or ``face_set`` (name or list), ``dofs`` [0,1,2], ``values``.
 """
 from __future__ import annotations
+
 import logging
+
 import numpy as np
 import scipy.sparse as sp
 
-from app.design.services.fem.elements import t4_stiffness
+from app.design.services.fem import tet_batch as tb
 from app.design.services.fem.mesh import FEMMesh
 
 logger = logging.getLogger(__name__)
@@ -20,146 +36,133 @@ PHYSICS_DOFS = {
     'electromagnetic': 4,
 }
 
-PENALTY = 1.0e30   # penalty stiffness for Dirichlet BCs
+PENALTY = 1.0e30   # penalty stiffness for Dirichlet BCs (Newton-Raphson path only)
+CHUNK = 20_000     # elements per vectorised block (bounds memory: T10 Ke = 900 doubles each)
+
+
+class BoundaryConditionError(ValueError):
+    """A BC/load references a set that does not exist or is empty."""
+
+
+def _names(v) -> list:
+    return list(v) if isinstance(v, (list, tuple)) else [v]
 
 
 def assemble_K(mesh: FEMMesh, D: np.ndarray) -> sp.csr_matrix:
-    """Assemble global stiffness matrix K using COO format.
-
-    Args:
-        mesh: FEMMesh with T4 elements.
-        D:    (6, 6) constitutive matrix.
-
-    Returns:
-        K: (n_dof, n_dof) sparse CSR matrix.
-    """
+    """Global stiffness (n_dof × n_dof, CSR) for T4 or T10 meshes."""
     n_dof = mesh.n_dof_structural
-    n_elem = mesh.n_elements
-    nnz = n_elem * 144          # each T4 contributes 12×12 = 144 entries
-
-    rows = np.empty(nnz, dtype=np.int32)
-    cols = np.empty(nnz, dtype=np.int32)
-    vals = np.zeros(nnz,  dtype=np.float64)
-
-    ptr = 0
-    for el in mesh.elements:
-        coords = mesh.nodes[el]                          # (4, 3)
-        Ke = t4_stiffness(coords, D)                     # (12, 12)
-
-        dofs = np.array([3*n + d for n in el for d in range(3)], dtype=np.int32)  # (12,)
-
-        I = np.repeat(dofs, 12)                          # (144,)
-        J = np.tile(dofs, 12)                            # (144,)
-        rows[ptr:ptr+144] = I
-        cols[ptr:ptr+144] = J
-        vals[ptr:ptr+144] = Ke.flatten()
-        ptr += 144
-
-    K = sp.coo_matrix((vals, (rows, cols)), shape=(n_dof, n_dof))
-    return K.tocsr()
+    K = sp.csr_matrix((n_dof, n_dof))
+    for a in range(0, mesh.n_elements, CHUNK):
+        el = mesh.elements[a:a + CHUNK]
+        Ke = tb.stiffness_batch(mesh.nodes, el, D)                  # (m, nd, nd)
+        dofs = tb.element_dofs(el)                                  # (m, nd)
+        nd = dofs.shape[1]
+        rows = np.repeat(dofs, nd, axis=1).ravel()
+        cols = np.tile(dofs, (1, nd)).ravel()
+        K = K + sp.csr_matrix((Ke.ravel(), (rows, cols)), shape=(n_dof, n_dof))
+    return K
 
 
-def assemble_F(mesh: FEMMesh, loads: list) -> np.ndarray:
-    """Assemble global load vector F.
+def _face_tris(mesh: FEMMesh, names) -> np.ndarray:
+    parts = []
+    for n in _names(names):
+        t = mesh.face_sets.get(n)
+        if t is None or not len(t):
+            raise BoundaryConditionError(f"Conjunto de caras '{n}' inexistente o vacío en la malla.")
+        parts.append(t)
+    return np.concatenate(parts)
 
-    Each load spec is a dict with ONE of:
-      - 'node_set' + 'force_per_node': [fx, fy, fz]  (applied equally to each node)
-      - 'node_set' + 'force':          [fx, fy, fz]  (total, distributed over set)
-      - 'node'    + 'force':           [fx, fy, fz]  (single node)
-      - (Phase 3/4) 'geometry_id': geometry to which this load applies
 
-    Returns:
-        F: (n_dof,) load vector.
+def _node_set(mesh: FEMMesh, names) -> np.ndarray:
+    parts = []
+    for n in _names(names):
+        v = mesh.node_sets.get(n)
+        if v is None or not len(v):
+            raise BoundaryConditionError(f"Conjunto de nodos '{n}' inexistente o vacío en la malla.")
+        parts.append(np.asarray(v, dtype=np.int64))
+    return np.unique(np.concatenate(parts))
 
-    Note (Phase 3-4):
-        Load specs may include 'geometry_id' for multi-geometry scoping (Phase 4 feature).
-        Currently, loads are applied globally to all nodes in the node_set,
-        regardless of geometry_id. True geometry scoping requires FEMMesh multi-geometry
-        support, planned for Phase 4 (multi-part assembly solving).
-    """
-    F = np.zeros(mesh.n_dof_structural, dtype=np.float64)
 
-    for load in loads:
-        f = np.array(load.get('force', load.get('force_per_node', [0.0, 0.0, 0.0])),
-                     dtype=np.float64)
+def assemble_F(mesh: FEMMesh, loads: list, info: list | None = None) -> np.ndarray:
+    """Global load vector. ``info`` (optional list) receives one summary per load."""
+    n_dof = mesh.n_dof_structural
+    F = np.zeros(n_dof, dtype=np.float64)
 
-        # TODO (Phase 4): Implement geometry_id filtering
-        # geom_id = load.get('geometry_id')
-        # geometry_filter = None
-        # if geom_id and hasattr(mesh, 'geometry_map'):
-        #     geometry_filter = set(mesh.geometry_map.get(geom_id, []))
-
-        if 'node' in load:
-            n = int(load['node'])
-            F[3*n : 3*n+3] += f
-
-        elif 'node_set' in load:
-            nodes = mesh.node_sets.get(load['node_set'], [])
-            if not nodes:
-                logger.warning(f"Node set '{load['node_set']}' is empty or missing.")
-                continue
-
-            # Filter by geometry if specified (Phase 4 feature)
-            # if geometry_filter:
-            #     nodes = [n for n in nodes if n in geometry_filter]
-
-            if 'force' in load and 'force_per_node' not in load:
-                f_per = f / len(nodes) if nodes else f
+    for i, load in enumerate(loads):
+        Fi = np.zeros(n_dof)
+        meta = {'index': i, 'label': load.get('label')}
+        if 'face_set' in load:
+            tris = _face_tris(mesh, load['face_set'])
+            Fi, area = tb.surface_load(mesh.nodes, mesh.elements, tris, n_dof,
+                                       total_force=load.get('force'), pressure=load.get('pressure'))
+            meta['area_m2'] = area
+        elif 'body_force' in load or 'gravity' in load:
+            if 'body_force' in load:
+                b = np.asarray(load['body_force'], float)
             else:
-                f_per = f
-            for n in nodes:
-                F[3*n : 3*n+3] += f_per
-
+                b = float(load.get('density', 0.0)) * np.asarray(load['gravity'], float)
+            Fi = tb.body_load(mesh.nodes, mesh.elements, b, n_dof)
+        elif 'node' in load:
+            n = int(load['node'])
+            Fi[3 * n:3 * n + 3] = np.asarray(load.get('force', [0, 0, 0]), float)
+        elif 'node_set' in load:
+            nodes = _node_set(mesh, load['node_set'])
+            f = np.asarray(load.get('force', load.get('force_per_node', [0.0, 0.0, 0.0])), float)
+            f_per = f / len(nodes) if ('force' in load and 'force_per_node' not in load) else f
+            for c in range(3):
+                Fi[3 * nodes + c] += f_per[c]
+        else:
+            raise BoundaryConditionError(f'Carga {i} sin destino (face_set, node_set, node o body_force).')
+        meta['resultant_N'] = [float(Fi[c::3].sum()) for c in range(3)]
+        F += Fi
+        if info is not None:
+            info.append(meta)
     return F
+
+
+def dirichlet(mesh: FEMMesh, bcs: list) -> tuple[np.ndarray, np.ndarray]:
+    """Prescribed (dofs, values) from BC entries; later entries win on overlap."""
+    presc: dict[int, float] = {}
+    for bc in bcs:
+        if 'face_set' in bc:
+            nodes = np.unique(_face_tris(mesh, bc['face_set']))
+        else:
+            nodes = _node_set(mesh, bc.get('node_set', ''))
+        offs = [int(d) for d in bc.get('dofs', [0, 1, 2]) if int(d) in (0, 1, 2)]
+        vals = bc.get('values', [0.0] * len(offs))
+        if len(vals) < len(offs):
+            vals = list(vals) + [0.0] * (len(offs) - len(vals))
+        for d, v in zip(offs, vals):
+            for n in nodes:
+                presc[3 * int(n) + d] = float(v)
+    dofs = np.fromiter(presc.keys(), dtype=np.int64, count=len(presc))
+    vals = np.fromiter(presc.values(), dtype=np.float64, count=len(presc))
+    order = np.argsort(dofs)
+    return dofs[order], vals[order]
+
+
+def reduce_system(K: sp.csr_matrix, F: np.ndarray, dofs: np.ndarray, vals: np.ndarray):
+    """Eliminate prescribed DOFs: K_ff u_f = F_f - K_fc u_c. Returns (K_ff, rhs, free)."""
+    n = K.shape[0]
+    mask = np.ones(n, dtype=bool)
+    mask[dofs] = False
+    free = np.flatnonzero(mask)
+    Kf = K[free][:, free].tocsr()
+    rhs = F[free]
+    if len(dofs) and np.any(vals != 0):
+        rhs = rhs - K[free][:, dofs] @ vals
+    return Kf, rhs, free
 
 
 def apply_bcs(K: sp.csr_matrix, F: np.ndarray,
               bcs: list, mesh: FEMMesh) -> tuple[sp.csr_matrix, np.ndarray]:
-    """Apply Dirichlet boundary conditions via the penalty method.
-
-    Args:
-        K:    (n_dof, n_dof) stiffness matrix.
-        F:    (n_dof,) load vector.
-        bcs:  list of dicts with keys:
-                'node_set': str name in mesh.node_sets
-                'dofs':     list of DOF offsets [0,1,2] for ux,uy,uz (default all 3)
-                'values':   prescribed values (default 0.0 for each dof)
-                'geometry_id': (Phase 3/4) geometry to which this BC applies
-        mesh: FEMMesh providing node_sets.
-
-    Returns:
-        (K_mod, F_mod): modified stiffness and load vector.
-
-    Note (Phase 3-4):
-        BC specs may include 'geometry_id' for multi-geometry scoping (Phase 4 feature).
-        Currently, BCs are applied globally to all nodes in the node_set,
-        regardless of geometry_id. True geometry scoping requires FEMMesh multi-geometry
-        support, planned for Phase 4 (multi-part assembly solving).
-    """
-    K_lil = K.tolil()
+    """Dirichlet BCs via the penalty method (K_ii += P, F_i = v·P). Newton-Raphson path."""
+    dofs, vals = dirichlet(mesh, bcs)
+    diag = np.zeros(K.shape[0])
+    diag[dofs] = PENALTY
     F = F.copy()
-
-    for bc in bcs:
-        # TODO (Phase 4): Implement geometry_id filtering
-        # geom_id = bc.get('geometry_id')
-        # if geom_id and hasattr(mesh, 'geometry_map'):
-        #     geom_nodes = set(mesh.geometry_map.get(geom_id, []))
-        #     nodes = [n for n in mesh.node_sets.get(bc.get('node_set', ''), [])
-        #              if n in geom_nodes]
-        # else:
-        #     nodes = mesh.node_sets.get(bc.get('node_set', ''), [])
-
-        nodes = mesh.node_sets.get(bc.get('node_set', ''), [])
-        dof_offsets = bc.get('dofs', [0, 1, 2])
-        vals = bc.get('values', [0.0] * len(dof_offsets))
-
-        for n in nodes:
-            for d_off, v in zip(dof_offsets, vals):
-                dof = 3 * n + d_off
-                K_lil[dof, dof] = PENALTY
-                F[dof] = float(v) * PENALTY
-
-    return K_lil.tocsr(), F
+    F[dofs] = vals * PENALTY
+    return (K + sp.diags(diag)).tocsr(), F
 
 
 def get_n_dof(mesh: FEMMesh, physics: list) -> int:

@@ -287,6 +287,35 @@ class DesignGraphService:
                 errors.append({'severity': 'warning', 'node_id': str(gnode.id),
                                'message': f'La geometría "{geo.name}" v{geo.version} aún no está lista ({geo.status}).'})
 
+        # FASE 2: BC/LOAD on CAD faces (persistent entity UUIDs)
+        study_geo = next(((g.properties or {}).get('geometry_id') for g in domain['geometry_nodes']
+                          if (g.properties or {}).get('geometry_id')), None)
+        for n in domain['bc_nodes'] + domain['load_nodes']:
+            ids = (n.properties or {}).get('entity_ids') or []
+            if not ids:
+                continue
+            if not study_geo:
+                errors.append({'severity': 'error', 'node_id': str(n.id),
+                               'message': f'"{n.label}" tiene caras seleccionadas pero ningún GEOMETRY '
+                                          'tiene geometría CAD asignada.'})
+                continue
+            try:
+                from app.geometry.resolve import resolve_faces
+                res = resolve_faces(study_geo, ids)
+            except Exception as e:
+                errors.append({'severity': 'error', 'node_id': str(n.id), 'message': str(e)})
+                continue
+            missing = sum(1 for r in res.values() if r['index'] is None)
+            carried = sum(1 for r in res.values() if r['status'] == 'carried')
+            if missing:
+                errors.append({'severity': 'error', 'node_id': str(n.id),
+                               'message': f'"{n.label}": {missing} de {len(ids)} caras no existen en la '
+                                          'versión actual de la geometría. Vuelve a seleccionarlas.'})
+            elif carried:
+                errors.append({'severity': 'warning', 'node_id': str(n.id),
+                               'message': f'"{n.label}": {carried} caras trasladadas desde otra versión '
+                                          'de la geometría (revísalas).'})
+
         if domain['material_nodes'] and domain['geometry_nodes']:
             if not connected(mat_ids, geom_ids):
                 errors.append({'severity': 'warning', 'node_id': None,

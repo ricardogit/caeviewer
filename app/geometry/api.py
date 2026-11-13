@@ -158,3 +158,19 @@ def reimport(geometry_id):
         return jsonify({'error': f'Importación en curso ({g.status})'}), 409
     job = _enqueue_import(g)
     return jsonify({'geometry': g.to_dict(), 'job_id': str(job.id)}), 202
+
+
+@bp.route('/<uuid:geometry_id>/resolve', methods=['POST'])
+def resolve(geometry_id):
+    """Persistent face IDs (from any version of this part) → face index on this version.
+
+    Body: {"entity_ids": [uuid, ...]} → {"faces": {uuid: {index, status, entity_id}}}
+    """
+    from app.geometry.resolve import resolve_faces
+    ids = (request.get_json(silent=True) or {}).get('entity_ids') or []
+    if not isinstance(ids, list) or len(ids) > 10_000:
+        return jsonify({'error': 'entity_ids debe ser una lista (máx. 10000)'}), 400
+    try:
+        return jsonify({'faces': resolve_faces(geometry_id, ids)})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404

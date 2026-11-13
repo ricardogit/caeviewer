@@ -11,7 +11,7 @@ class SimulationRun(BaseModel):
     graph_id        = Column(UUID(as_uuid=True), ForeignKey('design_graphs.id'), nullable=False)
     graph_version   = Column(Integer, nullable=False)
     # SHA-256 of (graph_state + solver_config + mesh_stats + sw_versions) — unique per run
-    hash            = Column(String(64), unique=True, nullable=False, index=True)
+    hash            = Column(String(64), nullable=False, index=True)   # config hash: repeated runs share it
     # queued | running | done | failed | cancelled
     status          = Column(String(50), default='queued', nullable=False)
     tier            = Column(Integer, nullable=False)

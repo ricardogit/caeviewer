@@ -10,6 +10,8 @@ import {
 import { Close, Delete } from '@mui/icons-material';
 import useDesignStore from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
+import FaceSelector, { useStudyGeometryId } from './FaceSelector';
+import CadGeometryFields from './CadGeometryFields';
 
 const MATERIAL_TYPES = [
   'linear_elastic_isotropic', 'linear_elastic_orthotropic',
@@ -17,8 +19,18 @@ const MATERIAL_TYPES = [
   'fourier_isotropic', 'thermoelastic', 'piezoelectric', 'newtonian_fluid',
 ];
 
-const BC_TYPES = ['fixed', 'pinned', 'roller_x', 'roller_y', 'roller_z', 'symmetry'];
-const LOAD_TYPES = ['force', 'pressure', 'torque', 'gravity', 'thermal_flux'];
+// FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
+const BC_TYPES = [
+  ['fixed', 'Empotrado (UX, UY, UZ)'], ['pinned', 'Articulado (UX, UY, UZ)'],
+  ['roller_x', 'Rodillo: UX = 0'], ['roller_y', 'Rodillo: UY = 0'], ['roller_z', 'Rodillo: UZ = 0'],
+  ['symmetry', 'Simetría (normal = 0)'],
+];
+const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
+const LOAD_TYPES = [
+  ['force', 'Fuerza total sobre caras'], ['pressure', 'Presión normal'], ['gravity', 'Gravedad (peso propio)'],
+  ['torque', 'Par (próximamente)'], ['thermal_flux', 'Flujo térmico (próximamente)'],
+];
+const LOAD_UNITS = { force: ['N', 'kN', 'MN', 'lbf'], pressure: ['Pa', 'kPa', 'MPa', 'GPa', 'psi', 'bar'], gravity: ['m/s²', 'g'] };
 
 export default function NodePanel({ node, graphId, onClose }) {
   const { updateNode, deleteNode } = useDesignStore();
@@ -29,6 +41,7 @@ export default function NodePanel({ node, graphId, onClose }) {
 
   const nodeType = node.data.node_type;
   const color = NODE_COLORS[nodeType] || '#888';
+  const studyGeometryId = useStudyGeometryId();
 
   // Reset when selection changes
   useEffect(() => {
@@ -132,6 +145,8 @@ export default function NodePanel({ node, graphId, onClose }) {
 
         {nodeType === 'GEOMETRY' && (
           <>
+            <CadGeometryFields props={props} setProp={setProp} />
+            <Divider sx={{ borderColor: '#333' }} />
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Tipo de representación</InputLabel>
               <Select
@@ -220,59 +235,57 @@ export default function NodePanel({ node, graphId, onClose }) {
               <InputLabel sx={{ color: '#888' }}>Tipo de BC</InputLabel>
               <Select
                 value={props.bc_type || 'fixed'}
-                onChange={e => setProp('bc_type', e.target.value)}
+                onChange={e => {
+                  setProp('bc_type', e.target.value);
+                  setProp('dofs', BC_DEFAULT_DOFS[e.target.value]);
+                }}
                 label="Tipo de BC"
                 sx={{ color: '#fff' }}
               >
-                {BC_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                {BC_TYPES.map(([t, lbl]) => <MenuItem key={t} value={t}>{lbl}</MenuItem>)}
               </Select>
             </FormControl>
-            <TextField
-              label="Nombre del conjunto de nodos (node_set)"
-              size="small" fullWidth
-              value={props.node_set || ''}
-              onChange={e => setProp('node_set', e.target.value)}
-              placeholder="ej: fixed_base"
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <Box>
-              <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
-                Grados de libertad restringidos:
-              </Typography>
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 }}>
-                {[['UX', 0], ['UY', 1], ['UZ', 2], ['RX', 3], ['RY', 4], ['RZ', 5]].map(([lbl, idx]) => {
-                  const dofs = props.dofs || [];
-                  const checked = dofs.includes(idx);
-                  return (
-                    <Box
-                      key={lbl}
-                      onClick={() => {
-                        const newDofs = checked ? dofs.filter(d => d !== idx) : [...dofs, idx].sort();
-                        setProp('dofs', newDofs);
-                      }}
-                      sx={{
-                        p: 0.5,
-                        border: `1px solid ${checked ? '#4caf50' : '#555'}`,
-                        borderRadius: 0.5,
-                        cursor: 'pointer',
-                        bgcolor: checked ? '#1b5e20' : '#222',
-                        color: checked ? '#81c784' : '#888',
-                        fontSize: 12,
-                        textAlign: 'center',
-                        fontWeight: checked ? 700 : 400,
-                        transition: 'all 0.15s',
-                        '&:hover': { bgcolor: checked ? '#2e7d32' : '#333' },
-                      }}
-                    >
-                      {lbl}
-                    </Box>
-                  );
-                })}
+            <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)}
+              required={props.bc_type === 'symmetry'} />
+            {props.bc_type !== 'symmetry' && (
+              <Box>
+                <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
+                  Desplazamientos restringidos:
+                </Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 0.5 }}>
+                  {[['UX', 0], ['UY', 1], ['UZ', 2]].map(([lbl, idx]) => {
+                    const dofs = props.dofs || BC_DEFAULT_DOFS[props.bc_type || 'fixed'] || [0, 1, 2];
+                    const checked = dofs.includes(idx);
+                    return (
+                      <Box
+                        key={lbl}
+                        onClick={() => {
+                          const newDofs = checked ? dofs.filter(d => d !== idx) : [...dofs, idx].sort();
+                          setProp('dofs', newDofs);
+                        }}
+                        sx={{
+                          p: 0.5,
+                          border: `1px solid ${checked ? '#4caf50' : '#555'}`,
+                          borderRadius: 0.5,
+                          cursor: 'pointer',
+                          bgcolor: checked ? '#1b5e20' : '#222',
+                          color: checked ? '#81c784' : '#888',
+                          fontSize: 12,
+                          textAlign: 'center',
+                          fontWeight: checked ? 700 : 400,
+                          transition: 'all 0.15s',
+                          '&:hover': { bgcolor: checked ? '#2e7d32' : '#333' },
+                        }}
+                      >
+                        {lbl}
+                      </Box>
+                    );
+                  })}
+                </Box>
               </Box>
-            </Box>
+            )}
             <TextField
-              label="Valor prescrito (displacement)"
+              label="Desplazamiento prescrito [m]"
               size="small" fullWidth type="number"
               value={props.value ?? 0}
               onChange={e => setProp('value', parseFloat(e.target.value))}
@@ -280,78 +293,104 @@ export default function NodePanel({ node, graphId, onClose }) {
               inputProps={{ style: { color: '#fff' } }}
               InputLabelProps={{ style: { color: '#888' } }}
             />
-            <TextField
-              label="Descripción / superficie"
-              size="small" fullWidth
-              value={props.surface_label || ''}
-              onChange={e => setProp('surface_label', e.target.value)}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
+            {!studyGeometryId && (
+              <TextField
+                label="Conjunto de nodos (malla CAE / viga de prueba)"
+                size="small" fullWidth
+                value={props.node_set || ''}
+                onChange={e => setProp('node_set', e.target.value)}
+                placeholder="ej: fixed"
+                inputProps={{ style: { color: '#fff' } }}
+                InputLabelProps={{ style: { color: '#888' } }}
+              />
+            )}
           </>
         )}
 
-        {nodeType === 'LOAD' && (
-          <>
-            <FormControl size="small" fullWidth>
-              <InputLabel sx={{ color: '#888' }}>Tipo de carga</InputLabel>
-              <Select
-                value={props.load_type || 'force'}
-                onChange={e => setProp('load_type', e.target.value)}
-                label="Tipo de carga"
-                sx={{ color: '#fff' }}
-              >
-                {LOAD_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
-              </Select>
-            </FormControl>
-            <TextField
-              label="Nombre del conjunto de nodos (node_set)"
-              size="small" fullWidth
-              value={props.node_set || ''}
-              onChange={e => setProp('node_set', e.target.value)}
-              placeholder="ej: tip"
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <TextField
-              label="Magnitud"
-              size="small" fullWidth type="number"
-              value={props.magnitude ?? 0}
-              onChange={e => setProp('magnitude', parseFloat(e.target.value))}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <TextField
-              label="Unidad"
-              size="small" fullWidth
-              value={props.unit || 'N'}
-              onChange={e => setProp('unit', e.target.value)}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              {['dir_x', 'dir_y', 'dir_z'].map((k, i) => (
+        {nodeType === 'LOAD' && (() => {
+          const lt = props.load_type || 'force';
+          const units = LOAD_UNITS[lt] || ['N'];
+          const unit = units.includes(props.unit) ? props.unit : units[0];
+          const dir = [props.dir_x ?? 0, props.dir_y ?? 0, props.dir_z ?? -1];
+          const n = Math.hypot(...dir) || 1;
+          return (
+            <>
+              <FormControl size="small" fullWidth>
+                <InputLabel sx={{ color: '#888' }}>Tipo de carga</InputLabel>
+                <Select
+                  value={lt}
+                  onChange={e => { setProp('load_type', e.target.value); setProp('unit', (LOAD_UNITS[e.target.value] || ['N'])[0]); }}
+                  label="Tipo de carga"
+                  sx={{ color: '#fff' }}
+                >
+                  {LOAD_TYPES.map(([t, lbl]) => (
+                    <MenuItem key={t} value={t} disabled={!LOAD_UNITS[t]}>{lbl}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {lt !== 'gravity' && (
+                <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)}
+                  required={lt === 'pressure'} />
+              )}
+              <Box sx={{ display: 'flex', gap: 1 }}>
                 <TextField
-                  key={k} label={['Dx', 'Dy', 'Dz'][i]}
-                  size="small" type="number"
-                  value={props[k] ?? [0, 0, -1][i]}
-                  onChange={e => setProp(k, parseFloat(e.target.value))}
-                  inputProps={{ style: { color: '#fff', fontSize: 12 } }}
-                  InputLabelProps={{ style: { color: '#888', fontSize: 12 } }}
-                  sx={{ flex: 1 }}
+                  label={lt === 'gravity' ? 'Aceleración' : lt === 'pressure' ? 'Presión' : 'Fuerza total'}
+                  size="small" type="number" sx={{ flex: 2 }}
+                  value={props.magnitude ?? (lt === 'gravity' ? 9.80665 : 0)}
+                  onChange={e => setProp('magnitude', parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
                 />
-              ))}
-            </Box>
-            <Box sx={{ bgcolor: '#1b3a1b', border: '1px solid #2e7d32', borderRadius: 0.5, p: 1 }}>
-              <Typography variant="caption" sx={{ color: '#81c784', fontSize: 11 }}>
-                Vector de fuerza:
-              </Typography>
-              <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', display: 'block', fontSize: 10, mt: 0.25 }}>
-                F = [{((props.magnitude ?? 0) * (props.dir_x ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_y ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_z ?? -1)).toFixed(1)}]
-              </Typography>
-            </Box>
-          </>
-        )}
+                <FormControl size="small" sx={{ flex: 1 }}>
+                  <InputLabel sx={{ color: '#888' }}>Unidad</InputLabel>
+                  <Select value={unit} label="Unidad" onChange={e => setProp('unit', e.target.value)} sx={{ color: '#fff' }}>
+                    {units.map(u => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  </Select>
+                </FormControl>
+              </Box>
+              {lt === 'pressure' ? (
+                <Typography variant="caption" sx={{ color: '#888' }}>
+                  Normal a cada cara; positiva empuja hacia el interior del sólido.
+                </Typography>
+              ) : (
+                <>
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    {['dir_x', 'dir_y', 'dir_z'].map((k, i) => (
+                      <TextField
+                        key={k} label={['Dx', 'Dy', 'Dz'][i]}
+                        size="small" type="number"
+                        value={props[k] ?? [0, 0, -1][i]}
+                        onChange={e => setProp(k, parseFloat(e.target.value))}
+                        inputProps={{ style: { color: '#fff', fontSize: 12 } }}
+                        InputLabelProps={{ style: { color: '#888', fontSize: 12 } }}
+                        sx={{ flex: 1 }}
+                      />
+                    ))}
+                  </Box>
+                  <Box sx={{ bgcolor: '#1b3a1b', border: '1px solid #2e7d32', borderRadius: 0.5, p: 1 }}>
+                    <Typography variant="caption" sx={{ color: '#81c784', fontSize: 11 }}>
+                      {lt === 'gravity' ? 'Aceleración' : 'Fuerza total (repartida por área)'}:
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', display: 'block', fontSize: 10, mt: 0.25 }}>
+                      [{dir.map(d => (((props.magnitude ?? (lt === 'gravity' ? 9.80665 : 0)) * d) / n).toFixed(2)).join(', ')}] {unit}
+                    </Typography>
+                  </Box>
+                </>
+              )}
+              {!studyGeometryId && lt === 'force' && (
+                <TextField
+                  label="Conjunto de nodos (malla CAE / viga de prueba)"
+                  size="small" fullWidth
+                  value={props.node_set || ''}
+                  onChange={e => setProp('node_set', e.target.value)}
+                  placeholder="ej: tip"
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+              )}
+            </>
+          );
+        })()}
 
         {nodeType === 'RESULT' && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>

@@ -1,7 +1,7 @@
 """FEM Kernel — orchestrates the complete simulation pipeline.
 
 FASE 2 full implementation:
-  1. Build FEMMesh from spec (inline / cantilever / graph / cae mesh)
+  1. Build FEMMesh from spec (inline / cantilever / graph / cae mesh / CAD geometry)
   2. Build constitutive model and D matrix
   3. Assemble K, F
   4. Apply BCs
@@ -19,11 +19,13 @@ import time
 
 import numpy as np
 
-from app.design.services.fem.assembler import assemble_K, assemble_F, apply_bcs
+from app.design.services.fem import tet_batch as tb
+from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs, dirichlet,
+                                               reduce_system)
 from app.design.services.fem.constitutive import build_material
-from app.design.services.fem.elements import t4_stress, von_mises
 from app.design.services.fem.mesh import FEMMesh
-from app.design.services.fem.solver import FEMSolverDispatcher, check_tier_limits, TierLimitExceeded
+from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
+                                            rigid_body_modes)
 from app.design.services.fem.error_estimator import compute_error_indicators, mark_elements_for_refinement, compute_global_error
 from app.design.services.fem.mesh_adaptivity import refine_marked_elements_bisection
 
@@ -84,6 +86,8 @@ class FEMKernel:
         """
         adaptive_log = []
         mesh_spec = solver_spec.copy()
+        # ZZ estimator and longest-edge bisection are T4-only: force linear elements.
+        mesh_spec['mesh_params'] = {**(solver_spec.get('mesh_params') or {}), 'order': 1}
         cycle = 0
 
         for cycle in range(max_cycles):
@@ -122,28 +126,54 @@ class FEMKernel:
             n_marked = np.sum(mark_refine)
             logger.info(f"Refining {n_marked} elements ({100*n_marked/len(error_indicators):.1f}%)")
 
-            nodes_new, elements_new = refine_marked_elements_bisection(
-                mesh.nodes, mesh.elements, mark_refine)
+            nodes_new, elements_new, mids = refine_marked_elements_bisection(
+                mesh.nodes, mesh.elements, mark_refine, return_midpoints=True)
+
+            # Carry node/face sets to the refined mesh: a midpoint joins a set when
+            # both edge ends belong to it; face sets are rebuilt from the boundary
+            # triangles whose corners are all in the (extended) set.
+            from app.design.services.fem.tet_batch import boundary_faces
+            ext_sets = {}
+            for name, ids in mesh.node_sets.items():
+                members = set(int(i) for i in ids)
+                members |= {m for (a, b), m in mids.items() if a in members and b in members}
+                ext_sets[name] = np.array(sorted(members), dtype=np.int64)
+            bfaces = boundary_faces(np.asarray(elements_new))
+            face_sets_new = {}
+            for name in mesh.face_sets:
+                members = np.zeros(len(nodes_new), dtype=bool)
+                members[ext_sets[name]] = True
+                face_sets_new[name] = bfaces[members[bfaces].all(axis=1)]
 
             # Update spec for next cycle
             mesh_spec = solver_spec.copy()
             mesh_spec['mesh_source'] = 'inline'
             mesh_spec['nodes'] = nodes_new
             mesh_spec['elements'] = elements_new
-            mesh_spec['element_type'] = 'T4'
+            mesh_spec['node_sets'] = ext_sets
+            mesh_spec['face_sets'] = face_sets_new
 
         result['adaptive_log'] = adaptive_log
         return result
 
     # ── Core pipeline ─────────────────────────────────────────────────────────
 
+    def _emit(self, socketio, run_id, pct, status, t_start, **extra):
+        if socketio and run_id:
+            socketio.emit('solver_progress', {
+                'run_id': run_id, 'iter': extra.pop('iter', 0), 'percent': pct, 'status': status,
+                'wall_time': time.perf_counter() - t_start, **extra,
+            }, room=run_id)
+
     def _solve(self, run_id, solver_spec: dict, socketio) -> dict:
         t_start = time.perf_counter()
 
         # 1. Build mesh
-        mesh = self._build_mesh(solver_spec)
+        self._emit(socketio, run_id, 2, 'building mesh', t_start)
+        mesh, mesh_meta = self._build_mesh(solver_spec, progress=lambda m: self._emit(
+            socketio, run_id, 3, m, t_start))
 
-        # 2. Tier check
+        # 2. Tier check (exact, after meshing)
         tier = int(solver_spec.get('tier', mesh.estimate_tier()))
         check_tier_limits(mesh.n_nodes, mesh.n_elements, mesh.n_dof_structural, tier)
 
@@ -155,86 +185,114 @@ class FEMKernel:
         D = material.get_D_matrix()
         is_linear = material.is_linear()
 
-        # Emit mesh info
-        if socketio and run_id:
-            socketio.emit('solver_progress', {
-                'run_id': run_id, 'iter': 0, 'percent': 5,
-                'status': f'mesh built: {mesh.n_nodes:,} nodes, {mesh.n_elements:,} elements',
-                'wall_time': time.perf_counter() - t_start,
-            }, room=run_id)
+        self._emit(socketio, run_id, 5, f'mesh built: {mesh.n_nodes:,} nodes, '
+                   f'{mesh.n_elements:,} {mesh.element_type} elements', t_start)
 
         # 4. Assemble K and F
-        logger.info(f"Assembling K ({mesh.n_dof_structural:,} DOF)...")
+        logger.info(f"Assembling K ({mesh.n_dof_structural:,} DOF, {mesh.element_type})...")
+        t_asm = time.perf_counter()
         K = assemble_K(mesh, D)
-
         bcs = solver_spec.get('bcs', [])
-        loads = solver_spec.get('loads', [])
-        F = assemble_F(mesh, loads)
+        rho = float(mat_spec.get('rho', 0.0) or 0.0)
+        loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld)
+                 for ld in solver_spec.get('loads', [])]
+        load_info: list = []
+        F = assemble_F(mesh, loads, load_info)
+        t_asm = time.perf_counter() - t_asm
+        self._emit(socketio, run_id, 30, 'assembly complete, applying BCs', t_start)
 
-        if socketio and run_id:
-            socketio.emit('solver_progress', {
-                'run_id': run_id, 'iter': 0, 'percent': 30,
-                'status': 'assembly complete, applying BCs',
-                'wall_time': time.perf_counter() - t_start,
-            }, room=run_id)
-
-        # 5. Apply BCs
-        K, F = apply_bcs(K, F, bcs, mesh)
-
-        # 6. Solve
+        # 5-6. BCs + solve
         solver = FEMSolverDispatcher()
         tol = float(solver_spec.get('tolerance', 1e-8))
-        max_iter = int(solver_spec.get('max_iterations', 1000))
+        max_iter = solver_spec.get('max_iterations')
 
         def progress_cb(it, res):
-            if socketio and run_id:
-                pct = min(95, 35 + int(60 * it / max_iter))
-                solver.stream_progress(socketio, run_id, it, res,
-                                       time.perf_counter() - t_start, pct)
+            pct = min(95, 35 + int(55 * min(1.0, np.log10(max(res, 1e-300)) / np.log10(tol)))) \
+                if res > 0 else 95
+            self._emit(socketio, run_id, pct, f'CG iter {it}', t_start, iter=it, residual=res)
 
-        u, solve_info = solver.solve(K, F, tier=tier, is_linear=is_linear,
-                                     tol=tol, max_iter=max_iter,
-                                     progress_cb=progress_cb)
+        dofs, vals = dirichlet(mesh, bcs)
+        if not len(dofs):
+            raise ValueError('Sin condiciones de frontera: el sistema es singular (movimiento de '
+                             'cuerpo rígido). Agrega al menos un nodo BC.')
+        if is_linear:
+            Kf, rhs, free = reduce_system(K, F, dofs, vals)
+            B = rigid_body_modes(mesh.nodes)[free]
+            uf, solve_info = solver.solve_linear(Kf, rhs, tier=tier, tol=tol,
+                                                 max_iter=int(max_iter) if max_iter else None,
+                                                 progress_cb=progress_cb, near_nullspace=B)
+            u = np.zeros(mesh.n_dof_structural)
+            u[free] = uf
+            u[dofs] = vals
+        else:
+            Kp, Fp = apply_bcs(K, F, bcs, mesh)
+            u, solve_info = solver.solve(Kp, Fp, tier=tier, is_linear=False, tol=tol,
+                                         max_iter=int(max_iter or 50), progress_cb=progress_cb)
+        if not solve_info.get('converged', False):
+            logger.warning('Solver did not converge: %s', solve_info)
 
-        logger.info(f"Solve done: {solve_info['method']}, "
-                    f"converged={solve_info['converged']}, "
-                    f"wall={solve_info['wall_time']:.2f}s")
+        # equilibrium check: reactions at constrained DOFs must balance the applied loads
+        R = K @ u - F
+        reaction = [float(R[c::3][dofs[dofs % 3 == c] // 3].sum()) for c in range(3)]
+        applied = [float(F[c::3].sum()) for c in range(3)]
+        scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        equilibrium_error = float(np.abs(np.add(reaction, applied)).max() / scale)
+        solve_info['assembly_s'] = round(t_asm, 3)
+
+        logger.info(f"Solve done: {solve_info['method']}, converged={solve_info['converged']}, "
+                    f"wall={solve_info['wall_time']:.2f}s, equilibrium={equilibrium_error:.2e}")
 
         # 7. Post-processing
         results = self._postprocess(mesh, D, u, solve_info, t_start)
         results['mesh'] = mesh
+        s = results['summary']
+        s.update({
+            'element_type': mesh.element_type,
+            'applied_load_N': applied,
+            'reaction_N': reaction,
+            'equilibrium_error': equilibrium_error,
+            'loads': load_info,
+            'n_constrained_dofs': int(len(dofs)),
+            'tier': tier,
+        })
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return results
 
     # ── Mesh builder ──────────────────────────────────────────────────────────
 
-    def _build_mesh(self, spec: dict) -> FEMMesh:
+    def _build_mesh(self, spec: dict, progress=None) -> tuple[FEMMesh, dict]:
         source = spec.get('mesh_source', 'inline')
+        p = spec.get('mesh_params') or {}
+        order = int(p.get('order', spec.get('element_order', 1)))
 
         if source == 'cantilever':
-            p = spec.get('mesh_params', {})
             return FEMMesh.generate_cantilever(
                 length=float(p.get('length', 0.050)),
                 width=float(p.get('width', 0.010)),
                 height=float(p.get('height', 0.010)),
                 n_along_length=int(p.get('n_along_length', 12)),
-            )
+                order=order,
+            ), {}
 
-        elif source == 'cae_mesh':
-            return FEMMesh.from_cae_mesh_id(spec['mesh_id'])
+        if source == 'geometry':
+            from app.design.services.fem.cad_mesh import mesh_geometry
+            return mesh_geometry(spec['geometry_id'], mesh_size=p.get('mesh_size'),
+                                 order=int(p.get('order', 2)), progress=progress)
 
-        elif source == 'graph':
-            return self._build_mesh_from_graph(spec['graph_id'])
+        if source == 'cae_mesh':
+            return FEMMesh.from_cae_mesh_id(spec['mesh_id']), {}
 
-        else:  # 'inline'
-            nodes = spec.get('nodes')
-            elements = spec.get('elements')
-            if nodes is None or elements is None:
-                raise ValueError("Inline mesh requires 'nodes' and 'elements' in spec.")
-            return FEMMesh.from_inline(
-                nodes, elements,
-                element_type=spec.get('element_type', 'T4'),
-                node_sets=spec.get('node_sets', {}),
-            )
+        if source == 'graph':
+            return self._build_mesh_from_graph(spec['graph_id']), {}
+
+        # 'inline'
+        nodes = spec.get('nodes')
+        elements = spec.get('elements')
+        if nodes is None or elements is None:
+            raise ValueError("Inline mesh requires 'nodes' and 'elements' in spec.")
+        return FEMMesh.from_inline(nodes, elements, node_sets=spec.get('node_sets', {}),
+                                   face_sets=spec.get('face_sets')), {}
 
     def _build_mesh_from_graph(self, graph_id: str) -> FEMMesh:
         """Extract mesh from the design graph's GEOMETRY node."""
@@ -248,49 +306,28 @@ class FEMKernel:
             raise ValueError(f"No GEOMETRY node found in graph {graph_id}. "
                              "Add a geometry node first.")
 
-        geom_node = geom_nodes[0]
-        props = geom_node.properties or {}
-
+        props = geom_nodes[0].properties or {}
         if 'mesh_id' in props:
             return FEMMesh.from_cae_mesh_id(props['mesh_id'])
 
         # Fall back to cantilever if no mesh attached (useful during dev)
-        logger.warning(f"GEOMETRY node has no mesh_id. Generating default cantilever.")
+        logger.warning("GEOMETRY node has no mesh_id. Generating default cantilever.")
         return FEMMesh.generate_cantilever()
 
     # ── Post-processing ───────────────────────────────────────────────────────
 
     def _postprocess(self, mesh: FEMMesh, D: np.ndarray,
                      u: np.ndarray, solve_info: dict, t_start: float) -> dict:
-        """Compute displacement and stress fields from the solution vector."""
-
-        # Displacement field: reshape (n_nodes, 3)
+        """Displacement and stress fields (vectorised, T4 and T10)."""
         disp = u.reshape(-1, 3)
         disp_mag = np.linalg.norm(disp, axis=1)
-        max_disp = float(disp_mag.max())
+        max_disp = float(disp_mag.max()) if len(disp_mag) else 0.0
 
-        # Element stresses and Von Mises
-        el_von_mises = np.zeros(mesh.n_elements, dtype=np.float64)
-        el_sigma = np.zeros((mesh.n_elements, 6), dtype=np.float64)
-
-        for i, el in enumerate(mesh.elements):
-            u_e = u[np.array([3*n + d for n in el for d in range(3)])]
-            coords = mesh.nodes[el]
-            sigma = t4_stress(coords, D, u_e)
-            el_sigma[i] = sigma
-            el_von_mises[i] = von_mises(sigma)
-
-        max_vm = float(el_von_mises.max())
-
-        # Nodal Von Mises (average of adjacent elements)
-        node_vm = np.zeros(mesh.n_nodes)
-        node_count = np.zeros(mesh.n_nodes)
-        for i, el in enumerate(mesh.elements):
-            for n in el:
-                node_vm[n] += el_von_mises[i]
-                node_count[n] += 1
-        with np.errstate(invalid='ignore'):
-            node_vm = np.where(node_count > 0, node_vm / node_count, 0.0)
+        el_sigma, nodal_sigma = tb.nodal_stress(mesh.nodes, mesh.elements, u, D)
+        el_von_mises = tb.von_mises_v(el_sigma)
+        node_vm = tb.von_mises_v(nodal_sigma)
+        max_vm = float(el_von_mises.max()) if len(el_von_mises) else 0.0
+        max_vm_nodal = float(node_vm.max()) if len(node_vm) else 0.0
 
         wall_total = time.perf_counter() - t_start
 
@@ -309,6 +346,7 @@ class FEMKernel:
                 'max_displacement_mm': round(max_disp * 1000, 6),
                 'max_von_mises_pa': max_vm,
                 'max_von_mises_mpa': round(max_vm / 1e6, 4),
+                'max_von_mises_nodal_mpa': round(max_vm_nodal / 1e6, 4),
                 'n_nodes': mesh.n_nodes,
                 'n_elements': mesh.n_elements,
                 'n_dof': mesh.n_dof_structural,
@@ -357,6 +395,10 @@ class FEMKernel:
             f.attrs['max_displacement_m'] = result['summary']['max_displacement_m']
             f.attrs['max_von_mises_pa']   = result['summary']['max_von_mises_pa']
             f.attrs['converged']           = int(result['summary']['converged'])
+            f.attrs['element_type']        = result['summary'].get('element_type', 'T4')
+            import json as _json
+            f.attrs['summary_json'] = _json.dumps(
+                {k: v for k, v in result['summary'].items()}, default=float)
 
         logger.info(f"Results saved to {path}")
         return path
@@ -375,6 +417,8 @@ class FEMKernel:
             if not run:
                 return
             run.status = status
+            if error:
+                run.mesh_stats = {**(run.mesh_stats or {}), 'error': str(error)[:2000]}
 
             if result:
                 s = result.get('summary', {})
@@ -386,7 +430,11 @@ class FEMKernel:
                 run.mesh_stats = {
                     'n_nodes': s.get('n_nodes'),
                     'n_elements': s.get('n_elements'),
+                    'n_dof': s.get('n_dof'),
+                    'element_type': s.get('element_type'),
                     'tier': s.get('tier'),
+                    'equilibrium_error': s.get('equilibrium_error'),
+                    'mesh': s.get('mesh'),
                 }
                 run.convergence_log = si.get('convergence_log', [])
 
