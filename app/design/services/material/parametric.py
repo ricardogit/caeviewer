@@ -627,3 +627,23 @@ class ParametricMaterialModel:
             out['fits'][r['model']] = {'stress': m.predict(e, p).tolist(), 'lower': lo.tolist(), 'upper': hi.tolist()}
         return out
 
+
+def material_parameters_from_fit(res: dict, previous: dict | None = None) -> dict:
+    """Material parameters from a fit: E and σy (σ0.2) with std, hardening params; keeps ν, ρ."""
+    prev = dict(previous or {})
+    p = res['parameters']
+    out = {k: v for k, v in prev.items() if k in ('nu', 'rho')}
+    E = p.get('E') or p.get('a1')
+    if E:
+        out['E'] = {'value': E['value'], 'std': E['std'] if E['std'] == E['std'] else 0.0, 'unit': 'Pa'}
+    sy = p.get('sigma_02')
+    if sy and sy.get('value') is not None:
+        out['sigma_y'] = {'value': sy['value'], 'std': sy['std'] if sy['std'] == sy['std'] else 0.0, 'unit': 'Pa'}
+    for k, v in p.items():
+        if k not in ('E', 'sigma_02', 'a1'):
+            out[f'{res["best_model"]}.{k}'] = {'value': v['value'], 'std': v['std'] if v['std'] == v['std'] else 0.0,
+                                               'unit': v.get('unit', '')}
+    uts = (res.get('properties') or {}).get('uts') or {}
+    if uts.get('value'):
+        out['uts'] = {'value': uts['value'], 'std': uts.get('std') or 0.0, 'unit': 'Pa'}
+    return out

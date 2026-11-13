@@ -240,27 +240,6 @@ def fit_curves():
     return jsonify(_finite(res)), 200
 
 
-def material_parameters_from_fit(res: dict, previous: dict | None = None) -> dict:
-    """Material parameters from a fit: E and σy (σ0.2) with std, hardening params; keeps ν, ρ."""
-    prev = dict(previous or {})
-    p = res['parameters']
-    out = {k: v for k, v in prev.items() if k in ('nu', 'rho')}
-    E = p.get('E') or p.get('a1')
-    if E:
-        out['E'] = {'value': E['value'], 'std': E['std'] if E['std'] == E['std'] else 0.0, 'unit': 'Pa'}
-    sy = p.get('sigma_02')
-    if sy and sy.get('value') is not None:
-        out['sigma_y'] = {'value': sy['value'], 'std': sy['std'] if sy['std'] == sy['std'] else 0.0, 'unit': 'Pa'}
-    for k, v in p.items():
-        if k not in ('E', 'sigma_02', 'a1'):
-            out[f'{res["best_model"]}.{k}'] = {'value': v['value'], 'std': v['std'] if v['std'] == v['std'] else 0.0,
-                                               'unit': v.get('unit', '')}
-    uts = (res.get('properties') or {}).get('uts') or {}
-    if uts.get('value'):
-        out['uts'] = {'value': uts['value'], 'std': uts.get('std') or 0.0, 'unit': 'Pa'}
-    return out
-
-
 @bp.route('/<string:material_id>/fit', methods=['POST'])
 def fit_material(material_id):
     """Fit and store. Form/JSON as /fit-curves, plus optional ``model`` to force a candidate."""
@@ -274,20 +253,61 @@ def fit_material(material_id):
     chosen = next((r for r in pm.results if r['model'] == forced), pm.best) if forced else pm.best
     sel = {**res, 'best_model': chosen['model'], 'label': chosen['label'], 'parameters': chosen['parameters'],
            'r_squared': chosen['r2']}
-    m.parameters = material_parameters_from_fit(sel, m.parameters)
+    from app.design.services.material.parametric import material_parameters_from_fit
+    apply_fit_to_material(m, res, chosen, material_parameters_from_fit(sel, m.parameters))
+    db.session.commit()
+    sync_material_nodes(m)
+    return jsonify({**_finite(sel), 'material': _mat_dict(m)}), 200
+
+
+def apply_fit_to_material(m: MaterialModel, res: dict, chosen: dict, parameters: dict, extra: dict | None = None):
+    """Store a curve fit in the material (parameters, model type, calibration; keeps the history).
+    Does not commit."""
+    m.parameters = parameters
     m.model_type = f"elastoplastic_{chosen['model']}" if chosen['elastoplastic'] else 'linear_elastic_isotropic'
     per0 = chosen['_per'][0]
+    history = list((m.calibration or {}).get('history') or [])
     m.calibration = _finite({
         'best_model': chosen['model'], 'label': chosen['label'], 'r_squared': chosen['r2'],
         'aicc': chosen['aicc'], 'n_specimens': len(res['specimens']), 'std_source': res['std_source'],
         'date': datetime.utcnow().isoformat(), 'method': 'least_squares (scipy TRF) + AICc',
         'all_results': res['all_results'], 'specimens': res['specimens'], 'properties': res['properties'],
         'curves': res['curves'], 'confidence': res['confidence'], 'fit_parameters': chosen['parameters'],
-        'cov': per0['_cov'], 's2': per0['_s2'],
+        'cov': per0['_cov'], 's2': per0['_s2'], 'history': history, **(extra or {}),
     })
     m.updated_at = datetime.utcnow()
-    db.session.commit()
-    return jsonify({**_finite(sel), 'material': _mat_dict(m)}), 200
+
+
+def node_props_from_material(m: MaterialModel, props: dict) -> dict:
+    """MATERIAL node properties from a library material (the FEM kernel is linear elastic: E, ν, ρ
+    with std, and σy as the yield strength of the failure criterion)."""
+    P = m.parameters or {}
+    props = dict(props or {})
+    props['model_type'] = 'linear_elastic_isotropic'
+    for k in ('E', 'nu', 'rho'):
+        if k in P:
+            props[k] = P[k]['value']
+            props[f'{k}_std'] = P[k].get('std') or 0.0
+    if 'sigma_y' in P:
+        props['yield_strength'] = P['sigma_y']['value']
+        props['yield_std'] = P['sigma_y'].get('std') or 0.0
+    props.pop('E_source', None)                      # E comes from the material again (not a structural E*)
+    props['material_id'] = str(m.id)
+    props['material_name'] = m.name
+    props['constitutive_fit'] = (m.calibration or {}).get('best_model')
+    return _finite(props)
+
+
+def sync_material_nodes(m: MaterialModel) -> list[str]:
+    """Refresh every MATERIAL node linked to the material (after a fit / recalibration)."""
+    from app.design.models.graph import DesignNode
+    from app.design.services.graph_service import DesignGraphService
+    nodes = DesignNode.query.filter(DesignNode.node_type == 'MATERIAL',
+                                    DesignNode.properties['material_id'].astext == str(m.id)).all()
+    svc = DesignGraphService()
+    for n in nodes:
+        svc.update_node(n.graph_id, n.id, {'properties': node_props_from_material(m, n.properties)})
+    return [str(n.id) for n in nodes]
 
 
 @bp.route('/<string:material_id>/predict', methods=['POST'])
@@ -338,19 +358,7 @@ def assign_material(material_id):
     node = DesignNode.query.filter_by(id=body.get('node_id'), graph_id=body.get('graph_id')).first()
     if node is None or node.node_type != 'MATERIAL':
         return jsonify({'error': 'Nodo MATERIAL no encontrado en el grafo'}), 404
-    P = m.parameters or {}
-    props = dict(node.properties or {})
-    props['model_type'] = 'linear_elastic_isotropic'
-    for k in ('E', 'nu', 'rho'):
-        if k in P:
-            props[k] = P[k]['value']
-            props[f'{k}_std'] = P[k].get('std') or 0.0
-    if 'sigma_y' in P:
-        props['yield_strength'] = P['sigma_y']['value']
-        props['yield_std'] = P['sigma_y'].get('std') or 0.0
-    props['material_id'] = str(m.id)
-    props['material_name'] = m.name
-    props['constitutive_fit'] = (m.calibration or {}).get('best_model')
+    props = node_props_from_material(m, node.properties)
     DesignGraphService().update_node(body['graph_id'], node.id, {'properties': props, 'label': node.label or m.name})
     return jsonify({'node_id': str(node.id), 'properties': _finite(props)}), 200
 

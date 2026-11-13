@@ -22,6 +22,7 @@ import SimHistory from './SimHistory';
 import TopologyPanel from './TopologyPanel';
 import ROMPanel from './ROMPanel';
 import UncertaintyPanel from './UncertaintyPanel';
+import ValidationPanel from '../Validation/ValidationPanel';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -43,7 +44,7 @@ export default function SolverPanel({ onClose }) {
     startRun, cancelRun, runCantileverTest, resetRun, clearError,
   } = useSolverStore();
 
-  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever' | 'topology'
+  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever' | 'topology' | 'rom' | 'uncertainty' | 'validation'
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const isRunning = runStatus === 'running' || runStatus === 'queued';
@@ -121,11 +122,15 @@ export default function SolverPanel({ onClose }) {
           <ToggleButton value="uncertainty" sx={{ fontSize: 11 }}>
             Incertidumbre
           </ToggleButton>
+          <ToggleButton value="validation" sx={{ fontSize: 11 }}>
+            Validación
+          </ToggleButton>
         </ToggleButtonGroup>
 
         {mode === 'topology' && <TopologyPanel graphId={activeGraphId} />}
         {mode === 'rom' && <ROMPanel graphId={activeGraphId} />}
         {mode === 'uncertainty' && <UncertaintyPanel graphId={activeGraphId} />}
+        {mode === 'validation' && <ValidationPanel graphId={activeGraphId} />}
 
         {/* ── Graph mode ───────────────────────────────────────────────── */}
         {mode === 'graph' && (

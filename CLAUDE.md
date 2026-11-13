@@ -200,6 +200,7 @@ src/
 | `/api/geometry` | `app/geometry/api.py` | Versioned STEP upload → `geometry.import` job (OCC worker); entities, versions, remap |
 | `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |
+| `/api/design/validation` | `validation_routes.py` | Experiments, correlation, recalibration (FASE 8) |
 | `/api/design/solver` | `solver_routes.py` | Launch FEM simulations (async), stream progress, get results |
 | `/api/cae` | `cae_routes.py` | Mesh CRUD, field data, download |
 | `/api/cae` | `ai_routes.py` | AI analysis |
@@ -375,6 +376,41 @@ same hash, even across graphs (hito). Provenance (host, git commit, platform) is
   `{"force": true}`), `GET /<run>/reproducibility[?against=]`, `GET /environment`.
 - UI: History button in `SolverPanel` → `components/Solver/SimHistory.jsx` (hash colours, deltas,
   report, reproduce dialog with environment check; test `SimHistory.test.jsx`).
+
+## Continuous Validation (FASE 8)
+
+`app/design/services/validation/` + API `/api/design/validation` (`validation_routes.py`). Experiments live in
+`experimental_records` (`test_type` `tensile` | `structural`, `conditions`, downsampled `raw_data`, `scalar_summary`;
+the uploaded file under `DATA_DIR/experiments/<id>/`, relative `file_ref`); comparisons in
+`sim_experiment_correlations` (migration `c8e4a6b2d9f1`: `run_id` nullable, `kind` material|structural, `graph_id`,
+`material_id`, `details` JSONB with per-sensor values / curves).
+- `sensors.py`: `parse_sensor_csv` (label, x, y, z [mm, CAD frame], quantity ux|uy|uz|umag|strain, value [mm | µε],
+  optional std, dx/dy/dz gauge direction; Spanish headers, `;` + decimal comma, `[m]` and `mm/mm` scaled).
+  `MeshProbe` locates sensors in the run mesh (KD-tree on centroids + barycentric test; outside points projected,
+  distance is an upper bound, flagged when > ½ mean edge) and interpolates u / strain with the T4/T10 shape functions.
+  The run's field is scaled by `conditions.load_factor` (test load / model load).
+- `correlator.py`: `correlation_metrics` (R² about the identity line; about zero when n < 3 or the readings barely
+  spread (CV < 10 %), else a uniform offset gives R² ≪ 0; max relative error with a 5 %-of-max floor; slope
+  measured/simulated; confidence = max(R²,0)·e^(−maxerr/0.25)·(1−e^(−n/3))). **Mixed quantities (mm and µε) are
+  normalized per quantity group** (`group_scales`) before pooling. `SimulationCorrelator`: study signatures
+  (geometry identity, material, BCs/loads, mesh size) → similarity of past structural correlations (one per
+  (experiment, run)) → confidence before simulating C = (Σsᵢcᵢ/Σsᵢ)(1−e^(−Σsᵢ)); recommends a tensile test if the
+  material is uncalibrated and sensor positions (max |u|, max σvM surface nodes of the latest run).
+  "Semantic embedding" of the plan is replaced by this parameter similarity.
+- `recalibrator.py`: tensile → refit (FASE 6 machinery), before/after metrics vs the material's current model,
+  `replace` or `bayes` (inverse variance; prior without std gets 5 % CV), δ per parameter, appended to
+  `material.calibration.history`, linked MATERIAL nodes synced. Structural → only the stiffness scale is
+  identifiable from one load case: E* = E_run / k (exact, u ∝ 1/E), an *effective* E written to the graph's MATERIAL
+  node (`E_source`); a poor fit after the correction (R² < 0.9 or error > 15 %) warns that BCs/loads are wrong.
+  E_run is the E of the run compared against (latest done `run|reproduce`, or `run_id`), not the node's.
+- API: `GET /status`, `POST /experiments/preview|/experiments` (multipart; `calibrate=1` recalibrates tensile /
+  correlates structural), `GET|DELETE /experiments[/<id>]`, `POST /<graph_id>/correlate`, `GET /<graph_id>/correlations`,
+  `GET /correlations/<id>`, `GET /<graph_id>/confidence`, `POST /<graph_id>/recalibrate` (`apply: false` = preview).
+- UI: SolverPanel → "Validación" (`components/Validation/ValidationPanel.jsx`, `ExperimentUpload.jsx`,
+  `CorrelationView.jsx`, `stores/validationStore.js`; test `ValidationPanel.test.jsx`).
+- Hito: `python validate_validation.py` (synthetic data with known truth): tensile recalibration E error 0.14 %
+  (replace) / 0.22 % (bayes, 3 specimens, std shrinking); structural E* within 1.2 % with 1 % sensor noise; a
+  flexible-clamp control case is flagged instead of calibrating a false E. Tests: `tests/test_validation.py`.
 
 ## Adaptive Meshing (FASE 3)
 
