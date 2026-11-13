@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Env / secrets
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Runtime data (uploads, solver outputs, job logs, spikes)
+data/
+
+# Frontend
+frontend/node_modules/
+
+# Misc
+test_output.txt

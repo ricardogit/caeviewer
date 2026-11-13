@@ -38,8 +38,11 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FILE=/app/logs/cae_viewer.log
-    volumes:
+    volumes: &shared_data
       - uploads:/app/data/uploads
+      - solver_data:/app/data/solver
+      - design_data:/app/data/design
+      - jobs_data:/app/data/jobs
       - logs:/app/logs
     depends_on:
       postgres:
@@ -53,6 +56,51 @@ services:
       start_period: 60s
       retries: 3
 
+  # ── Job workers (Postgres queue, SKIP LOCKED) ────────────────────────────
+  # Solvers never run in the web process. Scale with:
+  #   docker compose up -d --scale worker-solve=3
+  worker-solve: &worker
+    build:
+      context: .
+      dockerfile: docker/geometry.Dockerfile
+    image: caeviewer-geometry:latest
+    restart: unless-stopped
+    user: "1001:1001"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://${DB_USER:-caeviewer}:${DB_PASSWORD}@postgres/${DB_NAME:-caedb}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/app/logs/worker.log
+      - WORKER_QUEUES=default,solve
+    volumes: *shared_data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - caeviewer-net
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "${SOLVE_WORKER_CPUS:-4}"
+          memory: ${SOLVE_WORKER_MEM:-8g}
+
+  worker-geometry:
+    <<: *worker
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://${DB_USER:-caeviewer}:${DB_PASSWORD}@postgres/${DB_NAME:-caedb}
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FILE=/app/logs/worker-geometry.log
+      - WORKER_QUEUES=geometry,mesh
+    deploy:
+      resources:
+        limits:
+          cpus: "${GEOMETRY_WORKER_CPUS:-2}"
+          memory: ${GEOMETRY_WORKER_MEM:-4g}
+
 volumes:
   postgres_data:
     name: caeviewer_postgres_data
@@ -60,6 +108,12 @@ volumes:
     name: caeviewer_uploads
   logs:
     name: caeviewer_logs
+  solver_data:
+    name: caeviewer_solver_data
+  design_data:
+    name: caeviewer_design_data
+  jobs_data:
+    name: caeviewer_jobs_data
 
 networks:
   caeviewer-net:

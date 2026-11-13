@@ -4,7 +4,6 @@ FASE 2 full implementation.
 """
 from __future__ import annotations
 import logging
-import threading
 import uuid as _uuid
 
 from flask import Blueprint, jsonify, request, current_app
@@ -148,25 +147,12 @@ def run_simulation(graph_id):
             db.session.rollback()
             return jsonify({'error': 'Failed to create simulation record', 'detail': str(e)}), 500
 
-        # Launch solver in background thread
-        app = current_app._get_current_object()
-        from app.design.services.fem.kernel import FEMKernel
-
-        def run_solver():
-            kernel = FEMKernel()
-            try:
-                kernel.solve_async(
-                    app=app,
-                    run_id=str(run_id),
-                    solver_spec=spec,
-                    socketio=socketio,
-                )
-            except Exception as e:
-                logger.error(f"Unhandled error in solver thread: {e}", exc_info=True)
-                # Error already emitted via kernel.solve_async, but log for debugging
-
-        thread = threading.Thread(target=run_solver, daemon=True, name=f"solver-{run_id}")
-        thread.start()
+        # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker
+        # --queues solve) runs FEMKernel.solve_async and its socket events are
+        # forwarded to room=run_id by the web-side job listener.
+        from app.jobs import enqueue
+        job = enqueue('fem.solve', {'run_id': str(run_id), 'spec': spec},
+                      simulation_run_id=run_id)
 
         logger.info(f"Launched simulation run {run_id} for graph {graph_id}")
         return jsonify({
@@ -174,6 +160,7 @@ def run_simulation(graph_id):
             'hash': run_hash[:16] if run_hash != 'unknown' else run_hash,
             'status': 'queued',
             'graph_id': graph_id,
+            'job_id': str(job.id),
         }), 202
 
     except Exception as e:
@@ -342,7 +329,12 @@ def cancel_run(run_id):
     run = SimulationRun.query.filter_by(id=run_id).first()
     if not run:
         return jsonify({'error': 'Run not found'}), 404
-    if run.status == 'running':
+    if run.status in ('queued', 'running'):
+        from app.jobs.models import Job
+        from app.jobs import request_cancel
+        for job in Job.query.filter(Job.simulation_run_id == run.id,
+                                    Job.status.in_(('queued', 'running'))).all():
+            request_cancel(job.id)
         run.status = 'cancelled'
         db.session.commit()
         socketio.emit('solver_error', {'run_id': run_id, 'message': 'Cancelled by user'},

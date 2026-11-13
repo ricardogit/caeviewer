@@ -65,7 +65,7 @@ COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 # Copy the built React SPA from stage 1
 COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
-RUN mkdir -p /app/data/uploads /app/data/processed /app/logs
+RUN mkdir -p /app/data/uploads /app/data/processed /app/data/solver /app/data/design \n             /app/data/rom /app/data/jobs /app/logs
 
 RUN chmod +x /app/docker-entrypoint.sh
 

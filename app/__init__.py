@@ -45,7 +45,7 @@ def create_app(config_name=None):
     _register_frontend(app)
     _register_error_handlers(app)
     _register_socketio_events()
-    _create_tables(app)
+    _warn_if_schema_behind(app)
 
     return app
 
@@ -74,6 +74,8 @@ def _register_models(app):
             from app.cae.models import CAEMesh, CAEField  # noqa
         except ImportError as e:
             print(f"[WARN] CAE models: {e}")
+        from app.jobs.models import Job  # noqa
+        from app.auth.models import User, Project  # noqa
         try:
             from app.design.models import (  # noqa
                 DesignGraph, DesignNode, DesignEdge,
@@ -100,6 +102,12 @@ def _register_blueprints(app):
 
     from app.cae.api.mesh_from_step_routes import bp as cae_from_step_bp
     app.register_blueprint(cae_from_step_bp, url_prefix='/api/cae')
+
+    # Job queue + auth (Engineering Hub, Fase 0)
+    from app.jobs.api import bp as jobs_bp
+    app.register_blueprint(jobs_bp, url_prefix='/api/jobs', strict_slashes=False)
+    from app.auth import init_auth
+    init_auth(app)
 
     # Design module — new-generation CAE (FASE 0+)
     try:
@@ -179,31 +187,23 @@ def _register_socketio_events():
         pass
 
 
-def _create_tables(app):
-    """Create any tables not yet managed by Alembic (fail-safe only).
-    Alembic migrations are the authoritative schema source — this is a
-    best-effort fallback for tables that weren't captured in a migration.
-    Circular-FK tables (step_file_headers ↔ step_view_files) are skipped
-    silently because Alembic handles them correctly.
-    """
-    import warnings
-    with app.app_context():
-        _log = logging.getLogger(__name__)
-        circular = {'step_file_headers', 'step_view_files'}
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            try:
-                tables = list(db.metadata.sorted_tables)
-            except Exception:
-                tables = list(db.metadata.tables.values())
-        for tbl in tables:
-            if tbl.name in circular:
-                continue   # managed by Alembic migration
-            try:
-                tbl.create(db.engine, checkfirst=True)
-            except Exception as e:
-                _log.debug(f"Table '{tbl.name}' skipped: {e}")
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
+def _warn_if_schema_behind(app):
+    """Alembic is the only schema mechanism (run `flask db upgrade`).
+    The old create_all fallback was removed; we only warn if the DB is behind."""
+    if app.config.get('TESTING'):
+        return
+    try:
+        from alembic.script import ScriptDirectory
+        from alembic.migration import MigrationContext
+        import pathlib
+        mig_dir = pathlib.Path(__file__).parent.parent / 'migrations'
+        cfg = app.extensions['migrate'].migrate.get_config(str(mig_dir))
+        heads = set(ScriptDirectory.from_config(cfg).get_heads())
+        with app.app_context(), db.engine.connect() as conn:
+            current = set(MigrationContext.configure(conn).get_current_heads())
+        if current != heads:
+            logging.getLogger(__name__).warning(
+                "Database schema %s is not at migration head %s — run `flask db upgrade`",
+                sorted(current) or '<empty>', sorted(heads))
+    except Exception as e:
+        logging.getLogger(__name__).debug("schema check skipped: %s", e)

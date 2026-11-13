@@ -31,9 +31,21 @@ cd frontend
 npm run build
 ```
 
+**Job worker (required for solver runs):** solvers never run in the web process. Jobs live in the
+`jobs` table (Postgres queue, `SELECT … FOR UPDATE SKIP LOCKED`) and are executed by:
+```
+python -m app.jobs.worker --queues default,solve
+```
+Progress flows worker → `NOTIFY job_events` → web listener (started in `run.py`) → socket.io
+(`job_update` broadcast, plus wrapped events like `solver_progress` to their room).
+
+**Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
+image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.
+From Git Bash, prefix `docker run -e VAR=/path` with `MSYS_NO_PATHCONV=1`.
+
 The Flask app serves the built SPA from `frontend/dist/` at `/step-view/`. In development, the Vite dev server proxies API calls to Flask on port 8080.
 
-**Database**: PostgreSQL. Default URI: `postgresql://postgres:postgres@localhost:5432/caedb`. Tables are auto-created on startup via `db.metadata.sorted_tables` iteration. Migrations: `flask db migrate / flask db upgrade`.
+**Database**: PostgreSQL. Default URI: `postgresql://postgres:postgres@localhost:5432/caedb`. **Alembic is the only schema mechanism** — run `flask db upgrade` (startup only warns if the DB is behind head). SQLAlchemy is pinned `<2.1` (2.1 defaults `postgresql://` to psycopg 3).
 
 **Environment**: Copy `.env.example` (in `frontend/`) or create `.env` / `.env.local` at the repo root. Key variables: `DATABASE_URL`, `FLASK_ENV`, `API_PORT`, `MAX_UPLOAD_SIZE_MB`, `CORS_ORIGINS`.
 
@@ -165,6 +177,8 @@ src/
 
 | Prefix | Module | Purpose |
 |--------|--------|---------|
+| `/api/jobs` | `app/jobs/api.py` | Job list/get/log/cancel/stats; POST only for `dummy` |
+| `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |
 | `/api/design/solver` | `solver_routes.py` | Launch FEM simulations (async), stream progress, get results |
 | `/api/cae` | `cae_routes.py` | Mesh CRUD, field data, download |

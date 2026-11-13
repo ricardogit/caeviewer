@@ -5,20 +5,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import axios from 'axios';
-import { io } from 'socket.io-client';
-
-// Single shared socket instance
-let _socket = null;
-
-function getSocket() {
-  if (!_socket) {
-    _socket = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
-      autoConnect: true,
-    });
-  }
-  return _socket;
-}
+import { getSocket } from '../services/socket';
 
 const useSolverStore = create(
   devtools(

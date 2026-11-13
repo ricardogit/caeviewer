@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AppBar, Toolbar, IconButton, Typography, Box,
   Badge, Popover, Chip, Tooltip,
 } from '@mui/material';
 import { Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
+import useJobStore, { selectActiveCount } from '../stores/jobStore';
 
 /**
  * TopBar — application header with three-mode selector.
@@ -15,6 +16,9 @@ import JobMonitor from './JobMonitor';
 export default function TopBar({ onMenuClick, selectedFile, selectedMesh, appMode, onSetMode }) {
   const [jobsAnchor, setJobsAnchor] = useState(null);
   const jobsOpen = Boolean(jobsAnchor);
+  const activeJobs = useJobStore(selectActiveCount);
+  const initJobs = useJobStore((st) => st.init);
+  useEffect(() => { initJobs(); }, [initJobs]);
 
   const modes = [
     { key: 'design', label: 'Design',  Icon: AccountTree, color: '#7986cb' },
@@ -97,7 +101,7 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, appMod
 
         {/* Job Monitor */}
         <IconButton color="inherit" onClick={e => setJobsAnchor(e.currentTarget)}>
-          <Badge badgeContent={0} color="secondary">
+          <Badge badgeContent={activeJobs} color="secondary">
             <PlayArrow />
           </Badge>
         </IconButton>
