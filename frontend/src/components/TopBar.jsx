@@ -3,7 +3,7 @@ import {
   AppBar, Toolbar, IconButton, Typography, Box,
   Badge, Popover, Chip, Tooltip,
 } from '@mui/material';
-import { Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree } from '@mui/icons-material';
+import { Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree, Category } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
 import useJobStore, { selectActiveCount } from '../stores/jobStore';
 
@@ -22,6 +22,7 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, appMod
 
   const modes = [
     { key: 'design', label: 'Design',  Icon: AccountTree, color: '#7986cb' },
+    { key: 'geometry', label: 'Geometría', Icon: Category, color: '#ffb74d' },
     { key: 'step',   label: 'STEP',    Icon: ViewInAr,    color: '#90caf9' },
     { key: 'cae',    label: 'CAE/FEA', Icon: GridOn,      color: '#80cbc4' },
   ];
@@ -85,7 +86,7 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, appMod
 
         {/* Context info — show active file or mesh */}
         <Box sx={{ ml: 2, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-          {selectedFile && appMode !== 'design' && (
+          {selectedFile && (appMode === 'step' || appMode === 'cae') && (
             <Typography variant="body2" color="inherit" noWrap sx={{ maxWidth: 300, color: '#aaa', fontSize: 12 }}>
               {selectedFile.original_filename}
             </Typography>

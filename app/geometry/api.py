@@ -1,12 +1,12 @@
 """/api/geometry — versioned STEP geometry with persistent entity IDs (Fase 1b)."""
 import uuid
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 from sqlalchemy import func
 
 from app.extensions import db
 from app.geometry.models import Geometry, GeometryEntity
-from app.geometry.storage import store_step_upload
+from app.geometry.storage import store_step_upload, abs_path
 from app.jobs import enqueue
 
 bp = Blueprint('geometry', __name__)
@@ -80,6 +80,27 @@ def get_geometry(geometry_id):
     if g is None:
         return jsonify({'error': 'Geometry not found'}), 404
     return jsonify(g.to_dict())
+
+
+@bp.route('/<uuid:geometry_id>/glb', methods=['GET'])
+def glb(geometry_id):
+    """Viewer mesh: uncompressed GLB, one vertex block per CAD face, vertex attribute _FACE_ID
+    (1-based face index = geometry_entities.entity_index). Immutable per (geometry, digest)."""
+    g = db.session.get(Geometry, geometry_id)
+    if g is None:
+        return jsonify({'error': 'Geometry not found'}), 404
+    if g.status in ('pending', 'processing'):
+        return jsonify({'error': 'Importación en curso', 'status': g.status, 'retry_after': 2}), 202
+    if g.status == 'failed':
+        return jsonify({'error': g.error or 'La importación falló', 'status': g.status}), 422
+    if not g.glb_uri:
+        return jsonify({'error': 'Esta geometría no tiene malla de visor; reimpórtela', 'status': g.status}), 409
+    path = abs_path(g.glb_uri)
+    if not path.exists():
+        return jsonify({'error': 'Archivo GLB no encontrado en el almacenamiento'}), 410
+    resp = send_file(path, mimetype='model/gltf-binary', conditional=True, etag=True,
+                     max_age=0, download_name=f'{g.name}-v{g.version}.glb')
+    return resp
 
 
 @bp.route('/<uuid:geometry_id>/versions', methods=['GET'])

@@ -43,7 +43,10 @@ Progress flows worker → `NOTIFY job_events` → web listener (started in `run.
 the `geometry.import` job (queue `geometry`, needs pythonOCC → run the worker in the Docker image) fills
 `geometry_entities` with one row per face/solid (TopExp index + signature). Re-import keeps entity UUIDs;
 a new version (`parent_id`) links faces to the previous version by signature (`parent_entity_id`,
-`match_kind`). DB file URIs are relative to `DATA_DIR`. `occ_import`/`gmsh_bridge` must never be
+`match_kind`). The import also writes `geometry/<id>/view.glb` (Fase 1c): uncompressed, one vertex block
+per CAD face, vertex attribute `_FACE_ID` = 1-based face index (Three.js reads it as `_face_id`). Never
+Draco-compress it (Draco reorders vertices). Frontend: **Geometría** mode → `components/Geometry/*` +
+`stores/geometryStore.js` (picking/highlight via per-vertex colors). DB file URIs are relative to `DATA_DIR`. `occ_import`/`gmsh_bridge` must never be
 imported at module level from web code.
 
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the

@@ -70,12 +70,17 @@ def _import(ctx, geo, step_path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     write_brep(shape, dest)
 
-    ctx.progress(80, 'Guardando entidades', force=True)
+    ctx.progress(75, 'Teselando caras para el visor', force=True)
+    glb_rel, tess_meta = _write_view_glb(geo, shape, sigs)
+    ctx.check_cancel()
+
+    ctx.progress(85, 'Guardando entidades', force=True)
     stats = _upsert_entities(geo, sigs)
     new_digest = digest_of(f['hash'] for f in sigs['faces'])
 
     prev_digest = geo.digest
     geo.brep_uri = brep_rel
+    geo.glb_uri = glb_rel
     geo.bbox = [round(v, 6) for v in sigs['bbox']]
     geo.scale = sigs['scale']
     geo.n_faces = len(sigs['faces'])
@@ -89,6 +94,7 @@ def _import(ctx, geo, step_path):
         'n_named_faces': len(shape.face_names),
         'timings': timings,
         'entity_upsert': stats,
+        'tessellation': tess_meta,
     })
     if prev_digest and prev_digest != new_digest:
         # Re-import of the same file must be deterministic; flag loudly if not.
@@ -102,7 +108,12 @@ def _import(ctx, geo, step_path):
         ctx.progress(90, 'Emparejando caras con la versión anterior', force=True)
         remap = remap_from_parent(geo)
         meta = dict(geo.meta)
-        meta['remap'] = remap
+        if 'error' in remap:
+            # Parent not ready (e.g. queued behind us): keep the previous links and summary.
+            meta['remap_warning'] = remap['error']
+        else:
+            meta['remap'] = remap
+            meta.pop('remap_warning', None)
         geo.meta = meta
     db.session.commit()
     ctx.progress(100, 'Geometría lista', force=True)
@@ -110,6 +121,29 @@ def _import(ctx, geo, step_path):
             'digest': new_digest, 'deterministic': prev_digest in (None, new_digest),
             'remap': {k: v for k, v in (remap or {}).items() if not isinstance(v, list)} or None,
             'timings': timings}
+
+
+def _write_view_glb(geo, shape, sigs) -> tuple[str, dict]:
+    """Per-face tessellation -> geometry/<id>/view.glb with the _FACE_ID vertex attribute."""
+    from app.geometry.glb import write_glb
+    from app.geometry.storage import abs_path
+    from app.geometry.tessellate import tessellate
+
+    tess = tessellate(shape, sigs['scale'])
+    rel = f'geometry/{geo.id}/view.glb'
+    info = write_glb(
+        abs_path(rel), tess['positions'], tess['normals'], tess['face_ids'], tess['indices'],
+        extras={'geometry_id': str(geo.id), 'units': 'mm', 'face_id_attribute': '_FACE_ID',
+                'face_index_base': 1,
+                'face_triangle_ranges': {str(k): v for k, v in tess['face_triangle_ranges'].items()}},
+    )
+    meta = {**info, 'linear_deflection_mm': tess['linear_deflection'],
+            'angular_deflection_rad': tess['angular_deflection'], 'seconds': tess['seconds'],
+            'missing_faces': tess['missing_faces']}
+    if tess['missing_faces']:
+        logger.warning("Geometry %s: %d face(s) without triangulation: %s", geo.id,
+                       len(tess['missing_faces']), tess['missing_faces'][:20])
+    return rel, meta
 
 
 def _upsert_entities(geo, sigs) -> dict:

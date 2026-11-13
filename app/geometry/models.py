@@ -44,6 +44,7 @@ class Geometry(BaseModel):
 
     # filled by geometry.import
     brep_uri     = Column(String(1000))                       # relative to DATA_DIR
+    glb_uri      = Column(String(1000))                       # viewer mesh with _FACE_ID, relative to DATA_DIR
     bbox         = Column(JSONB)                              # [xmin, ymin, zmin, xmax, ymax, zmax] mm
     scale        = Column(Float)                              # bbox diagonal, mm
     n_faces      = Column(Integer)

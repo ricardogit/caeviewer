@@ -41,6 +41,9 @@ import MeshFromStepDialog from './components/MeshFromStepDialog';
 import GraphEditor from './components/DesignGraph/GraphEditor';
 import GraphProjectList from './components/DesignGraph/GraphProjectList';
 import SolverPanel from './components/Solver/SolverPanel';
+import GeometryList from './components/Geometry/GeometryList';
+import GeometryViewer from './components/Geometry/GeometryViewer';
+import FacePanel from './components/Geometry/FacePanel';
 
 const darkTheme = createTheme({
   palette: {
@@ -209,6 +212,8 @@ export default function App() {
         >
           {appMode === 'design'
             ? <GraphProjectList />
+            : appMode === 'geometry'
+            ? <GeometryList />
             : appMode === 'cae'
               ? <CAEFileList onSelectMesh={setSelectedMesh} selectedMeshId={selectedMesh?.id} />
               : <FileList onSelectFile={handleFileSelect} selectedFileId={selectedFile?.id} />
@@ -251,6 +256,11 @@ export default function App() {
                 </Box>
               )}
             </Box>
+          ) : appMode === 'geometry' ? (
+            <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+              <GeometryViewer />
+              <FacePanel />
+            </Box>
           ) : caeMode ? (
             <CAEViewer mesh={selectedMesh} />
           ) : selectedFile ? (
@@ -281,7 +291,7 @@ export default function App() {
           )}
 
           {/* Floating Action Buttons */}
-          {selectedFile && !caeMode && (
+          {selectedFile && appMode === 'step' && (
             <Box sx={{ position: 'absolute', top: 16, right: detailsOpen ? DETAILS_WIDTH + 16 : 16, display: 'flex', gap: 1, transition: 'right 0.2s' }}>
 
               <Tooltip title="Manufacturing Features">
@@ -326,7 +336,7 @@ export default function App() {
                 </IconButton>
               </Tooltip>
 
-              {selectedFile && !caeMode && (
+              {selectedFile && appMode === 'step' && (
                 <Tooltip title="Enviar a Design Graph">
                   <IconButton onClick={() => setSendToDesignDialogOpen(true)} sx={{ bgcolor: 'background.paper', '&:hover': { bgcolor: 'warning.dark' } }}>
                     <Share />
@@ -347,7 +357,7 @@ export default function App() {
 
         {/* ── Left drawers ──────────────────────────────────────────────── */}
 
-        {selectedFile && !caeMode && (
+        {selectedFile && appMode === 'step' && (
           <Drawer variant="persistent" anchor="left" open={featurePanelOpen}
             sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, left: leftOffset(), zIndex: 1060, transition: 'left 0.2s' } }}
           >
