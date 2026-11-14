@@ -24,6 +24,8 @@ from app.step_view_pro.backend.advanced_feature_extractor import (
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('feature_api', __name__)
+from app.step_view_pro.backend.entity_graph import guard_blueprint  # noqa: E402
+guard_blueprint(bp)   # reads step_entities, which nothing fills here (see entity_graph.py)
 
 
 def _resolve_header(header_id):

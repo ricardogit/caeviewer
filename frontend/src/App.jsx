@@ -32,6 +32,7 @@ import EntityTree from './components/EntityTree';
 import EntityDetails from './components/EntityDetails';
 import FeaturePanel from './components/FeaturePanel';
 import PMIPanel from './components/PMIPanel';
+import EntityGraphUnavailable from './components/EntityGraphUnavailable';
 import MeasurementTools from './components/MeasurementTools';
 import SectionCutPanel from './components/SectionCutPanel';
 import MarkupPanel from './components/MarkupPanel';
@@ -127,7 +128,7 @@ export default function App() {
     setMeasurements3D([]);
     setPmiAnnotations([]);
     setMarkupStrokes([]);
-    if (file && !entityTreeOpen) setEntityTreeOpen(true);
+    if (file?.entity_graph === true && !entityTreeOpen) setEntityTreeOpen(true);
   }
 
   // Called when user clicks "Pick from 3D" in MeasurementTools
@@ -168,7 +169,7 @@ export default function App() {
 
   // Load PMI annotations when PMI panel opens
   useEffect(() => {
-    if (!pmiPanelOpen || !selectedFile?.header_id) return;
+    if (!pmiPanelOpen || !selectedFile?.header_id || selectedFile.entity_graph !== true) return;
     axios.get(`/api/step-view/pmi/${selectedFile.header_id}/list`)
       .then(res => setPmiAnnotations(res.data.annotations || []))
       .catch(() => {});
@@ -189,6 +190,8 @@ export default function App() {
   }, []);
 
   const headerId = selectedFile?.header_id || selectedFile?.id;
+  // entity tree, features and PMI read the stored STEP entity graph (backend: entity_graph.py)
+  const entityGraph = selectedFile?.entity_graph === true;
 
   // ── Drawer layer helpers ──────────────────────────────────────────────────
 
@@ -382,7 +385,9 @@ export default function App() {
           >
             <Box sx={{ position: 'relative', height: '100%' }}>
               <IconButton onClick={() => setFeaturePanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <FeaturePanel headerId={headerId} onFeatureSelect={handleEntitySelect} selectedFeatureId={null} />
+              {entityGraph
+                ? <FeaturePanel headerId={headerId} onFeatureSelect={handleEntitySelect} selectedFeatureId={null} />
+                : <EntityGraphUnavailable title="Manufacturing features" />}
             </Box>
           </Drawer>
         )}
@@ -395,11 +400,13 @@ export default function App() {
           >
             <Box sx={{ position: 'relative', height: '100%' }}>
               <IconButton onClick={() => setPmiPanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <PMIPanel
-                headerId={headerId}
-                onAnnotationSelect={handleEntitySelect}
-                onAnnotationsLoaded={setPmiAnnotations}
-              />
+              {entityGraph ? (
+                <PMIPanel
+                  headerId={headerId}
+                  onAnnotationSelect={handleEntitySelect}
+                  onAnnotationsLoaded={setPmiAnnotations}
+                />
+              ) : <EntityGraphUnavailable title="PMI" />}
             </Box>
           </Drawer>
         )}
@@ -462,7 +469,9 @@ export default function App() {
           >
             <Box sx={{ position: 'relative', height: '100%' }}>
               <IconButton onClick={() => setEntityTreeOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <EntityTree headerId={headerId} selectedEntityId={selectedEntityId} onEntitySelect={handleEntitySelect} />
+              {entityGraph
+                ? <EntityTree headerId={headerId} selectedEntityId={selectedEntityId} onEntitySelect={handleEntitySelect} />
+                : <EntityGraphUnavailable title="Árbol de entidades" />}
             </Box>
           </Drawer>
         )}

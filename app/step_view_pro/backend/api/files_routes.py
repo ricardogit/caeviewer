@@ -8,14 +8,10 @@ from flask import Blueprint, jsonify, current_app
 from app.models import Part
 from app.models.step_storage import STEPFileHeader
 from app.extensions import db
+from app.step_view_pro.backend.entity_graph import ENTITY_GRAPH_AVAILABLE
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('files_api', __name__)
-
-
-# Small files found on disk are parsed when adopted (as an upload would); bigger ones only get
-# their Part row, so listing never blocks on a long parse.
-_ADOPT_PARSE_BYTES = 2 * 1024 * 1024
 
 
 def _adopt_disk_files():
@@ -38,8 +34,8 @@ def _adopt_disk_files():
         if os.path.splitext(fname.lower())[1] not in ALLOWED_EXTENSIONS or fpath in known                 or not os.path.isfile(fpath):
             continue
         try:
-            part_id, _, status = register_step_file(fpath, sync_parse_bytes=_ADOPT_PARSE_BYTES, queue_large=False)
-            logger.info(f"Adopted {fname} from disk as part {part_id} (graph: {status})")
+            part_id, _, _ = register_step_file(fpath)
+            logger.info(f"Adopted {fname} from disk as part {part_id}")
         except Exception as e:
             db.session.rollback()
             logger.warning(f"Could not adopt {fname}: {e}")
@@ -89,6 +85,7 @@ def list_files():
                 'entity_count': entity_count,
                 'file_size_mb': file_size_mb,
                 'source': 'upload',
+                'entity_graph': ENTITY_GRAPH_AVAILABLE,
                 'created_at': part.created_at.isoformat() if part.created_at else None,
             })
     except Exception as e:

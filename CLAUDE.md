@@ -8,7 +8,13 @@ CAE Viewer is a full-stack engineering platform with three integrated modes:
 
 - **Results mode** (FASE 9): 3D field viewer of the active study's finished runs (Design → Simular → Resultados).
 - **Design mode** (FASE 1-3): Engineering concept graph editor + FEM solver. Build design graphs (GEOMETRY, MATERIAL, BC, LOAD, RESULT nodes), run structural simulations with adaptive meshing, stream solver progress via WebSocket.
-- **STEP mode**: Upload/view STEP files (.stp/.step/.p21), browse entity graphs, annotate with PMI, measure, section-cut, and export.
+- **STEP mode**: Upload/view STEP files (.stp/.step/.p21), measure, section-cut, markup and export. The
+  entity-graph panels (entity tree, features, PMI, analysis) are **not available**: the Part 21 → relational
+  storage (`step_graph_storage`) lives in CAPP and was never ported (decided 2026-11-14, not needed for
+  simulation — CAD faces come from `app/geometry`). `backend/entity_graph.py`: `ENTITY_GRAPH_AVAILABLE = False`
+  guards the graph/features/pmi/analysis blueprints (501 `entity_graph_unavailable`); file entries carry
+  `entity_graph: false` and the UI shows `EntityGraphUnavailable`. Files found in the upload folder without a
+  Part row are registered when listed (`register_step_file`).
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
 
 **Roadmap:** `PLAN_CAE_NUEVA_GENERACION.md` is the master plan (phases FASE 0-9; "nothing happens outside

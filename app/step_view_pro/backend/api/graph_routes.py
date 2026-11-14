@@ -16,6 +16,8 @@ from app.step_view_pro.backend.graph_builder import GraphBuilder
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('graph_api', __name__)
+from app.step_view_pro.backend.entity_graph import guard_blueprint  # noqa: E402
+guard_blueprint(bp)   # reads step_entities, which nothing fills here (see entity_graph.py)
 
 
 @bp.route('/<string:header_id>/tree', methods=['GET'])
@@ -658,43 +660,6 @@ def precompute_tree(header_id):
 
     except Exception as e:
         logger.exception(f"Error pre-computando árbol: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-@bp.route('/<string:part_id>/parse', methods=['POST'])
-def parse_graph_for_part(part_id):
-    """
-    Parsea el grafo STEP para una Part ya existente (CAPP o upload previo).
-    Crea STEPFileHeader + STEPEntity records si no existen.
-
-    Returns:
-        JSON con header_id y conteo de entidades creadas
-    """
-    logger.info(f"POST /graph/{part_id}/parse")
-
-    try:
-        from app.services.step_graph_storage import parse_step_graph_for_part
-
-        part = Part.query.get(part_id)
-        if not part:
-            return jsonify({'error': 'Part not found'}), 404
-
-        if not part.file_path or not os.path.exists(part.file_path):
-            return jsonify({'error': 'STEP file not found on disk', 'file_path': part.file_path}), 404
-
-        header_id = parse_step_graph_for_part(part.file_path, str(part.id))
-
-        entity_count = STEPEntity.query.filter_by(header_id=header_id).count()
-
-        return jsonify({
-            'success': True,
-            'part_id': part_id,
-            'header_id': header_id,
-            'entity_count': entity_count
-        }), 200
-
-    except Exception as e:
-        logger.exception(f"Error parsing graph for part {part_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
 

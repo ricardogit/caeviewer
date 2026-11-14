@@ -15,51 +15,23 @@ bp = Blueprint('upload_api', __name__)
 
 ALLOWED_EXTENSIONS = {'.stp', '.step', '.p21'}
 
-# Files above this threshold are parsed asynchronously via Celery so the
-# HTTP request returns immediately instead of blocking for minutes.
-_LARGE_FILE_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 def _allowed_file(filename):
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
 
 
-def register_step_file(file_path, name=None, material='aluminum_6061', sync_parse_bytes=_LARGE_FILE_BYTES,
-                       queue_large=True):
-    """Create (or find) the Part of a STEP file already on disk and parse its entity graph:
-    synchronously below ``sync_parse_bytes``, else queued (``queue_large``) or left for later.
-    Returns (part_id, header_id, parsing_status)."""
+def register_step_file(file_path, name=None, material='aluminum_6061'):
+    """Create (or find) the Part of a STEP file already on disk. Returns (part_id, header_id,
+    parsing_status). The entity graph is not parsed: see ``backend/entity_graph.py``."""
     existing = Part.query.filter_by(file_path=file_path).first()
     if existing:
-        part_id = str(existing.id)
-    else:
-        part = Part(name=name or os.path.splitext(os.path.basename(file_path))[0], file_path=file_path,
-                    material=material)
-        db.session.add(part)
-        db.session.commit()
-        part_id = str(part.id)
-    size = os.path.getsize(file_path)
-    if size > sync_parse_bytes:
-        if not queue_large:
-            return part_id, None, 'deferred'
-        try:
-            from app.tasks.step_graph_tasks import parse_graph_async
-            parse_graph_async.delay(file_path, part_id)
-            logger.info(f"Large file ({size / 2**20:.1f} MB) — graph parse queued for part {part_id}")
-            return part_id, None, 'queued'
-        except Exception as e:
-            # Celery not available — leave header_id as None; user can trigger parse later
-            logger.warning(f"Could not queue graph parse for {file_path}: {e}")
-            return part_id, None, 'deferred'
-    try:
-        from app.services.step_graph_storage import parse_step_graph_for_part
-        header_id = parse_step_graph_for_part(file_path, part_id)
-        logger.info(f"Graph parsed for part {part_id}: header_id={header_id}")
-        return part_id, header_id, 'done'
-    except Exception as e:
-        db.session.rollback()
-        logger.warning(f"Graph storage failed for {file_path}: {e}")
-        return part_id, None, 'failed'
+        return str(existing.id), None, 'unavailable'
+    part = Part(name=name or os.path.splitext(os.path.basename(file_path))[0], file_path=file_path,
+                material=material)
+    db.session.add(part)
+    db.session.commit()
+    return str(part.id), None, 'unavailable'
 
 
 @bp.route('/', methods=['POST'])
@@ -107,11 +79,7 @@ def upload_step_file():
         'part_id': part_id,
         'header_id': header_id,
         'parsing_status': parsing_status,
-        'message': (
-            f'File {filename} uploaded. Graph parsing queued in background.'
-            if parsing_status == 'queued'
-            else f'File {filename} uploaded successfully'
-        ),
+        'message': f'File {filename} uploaded successfully',
     }), 201
 
 

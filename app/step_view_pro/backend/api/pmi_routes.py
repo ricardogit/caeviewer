@@ -11,6 +11,8 @@ from app.step_view_pro.backend.pmi_parser import extract_pmi_for_file
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('pmi_api', __name__)
+from app.step_view_pro.backend.entity_graph import guard_blueprint  # noqa: E402
+guard_blueprint(bp)   # reads step_entities, which nothing fills here (see entity_graph.py)
 
 
 @bp.route('/<string:header_id>/extract', methods=['POST'])
