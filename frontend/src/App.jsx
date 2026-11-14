@@ -21,7 +21,7 @@ import {
 } from '@mui/material';
 import {
   Close,
-  SquareFoot, ContentCut, Draw, GridOn, Hub, Share,
+  SquareFoot, ContentCut, Draw, Hub, Share,
 } from '@mui/icons-material';
 import axios from 'axios';
 
@@ -157,15 +157,10 @@ export default function App() {
         })
         .catch(console.error);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount: open the part passed by the host page
   }, []);
 
   const headerId = selectedFile?.header_id || selectedFile?.id;
-
-  // ── Drawer layer helpers ──────────────────────────────────────────────────
-
-  function leftOffset(extras = 0) {
-    return (fileListOpen ? SIDEBAR_WIDTH : 0) + extras;
-  }
 
   return (
     <ThemeProvider theme={darkTheme}>

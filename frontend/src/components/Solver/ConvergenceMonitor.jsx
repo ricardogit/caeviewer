@@ -34,7 +34,7 @@ export default function ConvergenceMonitor({ log = [], tolerance = 1e-8 }) {
           />
           <YAxis
             tick={{ fontSize: 9, fill: '#666' }}
-            domain={[Math.min(logTol - 2, data.at(-1)?.log_res - 1 ?? -12), 1]}
+            domain={[Math.min(logTol - 2, (data.at(-1)?.log_res ?? -11) - 1), 1]}
           />
           <Tooltip
             contentStyle={{ backgroundColor: '#1e1e1e', border: '1px solid #333', fontSize: 10 }}

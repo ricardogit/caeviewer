@@ -20,7 +20,7 @@ const EDGE_DESCRIPTIONS = {
   PRODUCES:        'A genera o produce B como salida',
 };
 
-export default function EdgePanel({ edge, graphId, onClose }) {
+export default function EdgePanel({ edge, onClose }) {
   const { deleteEdge } = useDesignStore();
   const edgeType = edge.data?.edge_type || 'PHYSICAL';
   const color = EDGE_COLORS[edgeType] || '#888';

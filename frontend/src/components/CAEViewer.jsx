@@ -507,7 +507,7 @@ export default function CAEViewer({ mesh }) {
       renderWindow.delete();
       vtkRef.current = null;
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);  
 
   // Swap geometry when mesh data changes — create one actor per part when available.
   useEffect(() => {
@@ -583,6 +583,7 @@ export default function CAEViewer({ mesh }) {
     actors.forEach(a => a.mapper.setLookupTable(lut));
     vtkRef.current.lut = lut;
     renderWindow.render();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only the colormap changes the LUT; field changes rebuild the mesh elsewhere
   }, [colormap]);
 
   // Wireframe overlay toggle
@@ -684,7 +685,7 @@ export default function CAEViewer({ mesh }) {
     const useParts = parts.length > 1;
     const tris = meshData.surface_triangles || [];
 
-    actors.forEach((a, i) => {
+    actors.forEach((a) => {
       const triSubset = useParts && a.part
         ? tris.slice(a.part.tri_start, a.part.tri_start + a.part.tri_count)
         : null;

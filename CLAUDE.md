@@ -8,14 +8,12 @@ CAE Viewer is a full-stack engineering platform with three integrated modes:
 
 - **Results mode** (FASE 9): 3D field viewer of the active study's finished runs (Design → Simular → Resultados).
 - **Design mode** (FASE 1-3): Engineering concept graph editor + FEM solver. Build design graphs (GEOMETRY, MATERIAL, BC, LOAD, RESULT nodes), run structural simulations with adaptive meshing, stream solver progress via WebSocket.
-- **STEP mode**: Upload/view STEP files (.stp/.step/.p21), measure, section-cut, markup and export. The
-  entity-graph panels (entity tree, features, PMI, analysis) are **not available**: the Part 21 → relational
-  storage (`step_graph_storage`) lives in CAPP and was never ported (decided 2026-11-14, not needed for
-  simulation — CAD faces come from `app/geometry`). `backend/entity_graph.py`: `ENTITY_GRAPH_AVAILABLE = False`
-  guards the graph/features/pmi/analysis blueprints (501 `entity_graph_unavailable`); file entries carry
-  `entity_graph: false`; the STEP toolbar has no entity-tree / features / PMI / entity-details buttons
-  (the components `EntityTree`, `EntityDetails`, `FeaturePanel`, `PMIPanel`, `AnalysisPanel` are not mounted). Files found in the upload folder without a
-  Part row are registered when listed (`register_step_file`).
+- **STEP mode**: Upload/view STEP files (.stp/.step/.p21), measure, section-cut, markup and export. There is
+  **no STEP entity graph** (entity tree, manufacturing features, PMI, analysis): the Part 21 → relational storage
+  lives in CAPP and was never ported; its UI, blueprints, parsers and extractors were deleted on 2026-11-14 (not
+  needed for simulation — CAD faces come from `app/geometry`). The `step_entities`/`step_entity_edges`/… tables and
+  models stay (schema unchanged). Files found in the upload folder without a Part row are registered when listed
+  (`register_step_file`).
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
 
 **Roadmap:** `PLAN_CAE_NUEVA_GENERACION.md` is the master plan (phases FASE 0-9; "nothing happens outside
@@ -71,7 +69,11 @@ From Git Bash, prefix `docker run -e VAR=/path` with `MSYS_NO_PATHCONV=1`.
 
 The Flask app serves the built SPA from `frontend/dist/` at `/step-view/`. In development, the Vite dev server proxies API calls to Flask on port 8080.
 
-**Database**: PostgreSQL. Default URI: `postgresql://postgres:postgres@localhost:5432/caedb`. **Alembic is the only schema mechanism** — run `flask db upgrade` (startup only warns if the DB is behind head). SQLAlchemy is pinned `<2.1` (2.1 defaults `postgresql://` to psycopg 3).
+**Database**: PostgreSQL. Default URI: `postgresql://postgres:postgres@localhost:5432/caedb`. **Alembic is the only schema mechanism** — run `flask db upgrade` (startup only warns if the DB is behind head).
+`flask db upgrade` builds an empty database (root `9f0e1d2c3b4a` creates the pre-Alembic tables; `downgrade base`
+works too). `tests/test_migrations.py` checks upgrade head = models (no autogenerate diff) on a scratch DB: declare
+every index/constraint a migration adds in the model too. `.env.local` overrides `DATABASE_URL`/`FLASK_ENV`, so
+`DATABASE_URL=… flask db …` from the shell still targets `caedb`. SQLAlchemy is pinned `<2.1` (2.1 defaults `postgresql://` to psycopg 3).
 
 **Environment**: Copy `.env.example` (in `frontend/`) or create `.env` / `.env.local` at the repo root. Key variables: `DATABASE_URL`, `FLASK_ENV`, `API_PORT`, `MAX_UPLOAD_SIZE_MB`, `CORS_ORIGINS`.
 
@@ -126,14 +128,12 @@ app/
       graph_routes.py     # POST/GET/PUT/DELETE graph/nodes/edges; validate; import
       solver_routes.py    # POST /<graph_id>/run (async), /test/cantilever (validation)
   step_view_pro/
-    __init__.py           # register_step_view_blueprints() — 12 blueprints at /api/step-view/*
-    backend/api/          # viewer, upload, graph, features, pmi, geometry, analysis,
-                          # measurement, export, comparison, performance, markup routes
+    __init__.py           # register_step_view_blueprints() — 8 blueprints at /api/step-view/*
+    backend/api/          # viewer, upload, files, geometry, measurement, export, comparison,
+                          # performance, markup routes
     backend/step_processor.py     # STEP parsing pipeline
     backend/geometry_processor.py # Geometry extraction → GLB via trimesh
     backend/step_to_glb_converter.py
-    backend/pmi_parser.py
-    backend/feature_extractor.py / advanced_feature_extractor.py
     backend/cache_manager.py      # In-process mesh cache (capacity 8, keyed by path+mtime)
 config/config.py          # DevelopmentConfig / ProductionConfig / TestingConfig
               # DESIGN_DATA_DIR, SOLVER_DATA_DIR, TIER_LIMITS, SOLVER_* params
@@ -166,15 +166,10 @@ src/
     Solver/
       SolverPanel.jsx  # FEM solver config + launcher; toggle: graph mode | cantilever test
       ConvergenceMonitor.jsx  # Recharts: residual log10 vs iteration
-      FieldSelector.jsx  # Dropdown to choose result field (von Mises, displacement, etc)
     CAEViewer.jsx      # VTK.js-based FEA mesh viewer (field coloring, animation, section cut)
-    StepViewer3D.jsx   # Three.js/R3F-based STEP GLB viewer (entity picking, PMI labels)
+    StepViewer3D.jsx   # Three.js/R3F-based STEP GLB viewer (measurement picking, section cut, markup)
     CAEFileList.jsx    # Left sidebar for CAE mode
     FileList.jsx       # Left sidebar for STEP mode
-    EntityTree.jsx     # STEP entity graph browser
-    EntityDetails.jsx
-    FeaturePanel.jsx   # Manufacturing feature list
-    PMIPanel.jsx       # PMI annotations panel
     MeasurementTools.jsx
     SectionCutPanel.jsx
     MarkupPanel.jsx    # 2D SVG markup overlay
@@ -183,13 +178,8 @@ src/
   stores/
     designStore.js     # Zustand: graph CRUD, node/edge ops, validation (FASE 1)
     solverStore.js     # Zustand: simulation runs, WebSocket streaming, results (FASE 2)
-    viewerStore.js     # Zustand: CAE/STEP viewer state
-  hooks/
-    useModelLoader.js     # GLB model loading logic
-    useSelection.js       # Entity selection state
-    useUploadNotifications.js
-  utils/raycasting.js     # Three.js raycasting for entity/point picking
-  config/draco.js         # DRACOLoader path configuration (served from /draco/)
+    workspaceStore.js  # Zustand: appMode, solver panel, history dialog, preflight (FASE 9)
+  utils/               # colormap, romPack (ROM surface pack decoder)
 ```
 
 **Key frontend patterns:**
@@ -198,7 +188,9 @@ src/
   local state in `App.jsx`. `caeMode` switches between `CAEViewer` (vtk.js) and `StepViewer3D` (Three.js/R3F).
 - `CAEViewer.jsx` uses `@kitware/vtk.js` directly (not R3F) — requires `import '@kitware/vtk.js/Rendering/Profiles/Geometry'` as the first VTK import to register rendering classes.
 - `StepViewer3D.jsx` uses `@react-three/fiber` + `three`. STEP files are served as Draco-compressed GLB from `/api/step-view/geometry/<header_id>/glb`. The Draco decoder WASM files live in `public/draco/` and `dist/draco/`.
-- State management: mostly React `useState` in `App.jsx` + Zustand in `viewerStore.js` for viewer-specific state.
+- State management: Zustand stores (`designStore`, `solverStore`, `workspaceStore`, per-tool stores) + local `useState`
+  in `App.jsx` for the STEP-viewer panels. Draco decoder path is set in `StepViewer3D.jsx` (`/step-view/draco/`).
+- Lint: ESLint 9 flat config `frontend/eslint.config.js` (R3F props are allow-listed in `react/no-unknown-property`).
 - API calls use `axios` with relative URLs (e.g., `/api/cae/meshes`).
 
 ### API Routes Summary
@@ -217,11 +209,7 @@ src/
 | `/api/cae` | `mesh_from_step_routes.py` | STEP→mesh trigger |
 | `/api/step-view` | `viewer_routes.py` | STEP file listing, GLB serving |
 | `/api/step-view/upload` | `upload_routes.py` | STEP file upload + parsing |
-| `/api/step-view/graph` | `graph_routes.py` | Entity graph |
-| `/api/step-view/features` | `feature_routes.py` | Manufacturing features |
-| `/api/step-view/pmi` | `pmi_routes.py` | PMI annotations |
 | `/api/step-view/geometry` | `geometry_routes.py` | Geometry queries |
-| `/api/step-view/analysis` | `analysis_routes.py` | Analysis tools |
 | `/api/step-view/measurement` | `measurement_routes.py` | Measurement storage |
 | `/api/step-view/export` | `export_routes.py` | Export |
 | `/api/step-view/comparison` | `comparison_routes.py` | File comparison |

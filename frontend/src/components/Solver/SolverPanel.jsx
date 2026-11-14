@@ -10,7 +10,7 @@ import {
   Accordion, AccordionSummary, AccordionDetails, IconButton,
 } from '@mui/material';
 import {
-  PlayArrow, Stop, ExpandMore, Science, CheckCircle,
+  PlayArrow, Stop, ExpandMore, Science,
   Warning, Close, Refresh, History, ViewInAr,
 } from '@mui/icons-material';
 
@@ -336,6 +336,8 @@ export default function SolverPanel({ onClose }) {
           </Button>
         </Box>
       )}
+
+      <SimHistory open={historyOpen} graphId={activeGraphId} onClose={() => setHistoryOpen(false)} />
     </Box>
   );
 }
@@ -411,7 +413,6 @@ function CantileverResult({ result }) {
           <Typography variant="caption" sx={{ color: chipColor, fontFamily: 'monospace', fontSize: 10 }}>{v}</Typography>
         </Box>
       ))}
-      <SimHistory open={historyOpen} graphId={activeGraphId} onClose={() => setHistoryOpen(false)} />
     </Box>
   );
 }

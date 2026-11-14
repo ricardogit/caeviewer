@@ -5,7 +5,7 @@
 import React from 'react';
 import { Box, Typography, Tooltip, Paper } from '@mui/material';
 import {
-  Lightbulb, ViewInAr, Science, Lock, ArrowDownward, Assessment, AutoAwesome, CheckCircle,
+  Lightbulb, ViewInAr, Science, Lock, ArrowDownward, AutoAwesome, CheckCircle,
 } from '@mui/icons-material';
 import { NODE_COLORS } from './GraphEditor';
 

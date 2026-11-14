@@ -60,6 +60,7 @@ export default function NodePanel({ node, graphId, onClose }) {
     setProps(node.data.properties || {});
     setLevel(node.data.level || 0);
     setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the form only when another node is selected, not on every edit
   }, [node.id]);
 
   const setProp = (key, value) => {

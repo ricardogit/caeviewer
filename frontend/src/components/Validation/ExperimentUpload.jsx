@@ -125,7 +125,7 @@ export default function ExperimentUpload({ graphId, defaultMaterialId }) {
           ) : (
             <Typography sx={{ color: '#aaa', fontSize: 11 }}>
               {preview.n_points} sensores:{' '}
-              {Object.entries(preview.quantities || {}).map(([k, q]) => `${q.n} × ${q.label} [${q.unit}]`).join(', ')}
+              {Object.values(preview.quantities || {}).map((q) => `${q.n} × ${q.label} [${q.unit}]`).join(', ')}
             </Typography>
           )}
         </Box>

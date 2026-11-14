@@ -117,7 +117,7 @@ const useSolverStore = create(
       },
 
       // ── Cantilever test ─────────────────────────────────────────────────────
-      runCantileverTest: async (graphId) => {
+      runCantileverTest: async () => {
         const { cantileverParams: p } = get();
         set({ cantileverLoading: true, cantileverResult: null, error: null });
 
