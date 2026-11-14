@@ -13,18 +13,49 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('files_api', __name__)
 
 
+# Small files found on disk are parsed when adopted (as an upload would); bigger ones only get
+# their Part row, so listing never blocks on a long parse.
+_ADOPT_PARSE_BYTES = 2 * 1024 * 1024
+
+
+def _adopt_disk_files():
+    """Register STEP files sitting in the upload folder without a Part row (copied in by hand,
+    or left over from a reset database), so every listed file has a real id. Before this they
+    were listed with a fake id (``name_stp``) that every viewer route rejected."""
+    upload_folder = str(current_app.config.get('UPLOAD_FOLDER', 'data/uploads'))
+    if not os.path.isdir(upload_folder):
+        return
+    try:
+        known = {os.path.abspath(p) for (p,) in db.session.query(Part.file_path)
+                 .filter(Part.file_path.isnot(None)).all()}
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Could not read registered files: {e}")
+        return
+    from app.step_view_pro.backend.api.upload_routes import register_step_file, ALLOWED_EXTENSIONS
+    for fname in sorted(os.listdir(upload_folder)):
+        fpath = os.path.abspath(os.path.join(upload_folder, fname))
+        if os.path.splitext(fname.lower())[1] not in ALLOWED_EXTENSIONS or fpath in known                 or not os.path.isfile(fpath):
+            continue
+        try:
+            part_id, _, status = register_step_file(fpath, sync_parse_bytes=_ADOPT_PARSE_BYTES, queue_large=False)
+            logger.info(f"Adopted {fname} from disk as part {part_id} (graph: {status})")
+        except Exception as e:
+            db.session.rollback()
+            logger.warning(f"Could not adopt {fname}: {e}")
+
+
 @bp.route('/files', methods=['GET'])
 def list_files():
     """Return all uploaded STEP files."""
     files = []
-    seen_paths = set()
+    _adopt_disk_files()
 
     try:
         parts = Part.query.filter(Part.file_path.isnot(None)).order_by(Part.created_at.desc()).all()
         for part in parts:
             file_size_mb = 0
             if part.file_path and os.path.exists(part.file_path):
-                seen_paths.add(os.path.abspath(part.file_path))
                 try:
                     file_size_mb = round(os.path.getsize(part.file_path) / (1024 * 1024), 2)
                 except Exception:
@@ -63,35 +94,6 @@ def list_files():
     except Exception as e:
         logger.error(f"Error listing files: {e}")
         return jsonify({'error': str(e)}), 500
-
-    # Also surface files on disk not yet in DB
-    try:
-        upload_folder = str(current_app.config.get('UPLOAD_FOLDER', 'data/uploads'))
-        if os.path.isdir(upload_folder):
-            for fname in sorted(os.listdir(upload_folder)):
-                if not fname.lower().endswith(('.stp', '.step', '.p21')):
-                    continue
-                fpath = os.path.abspath(os.path.join(upload_folder, fname))
-                if fpath in seen_paths:
-                    continue
-                try:
-                    size_mb = round(os.path.getsize(fpath) / (1024 * 1024), 2)
-                except Exception:
-                    size_mb = 0
-                fake_id = fname.replace('.', '_')
-                files.append({
-                    'id': fake_id,
-                    'header_id': fake_id,
-                    'original_filename': fname,
-                    'filename': fname,
-                    'file_name': fname,
-                    'entity_count': 0,
-                    'file_size_mb': size_mb,
-                    'source': 'disk',
-                    'created_at': None,
-                })
-    except Exception as e:
-        logger.warning(f"Could not scan upload folder: {e}")
 
     return jsonify({'files': files, 'total': len(files)}), 200
 

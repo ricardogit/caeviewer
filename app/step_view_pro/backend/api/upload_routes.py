@@ -24,6 +24,44 @@ def _allowed_file(filename):
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
 
 
+def register_step_file(file_path, name=None, material='aluminum_6061', sync_parse_bytes=_LARGE_FILE_BYTES,
+                       queue_large=True):
+    """Create (or find) the Part of a STEP file already on disk and parse its entity graph:
+    synchronously below ``sync_parse_bytes``, else queued (``queue_large``) or left for later.
+    Returns (part_id, header_id, parsing_status)."""
+    existing = Part.query.filter_by(file_path=file_path).first()
+    if existing:
+        part_id = str(existing.id)
+    else:
+        part = Part(name=name or os.path.splitext(os.path.basename(file_path))[0], file_path=file_path,
+                    material=material)
+        db.session.add(part)
+        db.session.commit()
+        part_id = str(part.id)
+    size = os.path.getsize(file_path)
+    if size > sync_parse_bytes:
+        if not queue_large:
+            return part_id, None, 'deferred'
+        try:
+            from app.tasks.step_graph_tasks import parse_graph_async
+            parse_graph_async.delay(file_path, part_id)
+            logger.info(f"Large file ({size / 2**20:.1f} MB) — graph parse queued for part {part_id}")
+            return part_id, None, 'queued'
+        except Exception as e:
+            # Celery not available — leave header_id as None; user can trigger parse later
+            logger.warning(f"Could not queue graph parse for {file_path}: {e}")
+            return part_id, None, 'deferred'
+    try:
+        from app.services.step_graph_storage import parse_step_graph_for_part
+        header_id = parse_step_graph_for_part(file_path, part_id)
+        logger.info(f"Graph parsed for part {part_id}: header_id={header_id}")
+        return part_id, header_id, 'done'
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f"Graph storage failed for {file_path}: {e}")
+        return part_id, None, 'failed'
+
+
 @bp.route('/', methods=['POST'])
 def upload_step_file():
     """Upload a STEP file for visualization."""
@@ -50,54 +88,16 @@ def upload_step_file():
     file_path = os.path.join(str(upload_folder), filename)
     file.save(file_path)
 
-    file_size = os.path.getsize(file_path)
-    file_size_mb = file_size / (1024 * 1024)
-    is_large = file_size > _LARGE_FILE_BYTES
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
-    # Create or update Part record in DB
-    part_id = None
+    part_id, header_id, parsing_status = None, None, 'skipped'
     try:
-        material = request.form.get('material', 'aluminum_6061')
-        part_name = request.form.get('name', filename)
-        existing = Part.query.filter_by(file_path=file_path).first()
-        if existing:
-            part_id = str(existing.id)
-        else:
-            part = Part(name=part_name, file_path=file_path, material=material)
-            db.session.add(part)
-            db.session.commit()
-            part_id = str(part.id)
+        part_id, header_id, parsing_status = register_step_file(
+            file_path, name=request.form.get('name', filename),
+            material=request.form.get('material', 'aluminum_6061'))
     except Exception as e:
+        db.session.rollback()
         logger.warning(f'Could not create Part record: {e}')
-
-    # Parse STEP graph into DB — synchronous for small files, async for large ones
-    header_id = None
-    parsing_status = 'skipped'
-
-    if part_id:
-        if is_large:
-            # Enqueue background task so the HTTP response is not held up
-            try:
-                from app.tasks.step_graph_tasks import parse_graph_async
-                parse_graph_async.delay(file_path, part_id)
-                parsing_status = 'queued'
-                logger.info(
-                    f"Large file ({file_size_mb:.1f} MB) — graph parse queued "
-                    f"for part {part_id}"
-                )
-            except Exception as e:
-                # Celery not available — leave header_id as None; user can trigger parse later
-                parsing_status = 'deferred'
-                logger.warning(f"Could not queue graph parse for {filename}: {e}")
-        else:
-            try:
-                from app.services.step_graph_storage import parse_step_graph_for_part
-                header_id = parse_step_graph_for_part(file_path, part_id)
-                parsing_status = 'done'
-                logger.info(f"Graph parsed for part {part_id}: header_id={header_id}")
-            except Exception as e:
-                parsing_status = 'failed'
-                logger.warning(f"Graph storage failed for {filename}: {e}")
 
     return jsonify({
         'success': True,

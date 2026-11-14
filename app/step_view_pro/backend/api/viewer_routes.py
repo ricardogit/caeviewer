@@ -138,6 +138,22 @@ def _convert_glb_background(step_path: str, glb_path: str, quality: str) -> None
                 pass
 
 
+def _find_part(model_id):
+    """Part by part.id or STEPFileHeader.id; None for unknown or non-UUID ids (a non-UUID used to
+    reach Postgres as ``::UUID`` and fail with a 500)."""
+    import uuid
+    try:
+        uuid.UUID(str(model_id))
+    except ValueError:
+        return None
+    part = Part.query.filter_by(id=model_id).first()
+    if not part:
+        header = STEPFileHeader.query.filter_by(id=model_id).first()
+        if header:
+            part = header.part
+    return part
+
+
 @bp.route('/model/<string:model_id>/glb', methods=['GET'])
 def get_model_glb(model_id):
     """
@@ -150,11 +166,7 @@ def get_model_glb(model_id):
     """
     try:
         # Resolve Part — accept both part.id and STEPFileHeader.id
-        part = Part.query.filter_by(id=model_id).first()
-        if not part:
-            header = STEPFileHeader.query.filter_by(id=model_id).first()
-            if header:
-                part = header.part
+        part = _find_part(model_id)
 
         if not part:
             return jsonify({'error': 'Part not found'}), 404
@@ -303,11 +315,7 @@ def get_conversion_progress(job_id):
 def get_model_metadata(model_id):
     """Return Part metadata by part_id or STEPFileHeader.id."""
     try:
-        part = Part.query.filter_by(id=model_id).first()
-        if not part:
-            header = STEPFileHeader.query.filter_by(id=model_id).first()
-            if header:
-                part = header.part
+        part = _find_part(model_id)
 
         if not part:
             return jsonify({'error': 'Part not found'}), 404
