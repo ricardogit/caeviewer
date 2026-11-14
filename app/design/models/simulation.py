@@ -1,12 +1,14 @@
 """SimulationRun — versioned, hashed, fully traceable simulation record."""
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey
+from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Index
 from app.extensions import db
 from app.models.base import BaseModel
 
 
 class SimulationRun(BaseModel):
     __tablename__ = 'simulation_runs'
+    __table_args__ = (Index('ix_simulation_runs_graph_created', 'graph_id', 'created_at'),   # b3d5f7a9c2e4
+                      Index('ix_simulation_runs_parent', 'parent_run_id'))
 
     graph_id        = Column(UUID(as_uuid=True), ForeignKey('design_graphs.id'), nullable=False)
     graph_version   = Column(Integer, nullable=False)
