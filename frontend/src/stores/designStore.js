@@ -1,17 +1,32 @@
 /**
- * Design Store — state for the Design Graph editor.
- * FASE 1: graph CRUD, node/edge management, validation.
+ * Design store — the single study store of plan §9.3 (FASE 9): the study (DesignGraph) is the context of
+ * the whole UI, so its graph, its run and the workspace around it live together:
+ *
+ *   graph      (this file)                project list, active graph, selection, validation      FASE 1
+ *   run        design/runSlice.js         simulation launch + WebSocket streaming (ex solverStore) FASE 2/3
+ *   workspace  design/workspaceSlice.js   appMode, solver panel, history, preflight (ex workspaceStore)
+ *
+ * Opening another study resets the run state (the old run's socket events are ignored) and the preflight.
+ * Tool stores (topology, ROM, uncertainty, validation, results, material, geometry, hub, jobs) stay separate:
+ * they have their own lifecycles and are keyed by their own run ids.
+ * Subscribe with selectors (``useShallow`` for several keys): run progress updates many times per second.
  */
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { useShallow } from 'zustand/react/shallow';
 import { applyNodeChanges, applyEdgeChanges } from 'reactflow';
 import axios from 'axios';
+import { createRunSlice, RUN_IDLE } from './design/runSlice';
+import { createWorkspaceSlice } from './design/workspaceSlice';
 
 const BASE = '/api/design/graph/';
 
 const useDesignStore = create(
   devtools(
-    (set, get) => ({
+    (set, get, api) => ({
+      ...createRunSlice(set, get, api),
+      ...createWorkspaceSlice(set, get, api),
+
       // ── Project list ────────────────────────────────────────────────────────
       graphs: [],
       graphsLoading: false,
@@ -66,6 +81,7 @@ const useDesignStore = create(
       /** cascade: also delete the study's simulations and tests (the API answers 409 otherwise). */
       deleteGraph: async (graphId, cascade = false) => {
         await axios.delete(`${BASE}/${graphId}`, cascade ? { params: { cascade: 1 } } : undefined);
+        if (get().activeGraphId === graphId) get()._leaveStudy();
         set(s => ({
           graphs: s.graphs.filter(g => g.id !== graphId),
           ...(s.activeGraphId === graphId
@@ -78,7 +94,14 @@ const useDesignStore = create(
       // Active graph actions
       // ════════════════════════════════════════════════════════════════════════
 
+      /** Run + preflight + history of the previous study do not apply to another one. */
+      _leaveStudy: () => {
+        get()._unsubscribeRun();
+        set({ ...RUN_IDLE, preflight: null, historyOpen: false, showValidation: false });
+      },
+
       loadGraph: async (graphId) => {
+        if (get().activeGraphId !== graphId) get()._leaveStudy();
         set({ isLoading: true, error: null, activeGraphId: graphId,
               selectedNodeId: null, selectedEdgeId: null, validationErrors: [] });
         try {
@@ -272,3 +295,7 @@ const useDesignStore = create(
 );
 
 export default useDesignStore;
+
+/** Several keys of the study store with a shallow comparison: ``const { a, b } = useStudy('a', 'b')``. */
+export const useStudy = (...keys) =>
+  useDesignStore(useShallow((s) => Object.fromEntries(keys.map((k) => [k, s[k]]))));

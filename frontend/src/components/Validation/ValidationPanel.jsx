@@ -10,7 +10,7 @@ import {
 } from '@mui/material';
 import { Delete, CompareArrows, Tune, Visibility } from '@mui/icons-material';
 import useValidationStore from '../../stores/validationStore';
-import useDesignStore from '../../stores/designStore';
+import { useStudy } from '../../stores/designStore';
 import ExperimentUpload from './ExperimentUpload';
 import CorrelationView, { r2Color } from './CorrelationView';
 
@@ -63,7 +63,7 @@ export default function ValidationPanel({ graphId }) {
     experiments, correlations, confidence, load, loadConfidence, correlate, recalibrate, remove, openCorrelation,
     view, busy, error, clearError,
   } = useValidationStore();
-  const { graphData, loadGraph } = useDesignStore();
+  const { graphData, loadGraph } = useStudy('graphData', 'loadGraph');
   const [mode, setMode] = useState('replace');
   const matNode = graphData.nodes.find((n) => n.data?.node_type === 'MATERIAL');
   const materialId = matNode?.data?.properties?.material_id || '';

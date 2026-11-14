@@ -7,7 +7,7 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { Refresh, Assessment } from '@mui/icons-material';
-import useDesignStore from '../../stores/designStore';
+import { useStudy } from '../../stores/designStore';
 import useResultsStore from '../../stores/resultsStore';
 
 const STATUS = {
@@ -17,7 +17,9 @@ const STATUS = {
 const PURPOSE = { run: 'Simulación', reproduce: 'Reproducción', adaptive: 'Adaptativa' };
 
 export default function ResultsRunList() {
-  const { graphs, activeGraphId, fetchGraphs, loadGraph } = useDesignStore();
+  const { graphs, activeGraphId, fetchGraphs, loadGraph } = useStudy(
+    'graphs', 'activeGraphId', 'fetchGraphs', 'loadGraph'
+  );
   const { runs, runsLoading, listRuns, runId, open } = useResultsStore();
 
   useEffect(() => { if (!graphs?.length) fetchGraphs(); }, [graphs, fetchGraphs]);

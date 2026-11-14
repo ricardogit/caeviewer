@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import { Close, Delete } from '@mui/icons-material';
 import MaterialEditor from '../Material/MaterialEditor';
-import useDesignStore from '../../stores/designStore';
+import useDesignStore, { useStudy } from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
 import FaceSelector, { useStudyGeometryId } from './FaceSelector';
 import CadGeometryFields from './CadGeometryFields';
@@ -71,7 +71,7 @@ const THERMAL_MATERIAL = [['k', 'Conductividad k [W/m·K]', 'ej: 50'], ['alpha',
   ['T_ref', 'T de referencia (sin tensión) [°C]', '20']];
 
 export default function NodePanel({ node, graphId, onClose }) {
-  const { updateNode, deleteNode } = useDesignStore();
+  const { updateNode, deleteNode } = useStudy('updateNode', 'deleteNode');
   const [label, setLabel] = useState(node.data.label || '');
   const [props, setProps] = useState(node.data.properties || {});
   const [level, setLevel] = useState(node.data.level || 0);

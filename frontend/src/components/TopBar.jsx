@@ -8,9 +8,7 @@ import {
 } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
 import useJobStore, { selectActiveCount } from '../stores/jobStore';
-import useDesignStore from '../stores/designStore';
-import useSolverStore from '../stores/solverStore';
-import useWorkspaceStore from '../stores/workspaceStore';
+import { useStudy } from '../stores/designStore';
 
 /**
  * TopBar — FASE 9 §9.2. Three sections:
@@ -68,9 +66,13 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, onSetM
   const initJobs = useJobStore((st) => st.init);
   useEffect(() => { initJobs(); }, [initJobs]);
 
-  const { activeGraphId, activeGraphMeta, validateGraph } = useDesignStore();
-  const { startRun, runStatus } = useSolverStore();
-  const { appMode, preflight, openSolver, setHistoryOpen, setShowValidation, setAppMode, loadPreflight } = useWorkspaceStore();
+  const { activeGraphId, activeGraphMeta, validateGraph } = useStudy(
+    'activeGraphId', 'activeGraphMeta', 'validateGraph'
+  );
+  const { startRun, runStatus } = useStudy('startRun', 'runStatus');
+  const { appMode, preflight, openSolver, setHistoryOpen, setShowValidation, setAppMode, loadPreflight } = useStudy(
+    'appMode', 'preflight', 'openSolver', 'setHistoryOpen', 'setShowValidation', 'setAppMode', 'loadPreflight'
+  );
   const setMode = onSetMode || setAppMode;
   const studyModes = appMode === 'design' || appMode === 'results';
   const meta = activeGraphMeta && activeGraphId ? { ...activeGraphMeta, id: activeGraphId } : null;

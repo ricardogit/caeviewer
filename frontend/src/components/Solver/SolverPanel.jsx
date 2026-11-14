@@ -14,8 +14,7 @@ import {
   Warning, Close, Refresh, History, ViewInAr,
 } from '@mui/icons-material';
 
-import useDesignStore from '../../stores/designStore';
-import useSolverStore from '../../stores/solverStore';
+import useDesignStore, { useStudy } from '../../stores/designStore';
 import ConvergenceMonitor from './ConvergenceMonitor';
 import AdaptiveMonitor from './AdaptiveMonitor';
 import SimHistory from './SimHistory';
@@ -23,7 +22,6 @@ import TopologyPanel from './TopologyPanel';
 import ROMPanel from './ROMPanel';
 import UncertaintyPanel from './UncertaintyPanel';
 import ValidationPanel from '../Validation/ValidationPanel';
-import useWorkspaceStore from '../../stores/workspaceStore';
 import useResultsStore from '../../stores/resultsStore';
 
 const STATUS_COLOR = {
@@ -36,24 +34,30 @@ const STATUS_LABEL = {
 };
 
 export default function SolverPanel({ onClose }) {
-  const { activeGraphId } = useDesignStore();
+  const { activeGraphId } = useStudy('activeGraphId');
   const {
     runStatus, activePhysics, tier, tolerance,
     currentIter, currentResidual, percentComplete, currentStatus,
-    convergenceLog, resultSummary, error, adaptiveLog,
+    convergenceLog, resultSummary, runError: error, adaptiveLog,
     cantileverParams, cantileverResult, cantileverLoading,
     setActivePhysics, setTier, setCantileverParam,
     adaptiveSettings, setAdaptiveSetting, startAdaptiveRun,
-    startRun, cancelRun, runCantileverTest, resetRun, clearError,
-  } = useSolverStore();
+    startRun, cancelRun, runCantileverTest, resetRun, clearRunError: clearError,
+  } = useStudy(
+    'runStatus', 'activePhysics', 'tier', 'tolerance', 'currentIter', 'currentResidual', 'percentComplete',
+    'currentStatus', 'convergenceLog', 'resultSummary', 'runError', 'adaptiveLog', 'cantileverParams',
+    'cantileverResult', 'cantileverLoading', 'setActivePhysics', 'setTier', 'setCantileverParam',
+    'adaptiveSettings', 'setAdaptiveSetting', 'startAdaptiveRun', 'startRun', 'cancelRun', 'runCantileverTest',
+    'resetRun', 'clearRunError'
+  );
 
   // section and history dialog live in the workspace store (FASE 9) so TopBar actions can drive them
-  const mode = useWorkspaceStore((st) => st.solverMode);
-  const setMode = useWorkspaceStore((st) => st.setSolverMode);
-  const historyOpen = useWorkspaceStore((st) => st.historyOpen);
-  const setHistoryOpen = useWorkspaceStore((st) => st.setHistoryOpen);
-  const activeRunId = useSolverStore((st) => st.activeRunId);
-  const loadPreflight = useWorkspaceStore((st) => st.loadPreflight);
+  const mode = useDesignStore((st) => st.solverMode);
+  const setMode = useDesignStore((st) => st.setSolverMode);
+  const historyOpen = useDesignStore((st) => st.historyOpen);
+  const setHistoryOpen = useDesignStore((st) => st.setHistoryOpen);
+  const activeRunId = useDesignStore((st) => st.activeRunId);
+  const loadPreflight = useDesignStore((st) => st.loadPreflight);
   useEffect(() => {
     if (runStatus === 'done' && activeGraphId) loadPreflight(activeGraphId);
   }, [runStatus, activeGraphId, loadPreflight]);
@@ -340,7 +344,7 @@ export default function SolverPanel({ onClose }) {
 }
 
 function ResultSummary({ summary, runId }) {
-  const setAppMode = useWorkspaceStore((st) => st.setAppMode);
+  const setAppMode = useDesignStore((st) => st.setAppMode);
   const openRun = useResultsStore((st) => st.open);
   const showResults = () => {
     openRun(runId);

@@ -18,7 +18,7 @@ import {
 import {
   Add, Delete, Refresh, AccountTree, ExpandMore, ChevronRight, CallSplit, Difference,
 } from '@mui/icons-material';
-import useDesignStore from '../../stores/designStore';
+import { useStudy } from '../../stores/designStore';
 import { groupVersions } from './versionTree';
 import VersionDiffDialog from './VersionDiffDialog';
 
@@ -35,7 +35,10 @@ export default function GraphProjectList() {
   const {
     graphs, graphsLoading, activeGraphId,
     fetchGraphs, loadGraph, createGraph, deleteGraph, createVersion,
-  } = useDesignStore();
+  } = useStudy(
+    'graphs', 'graphsLoading', 'activeGraphId', 'fetchGraphs', 'loadGraph', 'createGraph', 'deleteGraph',
+    'createVersion'
+  );
   const groups = useMemo(() => groupVersions(graphs), [graphs]);
 
   const [creating, setCreating] = useState(false);

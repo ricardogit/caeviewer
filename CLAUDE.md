@@ -150,7 +150,7 @@ config/config.py          # DevelopmentConfig / ProductionConfig / TestingConfig
 
 ```
 src/
-  App.jsx              # Root: appMode (workspaceStore) design|results|geometry|step|cae|hub, drawers
+  App.jsx              # Root: appMode (designStore) design|results|geometry|step|cae|hub, drawers
   main.jsx
   components/
     DesignGraph/
@@ -176,19 +176,25 @@ src/
     MeshFromStepDialog.jsx  # Triggers STEP→FEA mesh generation
     ...
   stores/
-    designStore.js     # Zustand: graph CRUD, node/edge ops, validation (FASE 1)
-    solverStore.js     # Zustand: simulation runs, WebSocket streaming, results (FASE 2)
-    workspaceStore.js  # Zustand: appMode, solver panel, history dialog, preflight (FASE 9)
+    designStore.js     # Zustand: THE study store (plan §9.3) = graph slice (CRUD, selection, validation)
+    design/runSlice.js        # + run slice: simulation launch, WebSocket streaming (ex solverStore)
+    design/workspaceSlice.js  # + workspace slice: appMode, solver panel, history, preflight (ex workspaceStore)
   utils/               # colormap, romPack (ROM surface pack decoder)
 ```
 
 **Key frontend patterns:**
-- `appMode`, the solver context panel (open + section), the history dialog and the study preflight live in
-  `stores/workspaceStore.js` (FASE 9) so TopBar actions can drive other modes; the STEP-viewer panels are still
-  local state in `App.jsx`. `caeMode` switches between `CAEViewer` (vtk.js) and `StepViewer3D` (Three.js/R3F).
+- **Single study store** (`stores/designStore.js`, plan §9.3): graph + run + workspace slices in one Zustand store.
+  `appMode`, the solver context panel, the history dialog and the preflight live there so TopBar actions can drive
+  other modes. Opening another study (`loadGraph` with a different id, deleting the active one) calls `_leaveStudy`:
+  run state reset, socket listeners off + `leave_run`, preflight/history cleared; socket handlers also check
+  `activeRunId`, so a late event of an old run never lands. The graph's `error`/`clearError` and the run's
+  `runError`/`clearRunError` are separate. **Subscribe with selectors**: `useDesignStore(s => s.x)` or
+  `useStudy('a', 'b')` (shallow) — never `useDesignStore()` whole, run progress would re-render the graph editor.
+  Tool stores (topology, ROM, uncertainty, validation, results, material, geometry, hub, jobs) stay separate.
+  The STEP-viewer panels are still local state in `App.jsx`. `caeMode` switches between `CAEViewer` (vtk.js) and `StepViewer3D` (Three.js/R3F).
 - `CAEViewer.jsx` uses `@kitware/vtk.js` directly (not R3F) — requires `import '@kitware/vtk.js/Rendering/Profiles/Geometry'` as the first VTK import to register rendering classes.
 - `StepViewer3D.jsx` uses `@react-three/fiber` + `three`. STEP files are served as Draco-compressed GLB from `/api/step-view/geometry/<header_id>/glb`. The Draco decoder WASM files live in `public/draco/` and `dist/draco/`.
-- State management: Zustand stores (`designStore`, `solverStore`, `workspaceStore`, per-tool stores) + local `useState`
+- State management: Zustand stores (`designStore` = the study, per-tool stores) + local `useState`
   in `App.jsx` for the STEP-viewer panels. Draco decoder path is set in `StepViewer3D.jsx` (`/step-view/draco/`).
 - Lint: ESLint 9 flat config `frontend/eslint.config.js` (R3F props are allow-listed in `react/no-unknown-property`).
 - API calls use `axios` with relative URLs (e.g., `/api/cae/meshes`).
@@ -348,7 +354,7 @@ Exceeded limits raise `TierLimitExceeded` with suggestion for higher tier.
 
 **WebSocket Streaming:**
 - Backend: `flask-socketio` with `start_background_task()` for async solves.
-- Frontend: `socket.io-client` in `solverStore.js`; emits `solver_progress`, `solver_done`, `solver_error` per-run room.
+- Frontend: `socket.io-client` in `stores/design/runSlice.js`; emits `solver_progress`, `solver_done`, `solver_error` per-run room.
 
 **Validation Hito (FASE 2):** Cantilever T10, L/h=20, n_div=20: −0.64 % vs Timoshenko (requirement ±1 %).
 Run `python validate_fem.py` and `python -m pytest tests/test_fem_fase2.py` (patch tests, load resultants,
@@ -568,7 +574,7 @@ The study (DesignGraph) is the context of the whole UI; tools are modes around i
   run of a version links to the latest run of the earlier versions (parameter_delta). Deleting a version re-attaches
   later ones to its parent. UI: `GraphProjectList.jsx` groups projects by tree (`versionTree.js`), per version:
   changes (`VersionDiffDialog.jsx`), new version, delete. Tests: `GraphProjectList.test.jsx`.
-- Not done from the plan: a single designStore (§9.3: kept as designStore + solverStore + workspaceStore on purpose).
+- Single study store §9.3: done 2026-11-14 (see Key frontend patterns).
 - Hito: `python validate_workflow.py [--server http://127.0.0.1:8080] [--keep]` (server + worker): concept →
   graph (beam 500×25×25 T10, steel, fixed, 1 kN) → preflight → run on the job queue → run list + surface pack
   (tip deflection −0.64 % vs Timoshenko, closed surface) → SPA bundle; deletes its study. ~3 s.
@@ -629,8 +635,8 @@ Linear elastic structural only (T4 or T10; T10 is the default and the one worth 
   `SimulationRun(purpose='adaptive')`, job `fem.adaptive` (queue `solve`). Socket `adaptive_progress` per cycle +
   `solver_progress`/`solver_done`. `GET /<run>/status` adds `adaptive` and `adaptive_log`. Results = last mesh
   (Results mode, `/surface`). Adaptive runs are reproducible bit for bit (`/reproduce`).
-- UI: SolverPanel "h-Refinar" + error objetivo / ciclos máx. (`solverStore.startAdaptiveRun`, `adaptiveSettings`),
-  `AdaptiveMonitor.jsx` (estimated error vs target, mesh growth). Test `stores/solverStore.test.js`.
+- UI: SolverPanel "h-Refinar" + error objetivo / ciclos máx. (`designStore.startAdaptiveRun`, `adaptiveSettings`),
+  `AdaptiveMonitor.jsx` (estimated error vs target, mesh growth). Test `stores/designStore.test.js`.
 - Hito: `python validate_adaptive.py [--server URL]` (~2 min local): true error from an extrapolated reference
   energy; coarse beam estimate < 5 % in 3 cycles (true error 6.5 % then — ask ~3.5 % for a true 5 %); energy rate
   1.3–1.4 vs uniform 0.41; uniform n_div 80 accuracy with 6.8× fewer DOF. Server: queue, log, surface, reproduce.

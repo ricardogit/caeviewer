@@ -13,9 +13,9 @@ import {
 } from '@mui/material';
 import { AccountTree } from '@mui/icons-material';
 import useResultsStore from '../../stores/resultsStore';
-import useWorkspaceStore from '../../stores/workspaceStore';
 import { colormap, COLORBAR_CSS } from '../../utils/colormap';
 import { autoScale, fieldMeta, availableFields, fieldValues, fmt, normalizer, range } from './resultsField';
+import useDesignStore from '../../stores/designStore';
 
 function FitOnce({ box, keyId }) {
   const { camera, controls } = useThree();
@@ -127,7 +127,7 @@ export default function ResultsViewer() {
   const fields = useMemo(() => availableFields(pack), [pack]);
   const field = fields.includes(chosen) ? chosen : (fields[0] || 'vm');
   const hasU = fields.includes('umag');
-  const setAppMode = useWorkspaceStore((s) => s.setAppMode);
+  const setAppMode = useDesignStore((s) => s.setAppMode);
 
   const geometry = useMemo(() => {
     if (!pack) return null;

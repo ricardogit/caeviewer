@@ -9,8 +9,6 @@ import ResultsRunList from '../Results/ResultsRunList';
 import { autoScale, availableFields, fieldValues, normalizer, range } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
 import useDesignStore from '../../stores/designStore';
-import useSolverStore from '../../stores/solverStore';
-import useWorkspaceStore from '../../stores/workspaceStore';
 import useResultsStore from '../../stores/resultsStore';
 
 vi.mock('axios');
@@ -88,10 +86,10 @@ describe('TopBar (plan §9.2)', () => {
     cleanup();
     vi.clearAllMocks();
     axios.get.mockResolvedValue({ data: { jobs: [] } });
-    useWorkspaceStore.setState({ appMode: 'design', preflight: PREFLIGHT, solverOpen: false, historyOpen: false,
+    useDesignStore.setState({ appMode: 'design', preflight: PREFLIGHT, solverOpen: false, historyOpen: false,
       showValidation: false, loadPreflight: vi.fn() });
     useDesignStore.setState({ activeGraphId: 'g1', activeGraphMeta: { name: 'Viga', version: 3, status: 'draft' } });
-    useSolverStore.setState({ runStatus: 'idle' });
+    useDesignStore.setState({ runStatus: 'idle' });
   });
 
   it('shows the project context: name, version, status, readiness and tier', () => {
@@ -108,30 +106,30 @@ describe('TopBar (plan §9.2)', () => {
     const validateGraph = vi.fn().mockResolvedValue({ ready_for_simulation: true });
     const startRun = vi.fn().mockResolvedValue('r2');
     useDesignStore.setState({ validateGraph });
-    useSolverStore.setState({ startRun });
+    useDesignStore.setState({ startRun });
     render(<TopBar />);
     fireEvent.click(screen.getByText('Simular'));
     await waitFor(() => expect(startRun).toHaveBeenCalledWith('g1'));
-    expect(useWorkspaceStore.getState().solverOpen).toBe(true);
-    expect(useWorkspaceStore.getState().solverMode).toBe('graph');
+    expect(useDesignStore.getState().solverOpen).toBe(true);
+    expect(useDesignStore.getState().solverMode).toBe('graph');
   });
 
   it('Simular on an incomplete graph shows the validation instead of running', async () => {
     const startRun = vi.fn();
     useDesignStore.setState({ validateGraph: vi.fn().mockResolvedValue({ ready_for_simulation: false }) });
-    useSolverStore.setState({ startRun });
+    useDesignStore.setState({ startRun });
     render(<TopBar />);
     fireEvent.click(screen.getByText('Simular'));
-    await waitFor(() => expect(useWorkspaceStore.getState().showValidation).toBe(true));
+    await waitFor(() => expect(useDesignStore.getState().showValidation).toBe(true));
     expect(startRun).not.toHaveBeenCalled();
   });
 
   it('Historial opens the history dialog and mode chips switch the workspace', () => {
     render(<TopBar />);
     fireEvent.click(screen.getByText('Historial'));
-    expect(useWorkspaceStore.getState().historyOpen).toBe(true);
+    expect(useDesignStore.getState().historyOpen).toBe(true);
     fireEvent.click(screen.getByText('Resultados'));
-    expect(useWorkspaceStore.getState().appMode).toBe('results');
+    expect(useDesignStore.getState().appMode).toBe('results');
   });
 });
 

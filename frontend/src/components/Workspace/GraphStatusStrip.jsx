@@ -7,8 +7,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Typography, IconButton, Tooltip } from '@mui/material';
 import { ExpandLess, ExpandMore } from '@mui/icons-material';
-import useDesignStore from '../../stores/designStore';
-import useWorkspaceStore from '../../stores/workspaceStore';
+import { useStudy } from '../../stores/designStore';
 
 const fmtInt = (n) => (n == null ? '—' : Number(n).toLocaleString('es-MX'));
 
@@ -51,8 +50,8 @@ export function statusLines(p) {
 const ICON = { error: ['⚠', '#ef9a9a'], warn: ['⚠', '#ffe082'], ok: ['✓', '#a5d6a7'], info: ['ℹ', '#90caf9'] };
 
 export default function GraphStatusStrip() {
-  const { activeGraphId, graphData } = useDesignStore();
-  const { preflight, loadPreflight } = useWorkspaceStore();
+  const { activeGraphId, graphData } = useStudy('activeGraphId', 'graphData');
+  const { preflight, loadPreflight } = useStudy('preflight', 'loadPreflight');
   const [open, setOpen] = useState(true);
 
   // structural fingerprint of the graph: refresh when content changes, not on drags

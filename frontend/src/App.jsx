@@ -44,8 +44,7 @@ import GeometryViewer from './components/Geometry/GeometryViewer';
 import FacePanel from './components/Geometry/FacePanel';
 import ResultsViewer from './components/Results/ResultsViewer';
 import ResultsRunList from './components/Results/ResultsRunList';
-import useWorkspaceStore from './stores/workspaceStore';
-import useDesignStore from './stores/designStore';
+import useDesignStore, { useStudy } from './stores/designStore';
 
 const darkTheme = createTheme({
   palette: {
@@ -66,7 +65,9 @@ export default function App() {
 
   // ── App mode (FASE 9: workspace store, so TopBar actions and panels can switch it) ──
   // design | results | geometry | step | cae | hub — Design Graph is the default (§1.5)
-  const { appMode, setAppMode, solverOpen, setSolverOpen, toggleSolver, loadPreflight } = useWorkspaceStore();
+  const { appMode, setAppMode, solverOpen, setSolverOpen, toggleSolver, loadPreflight } = useStudy(
+    'appMode', 'setAppMode', 'solverOpen', 'setSolverOpen', 'toggleSolver', 'loadPreflight'
+  );
   const activeGraphId = useDesignStore((st) => st.activeGraphId);
   useEffect(() => { loadPreflight(activeGraphId); }, [activeGraphId, loadPreflight]);
   const caeMode = appMode === 'cae';     // kept for internal logic compatibility
