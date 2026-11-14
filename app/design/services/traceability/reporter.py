@@ -209,12 +209,19 @@ class AutoReporter:
         else:
             L.append(f'- **Malla:** {src}')
         topo = inp.get('topology') or {}
-        if topo:
+        if topo and topo.get('method') == 'levelset':
+            L.append(f"- **Optimización topológica:** level set (reacción-difusión), fracción de volumen "
+                     f"{_fmt(topo.get('volume_fraction'))}, τ = {_fmt(topo.get('tau'))}, Δt = {_fmt(topo.get('dt'))}, "
+                     f"rampa {_fmt(topo.get('ramp_iter'))} it., máx. {_fmt(topo.get('max_iter'))} iteraciones")
+        elif topo:
             L.append(f"- **Optimización topológica:** {str(topo.get('method', 'simp')).upper()}, fracción de volumen "
                      f"{_fmt(topo.get('volume_fraction'))}, p = {_fmt(topo.get('p_penalization'))}, filtro "
                      + (f"{_fmt(topo['filter_radius'] * 1000, 3)} mm" if topo.get('filter_radius')
                         else f"{_fmt(topo.get('filter_factor'))} × arista media")
                      + f", proyección {'sí' if topo.get('projection') else 'no'}, máx. {_fmt(topo.get('max_iter'))} iteraciones")
+            if topo.get('am_constraint'):
+                L.append(f"- **Restricción de manufactura aditiva:** voladizo máx. {_fmt(topo.get('max_overhang_angle'))}° "
+                         f"respecto a la horizontal, dirección de impresión {_fmt(topo.get('build_direction'))}")
         for bc in inp.get('bcs') or []:
             where = bc.get('face_set') or bc.get('node_set') or '?'
             dofs = ''.join('XYZ'[int(d)] for d in bc.get('dofs') or [] if 0 <= int(d) < 3)

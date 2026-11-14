@@ -57,8 +57,30 @@ def load_state(run_id, which: str = 'auto') -> dict | None:
     return out
 
 
+def _printability(opt, r, settings) -> dict:
+    """AM metrics of the final 0/1 design: unsupported volume (sharp printing recursion) and
+    down-facing overhang area of the iso-surface, for the build direction of the run (or +Z)."""
+    from app.design.services.topology.am_constraints import AMConstraints, overhang_area_fraction
+    from app.design.services.topology.isosurface import extract_isosurface
+    try:
+        b = list(getattr(settings, 'build_direction', None) or [0.0, 0.0, 1.0])
+        ang = float(getattr(settings, 'max_overhang_angle', 45.0) or 45.0)
+        am = opt.am if getattr(opt, 'am', None) is not None else \
+            AMConstraints(opt.centroids, opt.vol, opt.h_mean, b, ang)
+        bw = (r['densities'] >= 0.5).astype(float)
+        surf = extract_isosurface(opt.mesh.nodes, opt.mesh.elements, r['densities'])
+        oh = overhang_area_fraction(surf['vertices'], surf['faces'], b, ang, plate_tol=opt.h_mean)
+        return {'am': {'constrained': bool(getattr(settings, 'am_constraint', False)), 'build_direction': b,
+                       'max_overhang_angle': ang, 'unsupported_volume_fraction': am.unsupported_fraction(bw),
+                       'overhang_area_fraction': oh['overhang_fraction']}}
+    except Exception as e:                                    # metrics must never fail a finished run
+        logger.warning('AM metrics failed: %s', e)
+        return {}
+
+
 def run_topology(ctx, run_id: str, spec: dict) -> dict:
-    """Job body for 'topology.simp'."""
+    """Job body for 'topology.simp' (SIMP, optionally with the AM overhang filter, or level set:
+    ``spec['topology']['method']``)."""
     from app.extensions import db
     from app.design.models.simulation import SimulationRun
     from app.design.services.fem.kernel import FEMKernel, _json_safe
@@ -66,6 +88,7 @@ def run_topology(ctx, run_id: str, spec: dict) -> dict:
     from app.design.services.fem.solver import check_tier_limits
     from app.design.services.traceability.hasher import mesh_hash, array_hash
     from app.design.services.topology.simp import SIMPOptimizer, SIMPSettings
+    from app.design.services.topology.levelset import LevelSetOptimizer, LevelSetSettings
 
     kernel = FEMKernel()
     room = str(run_id)
@@ -77,7 +100,11 @@ def run_topology(ctx, run_id: str, spec: dict) -> dict:
     kernel._update_run(run_id, 'running')
     kernel._record_fingerprint(run_id, spec)
     try:
-        settings = SIMPSettings.from_dict(spec.get('topology'))
+        method = (spec.get('topology') or {}).get('method', 'simp')
+        if method == 'levelset':
+            settings = LevelSetSettings.from_dict(spec.get('topology'))
+        else:
+            settings = SIMPSettings.from_dict(spec.get('topology'))
         mspec = dict(spec)
         mspec['mesh_params'] = {**(spec.get('mesh_params') or {}), 'order': 1}
         ctx.progress(1, 'Mallando dominio de diseño', force=True)
@@ -94,8 +121,8 @@ def run_topology(ctx, run_id: str, spec: dict) -> dict:
             ctx.check_cancel()
             history.append(h)
             pct = 5 + 90 * h['iter'] / settings.max_iter
-            ctx.progress(pct, f"iter {h['iter']} · C={h['compliance']:.4g} · Δ={h['change']:.3f} · "
-                              f"β={h['beta']}")
+            extra = f"β={h['beta']}" if h.get('beta') is not None else f"V={h['volume_fraction']:.3f}"
+            ctx.progress(pct, f"iter {h['iter']} · C={h['compliance']:.4g} · Δ={h['change']:.3f} · {extra}")
             emit('topology_progress', {**h, 'percent': round(pct, 1), 'status': 'running',
                                        'max_iter': settings.max_iter})
 
@@ -104,20 +131,22 @@ def run_topology(ctx, run_id: str, spec: dict) -> dict:
                           history=np.array(json.dumps(history)))
             emit('topology_snapshot', {'iter': it})
 
-        opt = SIMPOptimizer(mesh, D, spec.get('loads', []), spec.get('bcs', []), settings,
-                            progress=progress, snapshot=snapshot, check_cancel=ctx.check_cancel)
+        Opt = LevelSetOptimizer if method == 'levelset' else SIMPOptimizer
+        opt = Opt(mesh, D, spec.get('loads', []), spec.get('bcs', []), settings,
+                  progress=progress, snapshot=snapshot, check_cancel=ctx.check_cancel)
         m4 = opt.mesh
         _atomic_savez(d / 'mesh.npz', nodes=m4.nodes, elements=m4.elements,
                       passive_solid=opt.passive_solid, passive_void=opt.passive_void,
                       design=opt.design, volumes=opt.vol)
         emit('topology_progress', {'status': 'optimizing', 'iter': 0, 'percent': 5,
                                    'n_elements': m4.n_elements, 'n_design': int(opt.design.sum()),
-                                   'filter_radius': settings.filter_radius})
+                                   'filter_radius': getattr(settings, 'filter_radius', None),
+                                   'method': method})
         r = opt.run()
         _atomic_savez(d / 'result.npz', iteration=np.int64(r['n_iterations']), x=r['x'],
                       densities=r['densities'], u=r['u'], history=np.array(json.dumps(r['history'])))
         summary = {
-            'kind': 'topology', 'method': 'SIMP',
+            'kind': 'topology', 'method': 'Level set' if method == 'levelset' else 'SIMP',
             'element_type': 'T4', 'n_nodes': m4.n_nodes, 'n_elements': m4.n_elements,
             'n_dof': m4.n_dof_structural, 'tier': tier,
             'converged': r['converged'], 'n_iterations': r['n_iterations'],
@@ -136,6 +165,7 @@ def run_topology(ctx, run_id: str, spec: dict) -> dict:
             'result_hash': array_hash(r['densities']),
             'wall_time_s': round(time.perf_counter() - t0, 3),
         }
+        summary.update(_printability(opt, r, settings))
         if meta:
             summary['mesh'] = {k: v for k, v in meta.items() if k not in ('attempts', 'bridge')}
         run = db.session.get(SimulationRun, run_id)

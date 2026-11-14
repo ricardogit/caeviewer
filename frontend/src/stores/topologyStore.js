@@ -1,5 +1,5 @@
 /**
- * Topology store — FASE 4: SIMP runs, live progress (socket.io) and extraction.
+ * Topology store — FASE 4: SIMP / level-set runs (optional AM overhang filter), live progress (socket.io) and extraction.
  */
 import { create } from 'zustand';
 import axios from 'axios';
@@ -15,7 +15,31 @@ export const DEFAULT_SETTINGS = {
   projection: true,
   keep_bc_load_solid: true,
   mesh_size_mm: '',
+  method: 'simp',          // simp | levelset
+  am_constraint: false,
+  build_direction: [0, 0, 1],
+  max_overhang_angle: 45,
+  tau: 2e-4,
+  ramp_iter: 40,
 };
+
+const SIMP_ONLY = ['p_penalization', 'filter_factor', 'projection', 'am_constraint', 'build_direction',
+  'max_overhang_angle'];
+const LEVELSET_ONLY = ['tau', 'ramp_iter'];
+
+/** Request body for the selected method (only the keys that method understands). */
+export function requestBody(settings) {
+  const { method, ...rest } = settings;
+  const body = { ...rest };
+  (method === 'levelset' ? SIMP_ONLY : LEVELSET_ONLY).forEach(k => delete body[k]);
+  if (method !== 'levelset' && !body.am_constraint) {
+    delete body.build_direction;
+    delete body.max_overhang_angle;
+  }
+  if (body.mesh_size_mm === '' || body.mesh_size_mm == null) delete body.mesh_size_mm;
+  else body.mesh_size_mm = Number(body.mesh_size_mm);
+  return { path: method === 'levelset' ? 'run-levelset' : 'run-simp', body };
+}
 
 const useTopologyStore = create((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
@@ -35,13 +59,11 @@ const useTopologyStore = create((set, get) => ({
 
   start: async (graphId) => {
     const { settings } = get();
-    const body = { ...settings };
-    if (body.mesh_size_mm === '' || body.mesh_size_mm == null) delete body.mesh_size_mm;
-    else body.mesh_size_mm = Number(body.mesh_size_mm);
+    const { path, body } = requestBody(settings);
     set({ status: 'queued', stage: 'En cola', history: [], summary: null, meta: null, error: null,
           extracted: null, snapshotIter: 0, maxIter: settings.max_iter });
     try {
-      const r = await axios.post(`${API}/${graphId}/run-simp`, body);
+      const r = await axios.post(`${API}/${graphId}/${path}`, body);
       set({ runId: r.data.run_id });
       get()._subscribe(r.data.run_id);
       return r.data;

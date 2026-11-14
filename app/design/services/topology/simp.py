@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 MAX_ELEMENTS = 150_000        # Ke⁰ storage + pattern: ~1.2 kB/element
 DIRECT_MAX_DOF = 3000
+DIRECT_FALLBACK_DOF = 100_000      # direct solve when PCG fails (memory bound)
 
 
 class TopologyError(ValueError):
@@ -57,6 +58,10 @@ class SIMPSettings:
     passive_void_sets: list = field(default_factory=list)
     snapshot_every: int = 5
     cg_tol: float = 1e-8
+    # FASE 4.3: additive-manufacturing overhang filter (Langelaar, unstructured)
+    am_constraint: bool = False
+    build_direction: list = field(default_factory=lambda: [0.0, 0.0, 1.0])
+    max_overhang_angle: float = 45.0
 
     @classmethod
     def from_dict(cls, d: dict | None) -> 'SIMPSettings':
@@ -68,10 +73,21 @@ class SIMPSettings:
         if not 1.0 <= s.p_penalization <= 6.0:
             raise TopologyError('La penalización p debe estar entre 1 y 6')
         s.max_iter = int(max(1, min(s.max_iter, 1000)))
+        if s.am_constraint:
+            b = np.asarray(s.build_direction, float)
+            if b.shape != (3,) or np.linalg.norm(b) < 1e-12:
+                raise TopologyError('La dirección de impresión debe ser un vector [x, y, z] no nulo')
+            if not 10.0 <= float(s.max_overhang_angle) <= 80.0:
+                raise TopologyError('El ángulo máximo de voladizo debe estar entre 10° y 80°')
+            s.build_direction = (b / np.linalg.norm(b)).tolist()
         return s
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if not self.am_constraint:            # keep the hash of runs without AM unchanged (FASE 7)
+            for k in ('am_constraint', 'build_direction', 'max_overhang_angle'):
+                d.pop(k)
+        return d
 
 
 def to_t4(mesh: FEMMesh) -> FEMMesh:
@@ -189,14 +205,17 @@ class SIMPOptimizer:
             raise TopologyError('Casi todos los elementos son pasivos: no queda dominio de diseño.')
 
         # filter
+        edges = nodes[el[:, [1, 2, 3, 2, 3, 3]]] - nodes[el[:, [0, 0, 0, 1, 1, 2]]]
+        self.h_mean = float(np.linalg.norm(edges, axis=2).mean())
         if s.filter_radius is None:
-            edges = nodes[el[:, [1, 2, 3, 2, 3, 3]]] - nodes[el[:, [0, 0, 0, 1, 1, 2]]]
-            self.h_mean = float(np.linalg.norm(edges, axis=2).mean())
             s.filter_radius = s.filter_factor * self.h_mean
-        else:
-            self.h_mean = None
         self.filter = DensityFilter(s.filter_radius).build_weight_matrix(self.centroids, self.vol)
         self.proj = HeavisideProjection(beta=1.0, eta=s.eta)
+        self.am = None
+        if s.am_constraint:
+            from app.design.services.topology.am_constraints import AMConstraints
+            self.am = AMConstraints(self.centroids, self.vol, self.h_mean, s.build_direction,
+                                    s.max_overhang_angle)
         self.v_design = float(self.vol[self.design].sum())
         self.v_target = s.volume_fraction * self.v_design
         self.setup_s = time.perf_counter() - t0
@@ -205,10 +224,19 @@ class SIMPOptimizer:
 
     # ── pieces ────────────────────────────────────────────────────────────────
 
-    def physical(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """x → (ρ̃ filtered, ρ̄ projected), passive elements enforced."""
+    def physical(self, x: np.ndarray, keep: bool = True) -> tuple[np.ndarray, np.ndarray]:
+        """x → (ρ̃ filtered, ρ̄ projected), passive elements enforced. With the AM filter the
+        projection acts on the printed density ξ = AM(ρ̃) (kept in ``self._xi`` for the chain rule)."""
         rt = self.filter.apply(x)
-        rb = self.proj.project(rt) if self.s.projection else rt.copy()
+        if self.am is not None:
+            src = rt.copy()
+            src[self.passive_solid] = 1.0              # solid regions support what is printed on them
+            xi = self.am.forward(src, keep=keep)
+        else:
+            xi = rt
+        if keep:
+            self._xi = xi
+        rb = self.proj.project(xi) if self.s.projection else xi.copy()
         rb[self.passive_solid] = 1.0
         rb[self.passive_void] = 0.0
         return rt, rb
@@ -222,7 +250,7 @@ class SIMPOptimizer:
 
     def _solve(self, K, x0, state: dict):
         n = K.shape[0]
-        if n <= DIRECT_MAX_DOF:
+        if n <= DIRECT_MAX_DOF or state.get('direct'):
             return spla.spsolve(K.tocsc(), self.rhs), 1
         from app.design.services.fem.solver import _amg_preconditioner, _CG_TOL_KW
         if state.get('M') is None or state.get('age', 0) >= 4 or \
@@ -238,8 +266,22 @@ class SIMPOptimizer:
             it[0] += 1
         u, info = spla.cg(K, self.rhs, x0=x0, M=state['M'], atol=0.0, maxiter=max(2000, 20 * int(np.sqrt(n))),
                           callback=cb, **{_CG_TOL_KW: self.s.cg_tol})
+        if info != 0 and not state.get('fresh'):           # stale hierarchy: rebuild once and retry
+            M, _ = _amg_preconditioner(K, self.B)
+            if M is not None:
+                state.update(M=M, age=0, fresh=True)
+                it[0] = 0
+                u, info = spla.cg(K, self.rhs, x0=u, M=M, atol=0.0, maxiter=max(2000, 20 * int(np.sqrt(n))),
+                                  callback=cb, **{_CG_TOL_KW: self.s.cg_tol})
         if info != 0:
-            logger.warning('SIMP CG did not converge (info=%s, %d it)', info, it[0])
+            # near-void regions (e.g. the AM filter early on) make K too ill-conditioned for PCG:
+            # an unconverged u would poison the sensitivities, so solve directly while affordable
+            if n <= DIRECT_FALLBACK_DOF:
+                logger.info('SIMP CG did not converge (%d it): direct solve (%d DOF)', it[0], n)
+                u = spla.spsolve(K.tocsc(), self.rhs)
+                state['direct'] = True                     # stays ill-conditioned: skip PCG from now on
+            else:
+                logger.warning('SIMP CG did not converge (info=%s, %d it)', info, it[0])
         if state.pop('fresh', False):
             state['base_it'] = it[0]
         state['age'] += 1
@@ -259,6 +301,20 @@ class SIMPOptimizer:
         dc = -p * rb ** (p - 1) * (1.0 - e) * ce
         return c, dc, u, uf, its
 
+    def chain_rule(self, dc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """dC/dx and dV/dx from dC/dρ̄ (call right after ``physical(x)``): projection → AM → filter."""
+        ne = self.mesh.n_elements
+        chain = self.proj.sensitivity_chain(self._xi) if self.s.projection else np.ones(ne)
+        dc_rt = dc * chain
+        dv_rt = np.where(self.design, self.vol, 0.0) * chain
+        dc_rt[~self.design] = 0.0
+        if self.am is not None:                       # through the printing recursion
+            dc_rt = self.am.backprop(dc_rt)
+            dv_rt = self.am.backprop(dv_rt)
+            dc_rt[self.passive_solid] = 0.0
+            dv_rt[self.passive_solid] = 0.0
+        return self.filter.backprop(dc_rt), self.filter.backprop(dv_rt)
+
     def volume(self, rb: np.ndarray) -> float:
         return float(self.vol[self.design] @ rb[self.design])
 
@@ -276,7 +332,7 @@ class SIMPOptimizer:
             lm = 0.5 * (l1 + l2)
             cand = x.copy()
             cand[d] = np.clip(x[d] * np.sqrt(neg_dc[d] / (dv[d] * 10.0 ** lm)), lo_b[d], hi_b[d])
-            if self.volume(self.physical(cand)[1]) > self.v_target:
+            if self.volume(self.physical(cand, keep=False)[1]) > self.v_target:
                 l1 = lm
             else:
                 l2 = lm
@@ -304,12 +360,7 @@ class SIMPOptimizer:
                 self.check_cancel()
             rt, rb = self.physical(x)
             c, dc, u, uf, cg_it = self.compliance_and_sensitivity(rb, x0=uf, state=state)
-            chain = self.proj.sensitivity_chain(rt) if s.projection else np.ones(ne)
-            dc_rt = dc * chain
-            dv_rt = np.where(self.design, self.vol, 0.0) * chain
-            dc_rt[~self.design] = 0.0
-            dc_dx = self.filter.backprop(dc_rt)
-            dv_dx = self.filter.backprop(dv_rt)
+            dc_dx, dv_dx = self.chain_rule(dc)
             x_new = self._oc(x, dc_dx, dv_dx)
             change = float(np.abs(x_new - x)[self.design].max())
             x = x_new

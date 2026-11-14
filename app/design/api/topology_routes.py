@@ -1,4 +1,4 @@
-"""Design Topology API — SIMP topology optimization (FASE 4).
+"""Design Topology API — SIMP (+ AM overhang filter) and level-set topology optimization (FASE 4).
 
 The optimization settings live in the graph: an OPTIMIZATION node (created on the first run)
 stores them, and the extracted optimum comes back as a GEOMETRY node produced by it.
@@ -18,17 +18,24 @@ logger = logging.getLogger(__name__)
 bp = Blueprint('design_topology', __name__)
 
 SETTING_KEYS = ('volume_fraction', 'p_penalization', 'filter_radius', 'filter_factor', 'max_iter', 'tol',
-                'move', 'emin_ratio', 'projection', 'beta_max', 'keep_bc_load_solid')
+                'move', 'emin_ratio', 'projection', 'beta_max', 'keep_bc_load_solid',
+                'am_constraint', 'build_direction', 'max_overhang_angle')
+LEVELSET_KEYS = ('volume_fraction', 'tau', 'dt', 'max_iter', 'ramp_iter', 'band', 'emin_ratio',
+                 'tol_compliance', 'keep_bc_load_solid')
+METHOD_KEYS = {'simp': SETTING_KEYS, 'levelset': LEVELSET_KEYS}
 
 
 @bp.route('/status', methods=['GET'])
 def status():
     from app.design.services.topology.simp import SIMPSettings, MAX_ELEMENTS
+    from app.design.services.topology.levelset import LevelSetSettings
     return jsonify({
         'module': 'design.topology', 'status': 'ok',
-        'methods_available': ['simp'],
-        'methods_pending': {'levelset': 'pendiente', 'am_constraints': 'pendiente'},
-        'defaults': SIMPSettings().to_dict(),
+        'methods_available': ['simp', 'levelset'],
+        'am_constraints': True,
+        'defaults': {**SIMPSettings().to_dict(), 'am_constraint': False, 'build_direction': [0.0, 0.0, 1.0],
+                     'max_overhang_angle': 45.0},
+        'defaults_levelset': LevelSetSettings().to_dict(),
         'max_elements': MAX_ELEMENTS,
     }), 200
 
@@ -39,13 +46,13 @@ def _optimization_node(graph_id):
             .order_by(DesignNode.created_at).first())
 
 
-def _save_settings_node(graph_id, settings: dict):
+def _save_settings_node(graph_id, settings: dict, method: str = 'simp'):
     """Persist the settings used in the graph's OPTIMIZATION node (create it if needed)."""
     from app.design.models.graph import DesignNode
     from app.design.services.graph_service import DesignGraphService
     svc = DesignGraphService()
     node = _optimization_node(graph_id)
-    props = {'method': 'simp', **{k: settings.get(k) for k in SETTING_KEYS}}
+    props = {'method': method, **{k: settings.get(k) for k in METHOD_KEYS[method] if k in settings}}
     if node is None:
         geo = (DesignNode.query.filter_by(graph_id=graph_id, node_type='GEOMETRY')
                .order_by(DesignNode.created_at).first())
@@ -64,30 +71,50 @@ def run_simp(graph_id):
     """Launch SIMP on the graph's study (geometry/material/BC/loads from the graph).
 
     Body (all optional): { volume_fraction, p_penalization, filter_radius, max_iter, tol, move,
-    emin_ratio, projection, beta_max, keep_bc_load_solid, tier, mesh_size_mm,
+    emin_ratio, projection, beta_max, keep_bc_load_solid, am_constraint, build_direction,
+    max_overhang_angle, tier, mesh_size_mm,
     mesh_source/mesh_params/bcs/loads (to override the graph, e.g. the 'plate' hito) }.
     Defaults come from the graph's OPTIMIZATION node, then SIMPSettings.
     Socket room=run_id: topology_progress, topology_snapshot, topology_done, topology_error.
     """
+    return _launch(graph_id, 'simp')
+
+
+@bp.route('/<string:graph_id>/run-levelset', methods=['POST'])
+def run_levelset(graph_id):
+    """Launch the reaction-diffusion level-set optimizer (same study input as run-simp).
+
+    Body (all optional): { volume_fraction, tau, dt, max_iter, ramp_iter, band, emin_ratio,
+    tol_compliance, keep_bc_load_solid, tier, mesh_size_mm, mesh_source/mesh_params/bcs/loads }.
+    """
+    return _launch(graph_id, 'levelset')
+
+
+def _launch(graph_id, method):
     from app.design.models.graph import DesignGraph
     from app.design.api.solver_routes import prepare_spec, _create_and_enqueue
     from app.design.services.topology.simp import SIMPSettings, TopologyError
+    from app.design.services.topology.levelset import LevelSetSettings
+    keys = METHOD_KEYS[method]
 
     graph = db.session.get(DesignGraph, graph_id)
     if not graph:
         return jsonify({'error': 'Graph not found'}), 404
     body = request.get_json(silent=True) or {}
     node = _optimization_node(graph_id)
-    raw = {**{k: v for k, v in ((node.properties or {}) if node else {}).items() if k in SETTING_KEYS},
-           **{k: body[k] for k in SETTING_KEYS if k in body}}
+    props = (node.properties or {}) if node else {}
+    same = props.get('method', 'simp') == method          # a node saved by the other method only shares the volume
+    raw = {**{k: v for k, v in props.items() if k in keys and (same or k == 'volume_fraction')},
+           **{k: body[k] for k in keys if k in body}}
     try:
-        settings = SIMPSettings.from_dict(raw)
+        settings = (LevelSetSettings if method == 'levelset' else SIMPSettings).from_dict(raw)
     except (TopologyError, TypeError, ValueError) as e:
         return jsonify({'error': str(e), 'kind': 'settings'}), 422
     if any(ld.get('gravity') is not None for ld in body.get('loads', [])):
         return jsonify({'error': 'La gravedad no está soportada en optimización topológica'}), 422
 
-    data = {k: v for k, v in body.items() if k not in SETTING_KEYS and k != 'mesh_size_mm'}
+    data = {k: v for k, v in body.items() if k not in SETTING_KEYS and k not in LEVELSET_KEYS
+            and k != 'mesh_size_mm'}
 
     def adjust(d):
         mp = dict(d.get('mesh_params') or {})
@@ -105,18 +132,13 @@ def run_simp(graph_id):
     if not data.get('loads') or not data.get('bcs'):
         return jsonify({'error': 'El estudio necesita al menos una restricción y una carga.',
                         'kind': 'graph_spec'}), 422
-    data['topology'] = {**settings.to_dict(), 'method': 'simp'}
+    data['topology'] = {**settings.to_dict(), 'method': method}
     data['graph_id'] = graph_id
-    _save_settings_node(graph_id, settings.to_dict())
+    _save_settings_node(graph_id, settings.to_dict(), method)
     run, job = _create_and_enqueue(graph, data, purpose='topology')
     return jsonify({'run_id': str(run.id), 'job_id': str(job.id), 'hash': run.hash, 'status': 'queued',
                     'settings': data['topology'], 'parent_run_id': str(run.parent_run_id) if run.parent_run_id else None,
                     'parameter_delta': run.parameter_delta or {}}), 202
-
-
-@bp.route('/<string:graph_id>/run-levelset', methods=['POST'])
-def run_levelset(graph_id):
-    return jsonify({'error': 'Level Set todavía no está implementado; usa SIMP.', 'kind': 'not_implemented'}), 501
 
 
 def _run_or_404(run_id):

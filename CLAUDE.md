@@ -338,11 +338,12 @@ volume-weighted density filter (`filter.py`, KD-tree, r = 2 × mean edge by defa
 projection with β continuation 1 → 16, OC update with bisection evaluated through filter+projection.
 Ke⁰ of every element is stored once; each iteration rescales it into a fixed reduced (free-DOF) CSR
 pattern with one `bincount`. Solves: direct ≤ 3000 DOF, else PCG with a seeded pyamg hierarchy reused
-for a few iterations (warm start). Limit `MAX_ELEMENTS` = 150 000. T10 study meshes are reduced to T4.
+for a few iterations (warm start); if PCG fails the hierarchy is rebuilt once, then the run switches to
+direct solves (≤ `DIRECT_FALLBACK_DOF` = 100K; near-void regions, e.g. AM early on, make K too
+ill-conditioned). Limit `MAX_ELEMENTS` = 150 000. T10 study meshes are reduced to T4.
 - Elements touching BC/load sets are passive solid, except BCs flagged `symmetry` or `keep_solid: False`
   (`graph_to_solver_spec` sets them; plane/symmetry constraints must not freeze material).
-- Not supported (clear 422): gravity/body loads, non-zero prescribed displacements. Level Set and AM
-  constraints are still stubs (501 / disabled in UI).
+- Not supported (clear 422): gravity/body loads, non-zero prescribed displacements.
 - `isosurface.py`: marching tetrahedra on nodal density + clipped domain-boundary caps → watertight,
   outward-oriented surface (STL/GLB export, mm).
 - Job `topology.simp` (queue `solve`, `runner.py`): files in `SOLVER_DATA_DIR/topology/<run_id>/`
@@ -356,6 +357,32 @@ for a few iterations (warm start). Limit `MAX_ELEMENTS` = 150 000. T10 study mes
 - UI: SolverPanel → "Topología" (`TopologyPanel.jsx`, `stores/topologyStore.js`, `DensityField.jsx`).
 - Hito: `python validate_topology.py` — plate with pinned bottom supports and deck load gives the
   deck-arch bridge (volume, grayness, compliance, symmetry, connectivity checks). ~100 s.
+
+### Level set and AM overhang constraint (FASE 4.2–4.3)
+
+- **AM filter** (`am_constraints.py`, Langelaar's printing filter on unstructured meshes): elements are
+  sorted into layers along `build_direction`; supporters of an element = elements of earlier layers inside
+  the `max_overhang_angle` cone (angle from the horizontal, 45° default). ξ = smin(ρ, p-norm max of the
+  supporters' ξ) layer by layer (P = 40); exact adjoint `backprop`. Chain in SIMP: x → density filter → AM
+  (passive solid acts as support) → Heaviside → ρ̄ (`SIMPOptimizer.physical` / `chain_rule`).
+  Settings `am_constraint`, `build_direction`, `max_overhang_angle`; `to_dict` drops them when off, so plain
+  SIMP hashes are unchanged. `overhang_area_fraction` = down-facing iso-surface area steeper than the angle,
+  off the build plate. Every topology summary gets `am` {unsupported_volume_fraction (sharp recursion),
+  overhang_area_fraction, build_direction (default +Z), constrained}.
+- **Level set** (`levelset.py`): **reaction-diffusion level set** (Yamada et al. 2010), *not* the
+  Hamilton-Jacobi transport + re-initialisation of the plan (fragile on unstructured tets). Nodal φ ∈ [−1, 1],
+  (M/Δt + τL²K_L)φⁿ⁺¹ = M(φⁿ/Δt + w) with w = normalised strain-energy density of the **ersatz** design
+  (full-stiffness energy makes the void look valuable and the design flip-flops); constant matrix factorised
+  once, volume follows a ramp (`ramp_iter`) via bisection on λ (φ = a − λb, no extra solves). Holes nucleate
+  anywhere. Defaults τ 2e-4, Δt 0.1 (Δt 0.5 oscillates).
+  Densities are cut elements → grayness ~25 % (one-element band); the 0/1 check uses `black_white` (the
+  volume-matched φ contour). Needs several elements across each member, otherwise the 0/1 design can come
+  out disconnected. Level set has no AM option.
+- Same job kind `topology.simp`, method in `spec['topology']['method']` (`simp` | `levelset`); API
+  `POST /<graph_id>/run-levelset` (keys `LEVELSET_KEYS`); the OPTIMIZATION node stores `method`.
+  UI: method selector, AM switch + build direction (±X/±Y/±Z) + angle in `TopologyPanel.jsx`.
+- Hito: `python validate_am_levelset.py [h] [png prefix]` (see its docstring for the measured numbers).
+  Tests: `tests/test_am_levelset.py`.
 
 ## Reduced-Order Models (FASE 5)
 

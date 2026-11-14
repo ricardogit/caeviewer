@@ -65,4 +65,47 @@ describe('TopologyPanel', () => {
     fireEvent.click(screen.getByText('Optimizar topología'));
     expect(await screen.findByText('Quita la carga de gravedad')).toBeTruthy();
   });
+
+  it('sends the AM overhang settings only when the constraint is on', async () => {
+    axios.post.mockResolvedValue({ data: { run_id: 'run2', status: 'queued' } });
+    render(<TopologyPanel graphId="g1" />);
+    fireEvent.click(screen.getByText('Optimizar topología'));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(1));
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty('build_direction');
+    expect(axios.post.mock.calls[0][1]).not.toHaveProperty('tau');
+
+    act(() => useTopologyStore.setState({ status: 'idle' }));
+    fireEvent.click(screen.getByLabelText(/Manufactura aditiva/));
+    fireEvent.change(screen.getByLabelText('Dirección de impresión'), { target: { value: '+Y' } });
+    fireEvent.click(screen.getByText('Optimizar topología'));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledTimes(2));
+    expect(axios.post.mock.calls[1][1]).toEqual(expect.objectContaining({
+      am_constraint: true, build_direction: [0, 1, 0], max_overhang_angle: 45 }));
+
+    act(() => {
+      handlers.topology_progress({ run_id: 'run2', iter: 1, compliance: 2.0, volume_fraction: 0.4, change: 0.2,
+        beta: 1, grayness: 1 });
+      handlers.topology_done({ run_id: 'run2', compliance_initial: 2.0, compliance_bw: 0.6, converged: true,
+        n_iterations: 9, wall_time_s: 1, method: 'SIMP',
+        am: { constrained: true, build_direction: [0, 1, 0], max_overhang_angle: 45,
+          overhang_area_fraction: 0.021, unsupported_volume_fraction: 0.004 } });
+    });
+    expect(await screen.findByText(/voladizo 2\.1 % del área · sin soporte 0\.4 % del volumen/)).toBeTruthy();
+  });
+
+  it('launches the level set on its own endpoint without the SIMP-only keys', async () => {
+    axios.post.mockResolvedValue({ data: { run_id: 'run3', status: 'queued' } });
+    render(<TopologyPanel graphId="g1" />);
+    fireEvent.click(screen.getByLabelText('Level Set'));
+    expect(screen.queryByText(/Penalización p/)).toBeNull();
+    expect(screen.getByText(/Regularización τ/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Optimizar topología'));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith(
+      '/api/design/topology/g1/run-levelset',
+      expect.objectContaining({ volume_fraction: 0.4, tau: 2e-4, ramp_iter: 40 }),
+    ));
+    const posted = axios.post.mock.calls[0][1];
+    ['p_penalization', 'filter_factor', 'projection', 'am_constraint', 'method'].forEach(k =>
+      expect(posted).not.toHaveProperty(k));
+  });
 });
