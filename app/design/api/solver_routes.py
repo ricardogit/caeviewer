@@ -193,7 +193,7 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     from app.jobs import enqueue
 
     fp = fingerprint(spec)
-    if parent is None and purpose in ('run', 'topology', 'rom', 'uncertainty'):
+    if parent is None and purpose in ('run', 'topology', 'rom', 'uncertainty', 'adaptive'):
         # the previous finished run of this version, else of the earlier versions (FASE 9 tree)
         g, seen = graph, set()
         while g is not None and parent is None and g.id not in seen:
@@ -225,7 +225,8 @@ def _create_and_enqueue(graph, spec: dict, purpose: str = 'run', parent=None):
     # Enqueue on the 'solve' queue; a worker process (python -m app.jobs.worker --queues solve)
     # runs FEMKernel.solve_async and its socket events are forwarded to room=run_id.
     kind = ('uncertainty.mc' if 'uncertainty' in spec else 'topology.simp' if 'topology' in spec
-            else 'rom.build' if 'rom' in spec else 'fem.solve')
+            else 'rom.build' if 'rom' in spec else 'fem.adaptive' if 'adaptive' in spec
+            else 'fem.solve')
     job = enqueue(kind, {'run_id': str(run.id), 'spec': spec}, simulation_run_id=run.id)
     return run, job
 
@@ -361,8 +362,8 @@ def reproduce_run(run_id):
     run = db.session.get(SimulationRun, run_id)
     if not run:
         return jsonify({'error': 'Run not found'}), 404
-    if run.purpose == 'adaptive':
-        return jsonify({'error': 'Las corridas adaptativas no se pueden reproducir todavía'}), 422
+    if run.purpose == 'adaptive' and 'adaptive' not in (run.solver_config or {}):
+        return jsonify({'error': 'Corrida adaptativa anterior al bucle actual: no guarda sus ajustes'}), 422
     if run.status != 'done':
         return jsonify({'error': 'Solo se reproducen corridas completadas'}), 422
     if run.solver_config is None or run.inputs is None:
@@ -408,7 +409,11 @@ def run_status(run_id):
             logger.warning(f"Run {run_id} not found")
             return jsonify({'error': 'Run not found', 'run_id': run_id}), 404
 
+        extra = {}
+        if run.purpose == 'adaptive' or (run.solver_config or {}).get('adaptive'):
+            extra = {'adaptive': (run.summary or {}).get('adaptive'), 'adaptive_log': run.adaptive_log or []}
         return jsonify({
+            **extra,
             'run_id': str(run.id),
             'status': run.status,
             'graph_id': str(run.graph_id),
@@ -585,107 +590,44 @@ def cancel_run(run_id):
 
 @bp.route('/<string:graph_id>/run-adaptive', methods=['POST'])
 def run_adaptive(graph_id):
-    """Launch adaptive-mesh FEM simulation loop (FASE 3).
+    """FASE 3: adaptive h-refinement of the study (solve -> ZZ/SPR estimate -> Dörfler -> bisection).
 
-    Body (all optional):
-    {
-        "physics":     ["structural"],
-        "tier":        1,
-        "tolerance":   1e-8,
-        "max_iterations": 1000,
-        "material":    { "type":"linear_elastic_isotropic", "E":210e9, "nu":0.3, "rho":7800 },
-        "bcs":  [{"node_set":"fixed", "dofs":[0,1,2], "values":[0,0,0]}],
-        "loads":[{"node_set":"tip",   "force":[0,-1000,0]}],
-        "max_cycles": 5,
-        "target_error": 0.05,
-        "refinement_fraction": 0.2
-    }
-
-    Returns: { run_id, hash, status } (synchronous in FASE 3)
+    Body (optional): ``target_error`` (relative energy-norm error, default 0.05), ``max_cycles`` (5),
+    ``theta`` (Dörfler fraction, 0.5) plus the usual solver overrides (tier, ...). The study's own spec
+    (mesh, material, BCs, loads) is used. Linear elastic structural only (422 otherwise); the initial
+    mesh is tier-checked here (413), every refined mesh in the worker (the loop stops at the tier limit).
+    Enqueues ``fem.adaptive``; progress: socket ``adaptive_progress`` (one per cycle) + ``solver_progress``.
     """
     from app.design.models.graph import DesignGraph
-    from app.design.models.simulation import SimulationRun
-    from app.design.services.traceability.hasher import fingerprint, provenance
-    from app.design.services.fem.kernel import FEMKernel
 
     graph = DesignGraph.query.filter_by(id=graph_id).first()
     if not graph:
         return jsonify({'error': 'Graph not found'}), 404
-
-    data = request.get_json(silent=True) or {}
-    if 'thermal' in (data.get('physics') or []) or             (data.get('material') or {}).get('type') == 'elastoplastic_vonmises':
-        return jsonify({'error': 'El refinamiento adaptativo solo admite análisis estructural elástico lineal.',
-                        'kind': 'physics_unsupported'}), 422
-
-    run_id = _uuid.uuid4()
-    spec = dict(data)
-    spec['graph_id'] = graph_id
-    spec['mesh_source'] = spec.get('mesh_source', 'cantilever')
-    spec['mesh_params'] = spec.get('mesh_params', {'length': 0.05, 'width': 0.01, 'height': 0.01, 'n_along_length': 10})
-    fp = fingerprint(spec, adaptive={'max_cycles': int(data.get('max_cycles', 5)),
-                                     'target_error': float(data.get('target_error', 0.05)),
-                                     'refinement_fraction': float(data.get('refinement_fraction', 0.2))})
-    run_hash = fp['hash']
-
-    run = SimulationRun(
-        id=run_id,
-        graph_id=graph_id,
-        graph_version=graph.version,
-        hash=run_hash,
-        purpose='adaptive',
-        inputs=fp['inputs'],
-        environment=fp['environment'],
-        provenance=provenance(),
-        status='running',
-        tier=int(data.get('tier', 1)),
-        physics=data.get('physics', ['structural']),
-        solver_config={k: v for k, v in data.items() if k not in ('nodes', 'elements')},
-    )
-    db.session.add(run)
-    db.session.commit()
-
+    data = dict(request.get_json(silent=True) or {})
     try:
-        kernel = FEMKernel()
-        result = kernel.solve_adaptive_sync(
-            solver_spec=spec,
-            max_cycles=int(data.get('max_cycles', 5)),
-            target_error=float(data.get('target_error', 0.05)),
-            refinement_fraction=float(data.get('refinement_fraction', 0.2))
-        )
-
-        # Update run with results
-        s = result['summary']
-        run.status = 'done'
-        run.converged = s.get('converged', False)
-        run.n_iterations = s.get('n_iterations', 0)
-        run.final_residual = s.get('final_residual')
-        run.wall_time = s.get('wall_time_s', 0)
-        run.mesh_stats = {
-            'n_nodes': s.get('n_nodes'),
-            'n_elements': s.get('n_elements'),
-            'tier': s.get('tier'),
-            'adaptive_cycles': len(result.get('adaptive_log', [])),
-        }
-        if 'adaptive_log' in result:
-            run.adaptive_log = result['adaptive_log']
-        from app.design.services.fem.kernel import _json_safe
-        run.summary = _json_safe({k: v for k, v in s.items() if k != 'convergence_log'})
-        db.session.commit()
-
-        return jsonify({
-            'run_id': str(run_id),
-            'hash': run_hash,
-            'status': 'done',
-            'graph_id': graph_id,
-            'summary': s,
-            'adaptive_log': result.get('adaptive_log', []),
-        }), 200
-
-    except Exception as exc:
-        logger.error(f"Adaptive solve failed: {exc}", exc_info=True)
-        run.status = 'failed'
-        db.session.commit()
-        return jsonify({'error': str(exc), 'run_id': str(run_id)}), 500
+        settings = {'target_error': float(data.pop('target_error', 0.05)),
+                    'max_cycles': int(data.pop('max_cycles', 5)),
+                    'theta': float(data.pop('theta', 0.5))}
+    except (TypeError, ValueError):
+        return jsonify({'error': 'target_error, max_cycles y theta deben ser numéricos'}), 422
+    data.pop('refinement_fraction', None)                       # old body key (fixed-fraction marking)
+    if not (0.001 <= settings['target_error'] <= 0.5 and 1 <= settings['max_cycles'] <= 12
+            and 0.1 <= settings['theta'] <= 0.95):
+        return jsonify({'error': 'Rango: target_error 0.001-0.5, max_cycles 1-12, theta 0.1-0.95'}), 422
+    spec, err = prepare_spec(graph_id, data)
+    if err:
+        return err
+    spec = dict(spec)
+    spec['graph_id'] = graph_id
+    spec['adaptive'] = settings
+    try:
+        run, job = _create_and_enqueue(graph, spec, purpose='adaptive')
+    except Exception as e:
+        logger.error(f"Failed to create adaptive run: {e}", exc_info=True)
+        db.session.rollback()
+        return jsonify({'error': 'Failed to create simulation record', 'detail': str(e)}), 500
+    return jsonify({'run_id': str(run.id), 'hash': run.hash, 'status': 'queued', 'graph_id': graph_id,
+                    'job_id': str(job.id), 'adaptive': settings}), 202
 
 
 @bp.route('/<string:run_id>/convergence', methods=['GET'])

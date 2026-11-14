@@ -526,30 +526,30 @@ the uploaded file under `DATA_DIR/experiments/<id>/`, relative `file_ref`); comp
 
 ## Adaptive Meshing (FASE 3)
 
-**Strategy:** Longest-edge bisection h-refinement with Zienkiewicz-Zhu stress recovery error estimation.
-
-**Backend modules:**
-- `error_estimator.py`: Zienkiewicz-Zhu L2 projection recovery + energy-norm element error indicators
-  * `compute_error_indicators(nodes, elements, stress_elemental, E, nu)` → per-element error
-  * `mark_elements_for_refinement()` → fraction or absolute threshold marking
-- `mesh_adaptivity.py`: Refinement and coarsening operators
-  * `refine_marked_elements_bisection()` → split marked elements along longest edge
-  * `coarsen_mesh()` → random node removal (stub for FASE 3+)
-- `kernel.py` addition:
-  * `solve_adaptive_sync(spec, max_cycles=5, target_error=0.05, refinement_fraction=0.2)` → iterative solve loop
-
-**Frontend:**
-- `AdaptiveMonitor.jsx`: Visualizes error reduction and mesh growth across cycles
-  * Error vs cycle chart (log scale, 5% target line)
-  * Node/element growth chart
-  * Detailed cycle table with global error, displacements, stresses
-
-**API:**
-- `POST /<graph_id>/run-adaptive` → synchronous adaptive solve, returns `adaptive_log` array
-
-**Validation (FASE 3), measured:** adaptive runs use T4 (bisection is T4-only). `validate_adaptive.py`
-gives ZZ error 21.9 % → 18.3 % over 5 cycles; the old "<5 % at cycle 3" claim does not reproduce.
-Refinement is conforming (recursive longest-edge bisection); node/face sets are carried to new meshes.
+Loop (`FEMKernel.solve_adaptive`): solve → ZZ estimate → Dörfler marking → conforming bisection, until the
+**estimated relative energy-norm error** η = √(Σηₑ² / (‖u_h‖²_E + Σηₑ²)) < `target_error` or `max_cycles` solves.
+Linear elastic structural only (T4 or T10; T10 is the default and the one worth using).
+- `error_estimator.py`: `zz_estimate` — T4: nodal averaging; **T10: SPR** (quadratic least-squares fit of the
+  Gauss-point stresses on each corner patch, linear on thin boundary patches; mids = mean of the two end
+  patches). Indicators integrated with a 14-point degree-5 rule. `mark_dorfler(eta2, theta)`.
+  Effectivity (estimate / true) on the FASE 2 beam: 0.70–0.77 on coarse meshes → ~1 above ~15K DOF
+  (the clamp singularity is on the boundary). Nodal averaging for T10 gave 0.42–0.55: do not go back.
+- `mesh_adaptivity.refine_mesh`: longest-edge bisection of the corner tets (conforming), T10 mids rebuilt;
+  a split edge's new corner takes the old mid-node position (follows curved CAD faces), unsplit edges keep
+  their mid node. Node sets: new node joins when both edge ends are in the set; face sets rebuilt from the
+  boundary faces whose nodes are all in the set. No coarsening (the old random-removal stub was deleted).
+- Every refined mesh is tier-checked; at the limit the loop stops with the last solution (`stopped: 'tier'`).
+- API `POST /api/design/solver/<graph_id>/run-adaptive` {target_error 0.05, max_cycles 5, theta 0.5 + overrides}:
+  uses the study's spec (`prepare_spec`, 422 thermal/elastoplastic, 413 initial tier), `spec['adaptive']` (hashed),
+  `SimulationRun(purpose='adaptive')`, job `fem.adaptive` (queue `solve`). Socket `adaptive_progress` per cycle +
+  `solver_progress`/`solver_done`. `GET /<run>/status` adds `adaptive` and `adaptive_log`. Results = last mesh
+  (Results mode, `/surface`). Adaptive runs are reproducible bit for bit (`/reproduce`).
+- UI: SolverPanel "h-Refinar" + error objetivo / ciclos máx. (`solverStore.startAdaptiveRun`, `adaptiveSettings`),
+  `AdaptiveMonitor.jsx` (estimated error vs target, mesh growth). Test `stores/solverStore.test.js`.
+- Hito: `python validate_adaptive.py [--server URL]` (~2 min local): true error from an extrapolated reference
+  energy; coarse beam estimate < 5 % in 3 cycles (true error 6.5 % then — ask ~3.5 % for a true 5 %); energy rate
+  1.3–1.4 vs uniform 0.41; uniform n_div 80 accuracy with 6.8× fewer DOF. Server: queue, log, surface, reproduce.
+  Tests: `tests/test_adaptive.py`.
 
 ### Supported CAE Mesh Formats
 

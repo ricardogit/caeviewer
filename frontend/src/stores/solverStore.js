@@ -29,8 +29,9 @@ const useSolverStore = create(
       percentComplete: 0,
       currentStatus: '',
 
-      // ── Adaptive meshing ────────────────────────────────────────────────────
-      adaptiveLog: [],
+      // ── Adaptive meshing (FASE 3) ───────────────────────────────────────────
+      adaptiveLog: [],      // one entry per cycle, streamed by 'adaptive_progress'
+      adaptiveSettings: { target_error: 0.05, max_cycles: 5, theta: 0.5 },
 
       // ── Results ─────────────────────────────────────────────────────────────
       resultSummary: null,      // { max_displacement_mm, max_von_mises_mpa, ... }
@@ -61,14 +62,17 @@ const useSolverStore = create(
       setTolerance: (v) => set({ tolerance: v }),
       setSelectedField: (f) => set({ selectedField: f }),
       setAdaptiveLog: (log) => set({ adaptiveLog: log }),
+      setAdaptiveSetting: (key, value) =>
+        set(s => ({ adaptiveSettings: { ...s.adaptiveSettings, [key]: value } })),
       clearError: () => set({ error: null }),
 
       setCantileverParam: (key, value) =>
         set(s => ({ cantileverParams: { ...s.cantileverParams, [key]: value } })),
 
       // ── Start simulation ────────────────────────────────────────────────────
-      startRun: async (graphId, extraSpec = {}) => {
+      startRun: async (graphId, extraSpec = {}, { adaptive = false } = {}) => {
         set({
+          adaptiveLog: [],
           runStatus: 'queued',
           convergenceLog: [],
           currentIter: 0,
@@ -88,7 +92,9 @@ const useSolverStore = create(
             max_iterations: get().maxIterations,
             ...extraSpec,
           };
-          const res = await axios.post(`/api/design/solver/${graphId}/run/`, spec);
+          const url = adaptive ? 'run-adaptive' : 'run';
+          const body = adaptive ? { tier: spec.tier, ...get().adaptiveSettings, ...extraSpec } : spec;
+          const res = await axios.post(`/api/design/solver/${graphId}/${url}/`, body);
           const runId = res.data.run_id;
           set({ activeRunId: runId, runStatus: 'queued' });
           get()._subscribeToRun(runId);
@@ -103,6 +109,9 @@ const useSolverStore = create(
           return null;
         }
       },
+
+      // FASE 3: adaptive refinement of the study (queued job fem.adaptive)
+      startAdaptiveRun: (graphId, extra = {}) => get().startRun(graphId, extra, { adaptive: true }),
 
       // ── Cancel ──────────────────────────────────────────────────────────────
       cancelRun: async () => {
@@ -145,8 +154,14 @@ const useSolverStore = create(
         socket.off('solver_progress');
         socket.off('solver_done');
         socket.off('solver_error');
+        socket.off('adaptive_progress');
 
         socket.emit('join_run', { run_id: runId });
+
+        socket.on('adaptive_progress', (data) => {
+          if (data.run_id !== runId) return;
+          set(s => ({ adaptiveLog: [...s.adaptiveLog.filter(e => e.cycle !== data.cycle), data] }));
+        });
 
         socket.on('solver_progress', (data) => {
           if (data.run_id !== runId) return;
@@ -164,12 +179,13 @@ const useSolverStore = create(
 
         socket.on('solver_done', (data) => {
           if (data.run_id !== runId) return;
-          set({
+          set(s => ({
             runStatus: 'done',
             percentComplete: 100,
             currentStatus: 'Simulación completada',
             resultSummary: data,
-          });
+            adaptiveLog: data.adaptive_log || s.adaptiveLog,
+          }));
           // Load field list
           axios.get(`/api/design/solver/${runId}/results/`)
             .then(r => set({ resultFields: r.data.fields || [] }))

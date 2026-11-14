@@ -42,7 +42,8 @@ export default function SolverPanel({ onClose }) {
     currentIter, currentResidual, percentComplete, currentStatus,
     convergenceLog, resultSummary, error, adaptiveLog,
     cantileverParams, cantileverResult, cantileverLoading,
-    setActivePhysics, setTier, setCantileverParam, setAdaptiveLog,
+    setActivePhysics, setTier, setCantileverParam,
+    adaptiveSettings, setAdaptiveSetting, startAdaptiveRun,
     startRun, cancelRun, runCantileverTest, resetRun, clearError,
   } = useSolverStore();
 
@@ -202,40 +203,36 @@ export default function SolverPanel({ onClose }) {
               >
                 {isRunning ? 'Cancelar' : 'Simular'}
               </Button>
-              <Tooltip title="FASE 3: Refinamiento adaptativo automático">
+              <Tooltip title="FASE 3: resolver, estimar el error (ZZ/SPR) y refinar donde hace falta hasta el error objetivo">
                 <Button
                   variant="outlined" fullWidth
                   startIcon={<Warning sx={{ fontSize: 16 }} />}
-                  onClick={async () => {
-                    if (!activeGraphId) return;
-                    try {
-                      const resp = await fetch(`/api/design/solver/${activeGraphId}/run-adaptive/`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          physics: ['structural'],
-                          max_cycles: 5,
-                          target_error: 0.05,
-                          refinement_fraction: 0.2,
-                        }),
-                      });
-                      const data = await resp.json();
-                      if (resp.ok && data.adaptive_log) {
-                        setAdaptiveLog(data.adaptive_log);
-                        alert(`✓ Adaptativo completado: ${data.adaptive_log.length} ciclos`);
-                      } else {
-                        alert(`Error: ${data.error || 'Error desconocido'}`);
-                      }
-                    } catch (e) {
-                      alert(`Error: ${e.message}`);
-                    }
-                  }}
-                  disabled={!activeGraphId || isRunning}
+                  onClick={() => activeGraphId && startAdaptiveRun(activeGraphId)}
+                  disabled={!activeGraphId || isRunning || runStatus === 'queued'}
                   sx={{ fontWeight: 700, flex: 1, color: '#ff9800', borderColor: '#ff9800', fontSize: 11 }}
                 >
                   h-Refinar
                 </Button>
               </Tooltip>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#888', fontSize: 10, flexShrink: 0 }}>
+                Adaptativo:
+              </Typography>
+              <TextField
+                label="Error objetivo %" type="number" size="small"
+                value={+(adaptiveSettings.target_error * 100).toFixed(2)}
+                onChange={e => setAdaptiveSetting('target_error', Math.max(0.1, Number(e.target.value) || 5) / 100)}
+                inputProps={{ min: 0.1, max: 50, step: 0.5, style: { color: '#fff', fontSize: 11 } }}
+                InputLabelProps={{ style: { color: '#888', fontSize: 11 } }}
+              />
+              <TextField
+                label="Ciclos máx." type="number" size="small"
+                value={adaptiveSettings.max_cycles}
+                onChange={e => setAdaptiveSetting('max_cycles', Math.min(12, Math.max(1, parseInt(e.target.value, 10) || 5)))}
+                inputProps={{ min: 1, max: 12, style: { color: '#fff', fontSize: 11 } }}
+                InputLabelProps={{ style: { color: '#888', fontSize: 11 } }}
+              />
             </Box>
           </>
         )}
@@ -320,7 +317,7 @@ export default function SolverPanel({ onClose }) {
         {/* ── Adaptive results ─────────────────────────────────────────────── */}
         {adaptiveLog && adaptiveLog.length > 0 && (
           <>
-            <AdaptiveMonitor adaptiveLog={adaptiveLog} />
+            <AdaptiveMonitor adaptiveLog={adaptiveLog} target={adaptiveSettings.target_error} />
           </>
         )}
       </Box>

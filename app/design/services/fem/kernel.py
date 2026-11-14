@@ -27,8 +27,8 @@ from app.design.services.fem.constitutive import build_material, ElastoplasticVo
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
-from app.design.services.fem.error_estimator import compute_error_indicators, mark_elements_for_refinement, compute_global_error
-from app.design.services.fem.mesh_adaptivity import refine_marked_elements_bisection
+from app.design.services.fem.error_estimator import zz_estimate, mark_dorfler
+from app.design.services.fem.mesh_adaptivity import refine_mesh
 from app.design.services.traceability.hasher import mesh_hash, array_hash
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,40 @@ class FEMKernel:
                 socketio.emit('solver_error', {'run_id': run_id, 'message': str(exc)},
                               room=run_id)
 
+    def solve_adaptive_async(self, app, run_id: str, solver_spec: dict, socketio):
+        """Adaptive loop of a queued run (job ``fem.adaptive``): one ``adaptive_progress`` event per cycle
+        (plus ``solver_progress`` with a status line), results saved like a plain run (last mesh)."""
+        settings = solver_spec.get('adaptive') or {}
+        n_max = int(settings.get('max_cycles', self.ADAPTIVE_DEFAULTS['max_cycles']))
+        with app.app_context():
+            self._update_run(run_id, 'running')
+            self._record_fingerprint(run_id, solver_spec)
+            t0 = time.perf_counter()
+
+            def progress(entry):
+                socketio.emit('adaptive_progress', {'run_id': run_id, **entry}, room=run_id)
+                socketio.emit('solver_progress', {
+                    'run_id': run_id, 'iter': entry['cycle'], 'residual': None,
+                    'percent': min(95, int(100 * (entry['cycle'] + 1) / n_max)),
+                    'wall_time': time.perf_counter() - t0,
+                    'status': (f"Ciclo {entry['cycle'] + 1}/{n_max} | {entry['n_nodes']:,} nodos | "
+                               f"error {100 * entry['global_error']:.2f} %")}, room=run_id)
+            try:
+                result = self.solve_adaptive(solver_spec, settings, progress=progress)
+                self._save_results(run_id, result, app)
+                self._update_run(run_id, 'done', result)
+                self._update_result_nodes(run_id, result, solver_spec)
+                socketio.emit('solver_done', {'run_id': run_id, **result['summary'],
+                                              'adaptive_log': result['adaptive_log']}, room=run_id)
+            except TierLimitExceeded as e:
+                self._update_run(run_id, 'failed', error=str(e))
+                socketio.emit('solver_error', {'run_id': run_id, 'message': str(e),
+                                               'suggested_tier': e.suggested_tier}, room=run_id)
+            except Exception as exc:
+                logger.error(f"Adaptive solver error run={run_id}: {exc}", exc_info=True)
+                self._update_run(run_id, 'failed', error=str(exc))
+                socketio.emit('solver_error', {'run_id': run_id, 'message': str(exc)}, room=run_id)
+
     # ── Synchronous solve (also used by the test endpoint) ────────────────────
 
     def solve_sync(self, solver_spec: dict) -> dict:
@@ -77,87 +111,77 @@ class FEMKernel:
 
     # ── Adaptive refinement solve (FASE 3) ─────────────────────────────────────
 
-    def solve_adaptive_sync(self, solver_spec: dict, max_cycles: int = 5,
-                           target_error: float = 0.05, refinement_fraction: float = 0.2) -> dict:
-        """Solve with adaptive h-refinement (longest-edge bisection).
+    ADAPTIVE_DEFAULTS = {'target_error': 0.05, 'max_cycles': 5, 'theta': 0.5}
 
-        Args:
-            solver_spec: as in solve_sync
-            max_cycles: max refinement iterations
-            target_error: stop if global error < target (0.05 = 5%)
-            refinement_fraction: fraction of elements to refine per cycle
+    def solve_adaptive(self, solver_spec: dict, settings: dict | None = None, progress=None,
+                       run_id=None, socketio=None) -> dict:
+        """Solve → ZZ estimate → Dörfler marking → conforming bisection, until the relative energy-norm
+        error estimate is below ``target_error`` or ``max_cycles`` solves were done.
+
+        Linear elastic structural only (T4 or T10; T10 meshes keep curved mid nodes, see refine_mesh).
+        The next mesh must fit the run's tier: otherwise the loop stops with the last solution
+        (``stopped: 'tier'``). ``progress(entry)`` is called after every cycle. The returned result is the
+        last solve plus ``adaptive_log`` (one entry per cycle) and ``summary['adaptive']``.
         """
-        adaptive_log = []
-        mesh_spec = solver_spec.copy()
-        # ZZ estimator and longest-edge bisection are T4-only: force linear elements.
-        mesh_spec['mesh_params'] = {**(solver_spec.get('mesh_params') or {}), 'order': 1}
-        cycle = 0
-
+        st = {**self.ADAPTIVE_DEFAULTS, **{k: v for k, v in (settings or {}).items() if v is not None}}
+        target, max_cycles, theta = float(st['target_error']), int(st['max_cycles']), float(st['theta'])
+        mat_spec = solver_spec.get('material') or {'type': 'linear_elastic_isotropic', 'E': 210e9, 'nu': 0.3}
+        D = build_material(mat_spec).get_D_matrix()
+        log, mesh, stopped, result, meta0 = [], None, None, None, None
+        t0 = time.perf_counter()
         for cycle in range(max_cycles):
-            # Solve with current mesh
-            result = self._solve(run_id=None, solver_spec=mesh_spec, socketio=None)
+            result = self._solve(run_id, solver_spec, socketio, mesh=mesh)
             mesh = result['mesh']
-
-            # Estimate error
-            el_sigma = np.array(result['sigma_elemental'])
-            E = float(solver_spec.get('material', {}).get('E', 210e9))
-            nu = float(solver_spec.get('material', {}).get('nu', 0.3))
-
-            error_indicators = compute_error_indicators(mesh.nodes, mesh.elements, el_sigma, E, nu)
-            global_error = compute_global_error(error_indicators)
-
-            log_entry = {
-                'cycle': cycle,
-                'n_nodes': mesh.n_nodes,
-                'n_elements': mesh.n_elements,
-                'global_error': float(global_error),
+            if meta0 is None:
+                meta0 = result['summary'].get('mesh')
+            u = np.asarray(result['displacement'], dtype=np.float64).ravel()
+            est = zz_estimate(mesh.nodes, mesh.elements, u, D)
+            eta = est['relative_error']
+            converged = eta < target
+            entry = {
+                'cycle': cycle, 'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements,
+                'n_dof': mesh.n_dof_structural, 'element_type': mesh.element_type,
+                'global_error': eta, 'error_energy': est['error_energy'],
+                'solution_energy': est['solution_energy'],
                 'max_displacement_mm': result['summary']['max_displacement_mm'],
                 'max_von_mises_mpa': result['summary']['max_von_mises_mpa'],
+                'wall_time_s': round(time.perf_counter() - t0, 3),
             }
-            adaptive_log.append(log_entry)
-            logger.info(f"Adaptive cycle {cycle}: {mesh.n_nodes} nodes, "
-                       f"error={global_error:.4f}")
-
-            # Check convergence
-            if global_error < target_error or cycle == max_cycles - 1:
-                result['adaptive_log'] = adaptive_log
-                return result
-
-            # Mark elements and refine
-            mark_refine = mark_elements_for_refinement(
-                error_indicators, strategy='fraction', target_fraction=refinement_fraction)
-            n_marked = np.sum(mark_refine)
-            logger.info(f"Refining {n_marked} elements ({100*n_marked/len(error_indicators):.1f}%)")
-
-            nodes_new, elements_new, mids = refine_marked_elements_bisection(
-                mesh.nodes, mesh.elements, mark_refine, return_midpoints=True)
-
-            # Carry node/face sets to the refined mesh: a midpoint joins a set when
-            # both edge ends belong to it; face sets are rebuilt from the boundary
-            # triangles whose corners are all in the (extended) set.
-            from app.design.services.fem.tet_batch import boundary_faces
-            ext_sets = {}
-            for name, ids in mesh.node_sets.items():
-                members = set(int(i) for i in ids)
-                members |= {m for (a, b), m in mids.items() if a in members and b in members}
-                ext_sets[name] = np.array(sorted(members), dtype=np.int64)
-            bfaces = boundary_faces(np.asarray(elements_new))
-            face_sets_new = {}
-            for name in mesh.face_sets:
-                members = np.zeros(len(nodes_new), dtype=bool)
-                members[ext_sets[name]] = True
-                face_sets_new[name] = bfaces[members[bfaces].all(axis=1)]
-
-            # Update spec for next cycle
-            mesh_spec = solver_spec.copy()
-            mesh_spec['mesh_source'] = 'inline'
-            mesh_spec['nodes'] = nodes_new
-            mesh_spec['elements'] = elements_new
-            mesh_spec['node_sets'] = ext_sets
-            mesh_spec['face_sets'] = face_sets_new
-
-        result['adaptive_log'] = adaptive_log
+            if not converged and cycle < max_cycles - 1:
+                marked = mark_dorfler(est['eta2'], theta)
+                entry['n_marked'] = int(marked.sum())
+                names = sorted(set(mesh.node_sets) | set(mesh.face_sets))
+                nodes, elements, node_sets, face_sets = refine_mesh(
+                    mesh.nodes, mesh.elements, marked, {k: mesh.node_sets[k] for k in names})
+                face_sets = {k: v for k, v in face_sets.items() if k in mesh.face_sets}
+                tier = int(solver_spec.get('tier', mesh.estimate_tier()))
+                try:
+                    check_tier_limits(len(nodes), len(elements), 3 * len(nodes), tier)
+                except TierLimitExceeded:
+                    stopped = 'tier'
+            log.append(entry)
+            logger.info('Adaptive cycle %d: %d nodes, eta=%.4f', cycle, mesh.n_nodes, eta)
+            if progress:
+                progress(entry)
+            if converged or stopped or cycle == max_cycles - 1:
+                if not converged and not stopped:
+                    stopped = 'max_cycles'
+                break
+            mesh = FEMMesh(nodes, elements, node_sets=node_sets, face_sets=face_sets, mids_known=True)
+        result['adaptive_log'] = log
+        s = result['summary']
+        s['adaptive'] = {'target_error': target, 'max_cycles': max_cycles, 'theta': theta,
+                         'cycles': len(log), 'final_error': log[-1]['global_error'],
+                         'converged': log[-1]['global_error'] < target, 'stopped': stopped,
+                         'initial_mesh': meta0}
+        s['n_nodes'], s['n_elements'] = mesh.n_nodes, mesh.n_elements
         return result
+
+    def solve_adaptive_sync(self, solver_spec: dict, max_cycles: int = 5, target_error: float = 0.05,
+                            theta: float = 0.5) -> dict:
+        """Backward-compatible wrapper of ``solve_adaptive``."""
+        return self.solve_adaptive(solver_spec, {'max_cycles': max_cycles, 'target_error': target_error,
+                                                 'theta': theta})
 
     # ── Core pipeline ─────────────────────────────────────────────────────────
 
@@ -168,13 +192,17 @@ class FEMKernel:
                 'wall_time': time.perf_counter() - t_start, **extra,
             }, room=run_id)
 
-    def _solve(self, run_id, solver_spec: dict, socketio) -> dict:
+    def _solve(self, run_id, solver_spec: dict, socketio, mesh: FEMMesh | None = None) -> dict:
+        """``mesh``: an already built mesh (adaptive cycles) instead of the spec's mesh source."""
         t_start = time.perf_counter()
 
         # 1. Build mesh
-        self._emit(socketio, run_id, 2, 'building mesh', t_start)
-        mesh, mesh_meta = self._build_mesh(solver_spec, progress=lambda m: self._emit(
-            socketio, run_id, 3, m, t_start))
+        if mesh is None:
+            self._emit(socketio, run_id, 2, 'building mesh', t_start)
+            mesh, mesh_meta = self._build_mesh(solver_spec, progress=lambda m: self._emit(
+                socketio, run_id, 3, m, t_start))
+        else:
+            mesh_meta = {}
 
         # 2. Tier check (exact, after meshing)
         tier = int(solver_spec.get('tier', mesh.estimate_tier()))
@@ -651,6 +679,8 @@ class FEMKernel:
                 run.mesh_hash = s.get('mesh_hash')
                 run.result_hash = s.get('result_hash')
                 run.summary = _json_safe({k: v for k, v in s.items() if k != 'convergence_log'})
+                if result.get('adaptive_log') is not None:
+                    run.adaptive_log = _json_safe(result['adaptive_log'])
 
             db.session.commit()
         except Exception as e:

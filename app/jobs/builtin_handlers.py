@@ -56,6 +56,31 @@ def fem_solve(ctx, payload):
             'converged': run.converged, 'n_iterations': run.n_iterations}
 
 
+@handler('fem.adaptive', queue='solve')
+def fem_adaptive(ctx, payload):
+    """FASE 3 adaptive loop (solve -> ZZ/SPR estimate -> refine) for a SimulationRun(purpose='adaptive')."""
+    from flask import current_app
+    from app.design.services.fem.kernel import FEMKernel
+    from app.design.models.simulation import SimulationRun
+    from app.extensions import db
+
+    run_id = payload['run_id']
+    proxy = SocketIOProxy(ctx)
+    FEMKernel().solve_adaptive_async(app=current_app._get_current_object(), run_id=run_id,
+                                     solver_spec=payload['spec'], socketio=proxy)
+    db.session.expire_all()
+    run = db.session.get(SimulationRun, run_id)
+    if ctx.cancelled:
+        if run is not None:
+            run.status = 'cancelled'
+            db.session.commit()
+        raise JobCancelled()
+    if run is None or run.status != 'done':
+        raise RuntimeError(proxy.last_error or f"Adaptativo terminó con estado '{getattr(run, 'status', None)}'")
+    return {'run_id': run_id, 'status': run.status, 'cycles': len(run.adaptive_log or []),
+            'final_error': (run.summary or {}).get('adaptive', {}).get('final_error')}
+
+
 @handler('topology.simp', queue='solve')
 def topology_simp(ctx, payload):
     """FASE 4: SIMP topology optimization for a SimulationRun (purpose='topology')."""
