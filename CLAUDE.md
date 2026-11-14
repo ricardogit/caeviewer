@@ -13,7 +13,8 @@ CAE Viewer is a full-stack engineering platform with three integrated modes:
   storage (`step_graph_storage`) lives in CAPP and was never ported (decided 2026-11-14, not needed for
   simulation — CAD faces come from `app/geometry`). `backend/entity_graph.py`: `ENTITY_GRAPH_AVAILABLE = False`
   guards the graph/features/pmi/analysis blueprints (501 `entity_graph_unavailable`); file entries carry
-  `entity_graph: false` and the UI shows `EntityGraphUnavailable`. Files found in the upload folder without a
+  `entity_graph: false`; the STEP toolbar has no entity-tree / features / PMI / entity-details buttons
+  (the components `EntityTree`, `EntityDetails`, `FeaturePanel`, `PMIPanel`, `AnalysisPanel` are not mounted). Files found in the upload folder without a
   Part row are registered when listed (`register_step_file`).
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
 

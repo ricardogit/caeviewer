@@ -20,19 +20,14 @@ import {
   CircularProgress,
 } from '@mui/material';
 import {
-  AccountTree, Info, Close, Build,
-  Straighten, SquareFoot, ContentCut, Draw, GridOn, Hub, Share,
+  Close,
+  SquareFoot, ContentCut, Draw, GridOn, Hub, Share,
 } from '@mui/icons-material';
 import axios from 'axios';
 
 import StepViewer3D from './components/StepViewer3D';
 import FileList from './components/FileList';
 import TopBar from './components/TopBar';
-import EntityTree from './components/EntityTree';
-import EntityDetails from './components/EntityDetails';
-import FeaturePanel from './components/FeaturePanel';
-import PMIPanel from './components/PMIPanel';
-import EntityGraphUnavailable from './components/EntityGraphUnavailable';
 import MeasurementTools from './components/MeasurementTools';
 import SectionCutPanel from './components/SectionCutPanel';
 import MarkupPanel from './components/MarkupPanel';
@@ -62,18 +57,12 @@ const darkTheme = createTheme({
 });
 
 const SIDEBAR_WIDTH = 300;
-const DETAILS_WIDTH = 350;
 
 export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
-  const [selectedEntityId, setSelectedEntityId] = useState(null);
 
   // ── Panel visibility ─────────────────────────────────────────────────────
   const [fileListOpen, setFileListOpen] = useState(true);
-  const [entityTreeOpen, setEntityTreeOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [featurePanelOpen, setFeaturePanelOpen] = useState(false);
-  const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
   // ── App mode (FASE 9: workspace store, so TopBar actions and panels can switch it) ──
   // design | results | geometry | step | cae | hub — Design Graph is the default (§1.5)
@@ -102,8 +91,6 @@ export default function App() {
   // Measurements to render as 3D overlay
   const [measurements3D, setMeasurements3D] = useState([]);
 
-  // PMI annotations to render as 3D labels
-  const [pmiAnnotations, setPmiAnnotations] = useState([]);
 
   // Markup state
   const [markupActive, setMarkupActive] = useState(false);
@@ -114,21 +101,12 @@ export default function App() {
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
-  function handleEntitySelect(entityId) {
-    setSelectedEntityId(entityId);
-    if (entityId && !detailsOpen) setDetailsOpen(true);
-  }
-
   function handleFileSelect(file) {
     setSelectedFile(file);
-    setSelectedEntityId(null);
-    setDetailsOpen(false);
     setPickingMode(false);
     setPickedPoint(null);
     setMeasurements3D([]);
-    setPmiAnnotations([]);
     setMarkupStrokes([]);
-    if (file?.entity_graph === true && !entityTreeOpen) setEntityTreeOpen(true);
   }
 
   // Called when user clicks "Pick from 3D" in MeasurementTools
@@ -167,14 +145,6 @@ export default function App() {
       .catch(() => {});
   }, [measurementPanelOpen, selectedFile]);
 
-  // Load PMI annotations when PMI panel opens
-  useEffect(() => {
-    if (!pmiPanelOpen || !selectedFile?.header_id || selectedFile.entity_graph !== true) return;
-    axios.get(`/api/step-view/pmi/${selectedFile.header_id}/list`)
-      .then(res => setPmiAnnotations(res.data.annotations || []))
-      .catch(() => {});
-  }, [pmiPanelOpen, selectedFile]);
-
   // Auto-load part from CAPP integration
   useEffect(() => {
     const partId = window.PART_ID;
@@ -190,8 +160,6 @@ export default function App() {
   }, []);
 
   const headerId = selectedFile?.header_id || selectedFile?.id;
-  // entity tree, features and PMI read the stored STEP entity graph (backend: entity_graph.py)
-  const entityGraph = selectedFile?.entity_graph === true;
 
   // ── Drawer layer helpers ──────────────────────────────────────────────────
 
@@ -289,13 +257,10 @@ export default function App() {
             <StepViewer3D
               headerId={headerId}
               filename={selectedFile.original_filename}
-              selectedEntityId={selectedEntityId}
-              onEntitySelect={handleEntitySelect}
               pickingMode={pickingMode}
               onPointPicked={handlePointPicked}
               clippingPlane={clippingPlane}
               measurements={measurements3D}
-              pmiAnnotations={pmiAnnotations}
               markupActive={markupActive}
               markupTool={markupTool}
               markupColor={markupColor}
@@ -314,25 +279,7 @@ export default function App() {
 
           {/* Floating Action Buttons */}
           {selectedFile && appMode === 'step' && (
-            <Box sx={{ position: 'absolute', top: 16, right: detailsOpen ? DETAILS_WIDTH + 16 : 16, display: 'flex', gap: 1, transition: 'right 0.2s' }}>
-
-              <Tooltip title="Manufacturing Features">
-                <IconButton onClick={() => setFeaturePanelOpen(!featurePanelOpen)} sx={{ bgcolor: featurePanelOpen ? 'warning.main' : 'background.paper', '&:hover': { bgcolor: 'warning.dark' } }}>
-                  <Build />
-                </IconButton>
-              </Tooltip>
-
-              <Tooltip title="Entity Graph">
-                <IconButton onClick={() => setEntityTreeOpen(!entityTreeOpen)} sx={{ bgcolor: entityTreeOpen ? 'primary.main' : 'background.paper', '&:hover': { bgcolor: 'primary.dark' } }}>
-                  <AccountTree />
-                </IconButton>
-              </Tooltip>
-
-              <Tooltip title="PMI Annotations">
-                <IconButton onClick={() => setPmiPanelOpen(!pmiPanelOpen)} sx={{ bgcolor: pmiPanelOpen ? 'info.main' : 'background.paper', '&:hover': { bgcolor: 'info.dark' } }}>
-                  <Straighten />
-                </IconButton>
-              </Tooltip>
+            <Box sx={{ position: 'absolute', top: 16, right: 16, display: 'flex', gap: 1 }}>
 
               <Tooltip title="Measurement Tools">
                 <IconButton onClick={() => setMeasurementPanelOpen(!measurementPanelOpen)} sx={{ bgcolor: measurementPanelOpen ? 'success.main' : 'background.paper', '&:hover': { bgcolor: 'success.dark' } }}>
@@ -366,50 +313,13 @@ export default function App() {
                 </Tooltip>
               )}
 
-              {selectedEntityId && (
-                <Tooltip title="Entity Details">
-                  <IconButton onClick={() => setDetailsOpen(!detailsOpen)} sx={{ bgcolor: detailsOpen ? 'secondary.main' : 'background.paper', '&:hover': { bgcolor: 'secondary.dark' } }}>
-                    <Info />
-                  </IconButton>
-                </Tooltip>
-              )}
             </Box>
           )}
         </Box>
 
         {/* ── Left drawers ──────────────────────────────────────────────── */}
 
-        {selectedFile && appMode === 'step' && (
-          <Drawer variant="persistent" anchor="left" open={featurePanelOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, left: leftOffset(), zIndex: 1060, transition: 'left 0.2s' } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setFeaturePanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              {entityGraph
-                ? <FeaturePanel headerId={headerId} onFeatureSelect={handleEntitySelect} selectedFeatureId={null} />
-                : <EntityGraphUnavailable title="Manufacturing features" />}
-            </Box>
-          </Drawer>
-        )}
-
         {/* ── Right drawers ─────────────────────────────────────────────── */}
-
-        {selectedFile && (
-          <Drawer variant="persistent" anchor="right" open={pmiPanelOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1090 } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setPmiPanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              {entityGraph ? (
-                <PMIPanel
-                  headerId={headerId}
-                  onAnnotationSelect={handleEntitySelect}
-                  onAnnotationsLoaded={setPmiAnnotations}
-                />
-              ) : <EntityGraphUnavailable title="PMI" />}
-            </Box>
-          </Drawer>
-        )}
 
         {selectedFile && (
           <Drawer variant="persistent" anchor="right" open={measurementPanelOpen}
@@ -463,31 +373,6 @@ export default function App() {
           </Drawer>
         )}
 
-        {selectedFile && (
-          <Drawer variant="persistent" anchor="right" open={entityTreeOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1100 } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setEntityTreeOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              {entityGraph
-                ? <EntityTree headerId={headerId} selectedEntityId={selectedEntityId} onEntitySelect={handleEntitySelect} />
-                : <EntityGraphUnavailable title="Árbol de entidades" />}
-            </Box>
-          </Drawer>
-        )}
-
-        {selectedFile && selectedEntityId && (
-          <Drawer variant="persistent" anchor="right" open={detailsOpen}
-            sx={{ width: DETAILS_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: DETAILS_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1200 } }}
-          >
-            <EntityDetails
-              headerId={headerId}
-              entityId={selectedEntityId}
-              onClose={() => { setDetailsOpen(false); setSelectedEntityId(null); }}
-              onEntityClick={handleEntitySelect}
-            />
-          </Drawer>
-        )}
 
       </Box>
 
