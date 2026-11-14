@@ -197,7 +197,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             any('magnetic_potential' in b for b in spec['bcs']) or any('magnetic_flux' in ld for ld in spec['loads'])):
         raise GraphSpecError('Hay condiciones magnéticas pero el material no es magnético (μr, Br).')
     if spec['material'].get('type') == 'linear_magnetic':
-        n_mech = sum('magnetic_potential' not in b for b in spec['bcs']) +             sum('magnetic_flux' not in ld for ld in spec['loads'])
+        n_mech = (sum('magnetic_potential' not in b for b in spec['bcs'])
+                  + sum('magnetic_flux' not in ld for ld in spec['loads']))
         if n_mech:
             raise GraphSpecError('El material magnético solo admite BC de potencial magnético y cargas de flujo '
                                  f'magnético ({n_mech} condiciones mecánicas o térmicas en el estudio).')

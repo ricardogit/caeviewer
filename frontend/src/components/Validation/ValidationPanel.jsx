@@ -17,6 +17,21 @@ import CorrelationView, { r2Color } from './CorrelationView';
 const small = { fontSize: 10, minWidth: 0, px: 0.75, textTransform: 'none' };
 const LEVEL_COLOR = { alta: '#66bb6a', media: '#ffb74d', baja: '#ef5350', 'sin historial': '#888' };
 
+const BLOCK_LABEL = { geometry: 'geometría', material: 'material', physics: 'física', loading: 'cargas',
+  discretization: 'malla' };
+const FAMILY_LABEL = { steel: 'acero', stainless: 'inoxidable', cast_iron: 'fundición', aluminium: 'aluminio',
+  titanium: 'titanio', copper: 'cobre', magnesium: 'magnesio', polymer: 'polímero', composite: 'compuesto',
+  elastomer: 'elastómero', ceramic: 'cerámica', wood: 'madera', concrete: 'hormigón', piezoceramic: 'piezocerámica',
+  liquid: 'líquido', magnet: 'magnético' };
+
+/** "geometría 100 % · material 49 % (aluminio) · …" — why a past case counts as similar. */
+export function similarityBreakdown(r) {
+  const parts = Object.entries(r.similarity_breakdown || {}).map(([k, v]) =>
+    `${BLOCK_LABEL[k] || k} ${Math.round(100 * v)} %${k === 'material' && r.material_family
+      ? ` (caso: ${FAMILY_LABEL[r.material_family] || r.material_family})` : ''}`);
+  return parts.join(' · ');
+}
+
 function ConfidenceCard({ confidence }) {
   if (!confidence) return null;
   if (confidence.error) return <Alert severity="info" sx={{ fontSize: 11, py: 0 }}>{confidence.error}</Alert>;
@@ -40,6 +55,9 @@ function ConfidenceCard({ confidence }) {
           · similitud {Math.round(100 * r.similarity)} %{r.same_graph ? ' (este estudio)' : ''} — R²{' '}
           <span style={{ color: r2Color(r.r2) }}>{Number(r.r2).toFixed(3)}</span>
           {r.recalibrated ? ' · recalibrado' : ''}
+          {r.similarity_breakdown && (
+            <span style={{ display: 'block', color: '#666', paddingLeft: 8 }}>{similarityBreakdown(r)}</span>
+          )}
         </Typography>
       ))}
       {recs.map((r) => (

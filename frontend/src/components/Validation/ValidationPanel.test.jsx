@@ -24,7 +24,8 @@ const EXPS = [
 ];
 const CONF = {
   confidence_factor: 0.42, level: 'media',
-  similar_runs: [{ correlation_id: 'c0', similarity: 0.9, same_graph: false, r2: 0.97, recalibrated: false }],
+  similar_runs: [{ correlation_id: 'c0', similarity: 0.9, same_graph: false, r2: 0.97, recalibrated: false,
+    similarity_breakdown: { geometry: 1, material: 0.49 }, material_family: 'aluminium' }],
   recommendations: [{ test_type: 'structural', priority: 1, title: 'Ensayo estático de la pieza con sensores',
     reason: 'Ninguna medición', sensors: [{ quantity: 'uy', x: 500, y: 0, z: 12.5, why: 'Desplazamiento máximo', expected: -0.8, unit: 'mm' }] }],
 };
@@ -65,6 +66,7 @@ describe('ValidationPanel', () => {
     expect(screen.getByText(/uy en \(500.0, 0.0, 12.5\) mm/)).toBeTruthy();
     expect(screen.getByText('R² 0.930')).toBeTruthy();
     expect(screen.getByText(/E 205.0 GPa · σ0.2 399 MPa/)).toBeTruthy();
+    expect(screen.getByText('geometría 100 % · material 49 % (caso: aluminio)')).toBeTruthy();
   });
 
   it('correlates an experiment and shows the result', async () => {

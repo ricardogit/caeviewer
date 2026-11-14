@@ -69,55 +69,17 @@ def confidence_factor(r2: float, max_rel_error: float, n: int) -> float:
 
 # ── similarity / confidence before simulating ─────────────────────────────────
 
-def study_signature(spec: dict, material_id: str | None = None, n_dof: int | None = None) -> dict:
-    """Features of a study used for similarity (from a solver spec / SimulationRun.inputs)."""
-    mat = spec.get('material') or {}
-    geo = spec.get('geometry') if isinstance(spec.get('geometry'), dict) else None
-    loads = sorted({k for ld in spec.get('loads') or [] for k in ('force', 'pressure', 'gravity', 'force_per_node')
-                    if k in ld})
-    mp = spec.get('mesh_params') or {}
-    if geo:                                   # canonical inputs: CAD identity = STEP sha256
-        ident = geo.get('step_sha256') or geo.get('geometry_id')
-    elif spec.get('geometry_id'):
-        ident = str(spec['geometry_id'])
-    elif isinstance(spec.get('cae_mesh'), dict):
-        ident = spec['cae_mesh'].get('mesh_file_sha256') or spec['cae_mesh'].get('mesh_id')
-    elif spec.get('inline_mesh_sha256'):
-        ident = spec['inline_mesh_sha256']
-    else:                                     # parametric meshes: their parameters are the identity
-        import json
-        ident = json.dumps([spec.get('mesh_source'), spec.get('mesh_params')], sort_keys=True, default=str)
-    return {
-        'geometry': ident,
-        'mesh_source': spec.get('mesh_source'),
-        'E': float(mat.get('E') or mat.get('E1') or 210e9), 'nu': float(mat.get('nu', mat.get('nu12', 0.3))),
-        'material_id': material_id,
-        'order': int(mp.get('order', spec.get('element_order', 1)) or 1),
-        'loads': loads, 'n_bcs': len(spec.get('bcs') or []), 'n_dof': n_dof,
-    }
+def study_signature(spec: dict, material_id: str | None = None, n_dof: int | None = None,
+                    material_name: str | None = None) -> dict:
+    """Study embedding used for similarity (``embedding.embed_study``; from a solver spec / SimulationRun.inputs)."""
+    from app.design.services.validation.embedding import embed_study
+    return embed_study(spec, material_name=material_name, material_id=material_id, n_dof=n_dof)
 
 
 def similarity(a: dict, b: dict) -> float:
-    """Weighted similarity in [0, 1] of two study signatures."""
-    w, score = 0.0, 0.0
-
-    def add(weight, value):
-        nonlocal w, score
-        w += weight
-        score += weight * value
-
-    same_geo = a.get('geometry') and a.get('geometry') == b.get('geometry')
-    add(0.35, 1.0 if same_geo else (0.3 if a.get('mesh_source') == b.get('mesh_source') else 0.0))
-    if a.get('material_id') and b.get('material_id'):
-        add(0.25, 1.0 if a['material_id'] == b['material_id'] else 0.0)
-    else:
-        add(0.25, math.exp(-abs(math.log(a['E'] / b['E'])) / 0.05) * math.exp(-abs(a['nu'] - b['nu']) / 0.02))
-    add(0.1, 1.0 if a.get('order') == b.get('order') else 0.5)
-    la, lb = set(a.get('loads') or []), set(b.get('loads') or [])
-    add(0.2, len(la & lb) / len(la | lb) if la | lb else 1.0)
-    if a.get('n_dof') and b.get('n_dof'):
-        add(0.1, math.exp(-abs(math.log(a['n_dof'] / b['n_dof']))))
-    return score / w if w else 0.0
+    """Similarity in [0, 1] of two study embeddings (weighted per-block cosine)."""
+    from app.design.services.validation.embedding import study_similarity
+    return study_similarity(a, b)[0]
 
 
 class SimulationCorrelator:
@@ -139,8 +101,9 @@ class SimulationCorrelator:
             if run is None:
                 continue
             spec = run.inputs or run.solver_config or {}
-            out.append((study_signature(spec, str(c.material_id) if c.material_id else None,
-                                        (run.mesh_stats or {}).get('n_dof')),
+            mid = str(c.material_id) if c.material_id else None
+            out.append((study_signature(spec, mid, (run.mesh_stats or {}).get('n_dof'),
+                                        self._material_name(run.graph_id, mid)),
                         {'correlation_id': str(c.id), 'run_id': str(c.run_id), 'graph_id': str(run.graph_id),
                          'experiment_id': str(c.experiment_id), 'r2': c.correlation_r2,
                          'max_relative_error': c.max_relative_error, 'confidence_factor': c.confidence_factor or 0.0,
@@ -151,10 +114,13 @@ class SimulationCorrelator:
     def find_similar_runs(self, graph_id: str, top_k: int = 5, signature: dict | None = None) -> list[dict]:
         sig = signature or self._graph_signature(graph_id)
         scored = []
+        from app.design.services.validation.embedding import study_similarity
         for s, c in self.history():
-            sim = similarity(sig, s)
+            sim, parts = study_similarity(sig, s)
             if sim > 0.2:
-                scored.append({**c, 'similarity': round(sim, 3), 'same_graph': c['graph_id'] == str(graph_id)})
+                scored.append({**c, 'similarity': round(sim, 3), 'similarity_breakdown': parts,
+                               'material_family': s.get('material_family'),
+                               'same_graph': c['graph_id'] == str(graph_id)})
         scored.sort(key=lambda x: -x['similarity'])          # stable: newest first among ties
         return scored[:top_k]
 
@@ -176,14 +142,36 @@ class SimulationCorrelator:
             spec = canonical_inputs(spec)
         except Exception:
             pass
-        return study_signature(spec, self._material_id(graph_id))
+        mid = self._material_id(graph_id)
+        return study_signature(spec, mid, None, self._material_name(graph_id, mid))
 
     @staticmethod
-    def _material_id(graph_id):
+    def _material_node(graph_id):
         from app.design.models.graph import DesignNode
-        n = (DesignNode.query.filter_by(graph_id=graph_id, node_type='MATERIAL')
-             .order_by(DesignNode.created_at, DesignNode.id).first())
+        return (DesignNode.query.filter_by(graph_id=graph_id, node_type='MATERIAL')
+                .order_by(DesignNode.created_at, DesignNode.id).first())
+
+    @classmethod
+    def _material_id(cls, graph_id):
+        n = cls._material_node(graph_id)
         return (n.properties or {}).get('material_id') if n else None
+
+    @classmethod
+    def _material_name(cls, graph_id, material_id=None) -> str | None:
+        """Name that carries the material family: library material, else the MATERIAL node's name/label."""
+        from app.design.models.material import MaterialModel
+        if material_id:
+            try:
+                m = MaterialModel.query.get(material_id)
+                if m is not None:
+                    return ' '.join(x for x in (m.name, m.description) if x)
+            except Exception:
+                pass
+        n = cls._material_node(graph_id) if graph_id else None
+        if n is None:
+            return None
+        p = n.properties or {}
+        return ' '.join(str(x) for x in (p.get('material_name'), n.label) if x)
 
     def recommend_validation_test(self, graph_id: str, n_sensors: int = 3) -> dict:
         """Next most useful test: tensile test if the material is uncalibrated, then sensors at the

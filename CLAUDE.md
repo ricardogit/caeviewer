@@ -599,7 +599,15 @@ the uploaded file under `DATA_DIR/experiments/<id>/`, relative `file_ref`); comp
   (geometry identity, material, BCs/loads, mesh size) → similarity of past structural correlations (one per
   (experiment, run)) → confidence before simulating C = (Σsᵢcᵢ/Σsᵢ)(1−e^(−Σsᵢ)); recommends a tensile test if the
   material is uncalibrated and sensor positions (max |u|, max σvM surface nodes of the latest run).
-  "Semantic embedding" of the plan is replaced by this parameter similarity.
+  Study similarity = **study embedding** (`embedding.py`, plan's "embedding semántico", no language model): named
+  vector blocks — geometry (CAD/mesh identity → 1, else bbox size + aspect ratios, max 0.8), material (constitutive
+  model group, *family* from the material name via a keyword taxonomy — library name/description, else the MATERIAL
+  node's `material_name`/label; RBF-encoded log E, ν, log ρ, log σy; μ for fluids, μr/|Br| for magnets), physics,
+  loading (load + support kinds), discretization (order, log DOF) — weighted per-block cosine (weights `WEIGHTS`;
+  a block missing on either side drops out, unknown family is no penalty); another physics caps the similarity at
+  0.45. `find_similar_runs` returns `similarity_breakdown` + the case's `material_family` (shown in the Validation
+  panel). Tests `tests/test_embedding.py` (taxonomy, ranking: other steel > stainless > aluminium > PLA; thermal /
+  fluid ≤ 0.45).
 - `recalibrator.py`: tensile → refit (FASE 6 machinery), before/after metrics vs the material's current model,
   `replace` or `bayes` (inverse variance; prior without std gets 5 % CV), δ per parameter, appended to
   `material.calibration.history`, linked MATERIAL nodes synced. Structural → only the stiffness scale is
