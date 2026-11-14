@@ -5,6 +5,8 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
+import PiezoFields, { PZT5H } from './PiezoFields';
+import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
 
 describe('material model fields (item 8)', () => {
@@ -38,5 +40,27 @@ describe('material model fields (item 8)', () => {
       creep_ratio: 2 } }, material: { E1: 140e9, E2: 10e9, E3: 10e9 } }} />);
     expect(screen.getByText('Maxwell (1 términos)')).toBeTruthy();
     expect(screen.getByText('E1 / E2 / E3')).toBeTruthy();
+  });
+
+  it('piezo: PZT-5H preset fills every constant', () => {
+    const setProp = vi.fn();
+    render(<PiezoFields props={{}} setProp={setProp} />);
+    expect(screen.getByText(/Faltan: c11/)).toBeTruthy();
+    fireEvent.click(screen.getByText('PZT-5H'));
+    expect(setProp).toHaveBeenCalledWith('e33', PZT5H.e33);
+    expect(setProp).toHaveBeenCalledTimes(Object.keys(PZT5H).length);
+  });
+
+  it('results: extra fields (x_<key>) come from the pack header', () => {
+    const pack = { nNodes: 2, header: { fields: ['u', 'vm'], extra_fields: [{ key: 'phi', label: 'Potencial eléctrico', unit: 'V' }] },
+      u: { data: new Float32Array(6) }, x_phi: { data: new Float32Array([0, 100]) } };
+    expect(availableFields(pack)).toContain('x_phi');
+    expect(fieldMeta(pack, 'x_phi')).toEqual({ label: 'Potencial eléctrico', unit: 'V' });
+    expect(fieldMeta(pack, 'vm').unit).toBe('MPa');
+    expect(Array.from(fieldValues(pack, 'x_phi'))).toEqual([0, 100]);
+    render(<SummaryRows header={{ summary: { piezo: { min_potential_V: 0, max_potential_V: 100, max_field_V_m: 5e4,
+      electrodes: [{ label: 'top', voltage_V: 100, charge_C: 2e-9 }] } }, material: { c11: 127e9, c33: 117e9 } }} />);
+    expect(screen.getByText('Electrodo top')).toBeTruthy();
+    expect(screen.getByText('c11ᴱ / c33ᴱ')).toBeTruthy();
   });
 });

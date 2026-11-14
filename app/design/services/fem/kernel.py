@@ -25,7 +25,7 @@ from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs
                                                reduce_system, resolve_free_faces)
 from app.design.services.fem.constitutive import (build_material, ElastoplasticVonMises, conductivity,
                                                   thermal_expansion, HyperelasticNeoHookean,
-                                                  ViscoelasticMaxwell)
+                                                  ViscoelasticMaxwell, Piezoelectric)
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
@@ -245,6 +245,11 @@ class FEMKernel:
                                  'térmico todavía: quita las condiciones térmicas o usa un material elástico.')
             return self._solve_hyperelastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs,
                                             all_loads, tier, socketio, run_id, t_start)
+        if isinstance(material, Piezoelectric):                   # coupled u + φ
+            if T is not None:
+                raise ValueError('El material piezoeléctrico no admite el acoplamiento térmico todavía.')
+            return self._solve_piezo(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs, all_loads,
+                                     tier, socketio, run_id, t_start)
         if isinstance(material, ViscoelasticMaxwell):             # time stepping (creep / relaxation)
             if T is not None:
                 raise ValueError('El material viscoelástico no admite el acoplamiento térmico todavía: quita '
@@ -515,6 +520,100 @@ class FEMKernel:
             'displacement': disp.tolist(), 'displacement_magnitude': dmag.tolist(),
             'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
             'sigma_elemental': el_sigma.tolist(), 'solve_info': info,
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    # ── Piezoelectric (coupled displacement + electric potential) ───────────
+
+    PIEZO_MAX_DOF = 400_000           # sparse direct solve of the indefinite coupled system
+
+    def _solve_piezo(self, mesh, mesh_meta, material, mat_spec, spec, all_bcs, all_loads,
+                     tier, socketio, run_id, t_start) -> dict:
+        import scipy.sparse as sp
+        from scipy.sparse.linalg import spsolve
+        from app.design.services.fem import piezo as pz
+        pm = material.pm
+        n = mesh.n_nodes
+        n_dof = 4 * n
+        if n_dof > self.PIEZO_MAX_DOF:
+            raise ValueError(f'Piezoeléctrico: {n_dof:,} incógnitas (u + φ) superan el límite del solver directo '
+                             f'({self.PIEZO_MAX_DOF:,}); usa una malla más gruesa.')
+        mech_bcs = [b for b in all_bcs if 'voltage' not in b]
+        mech_loads = [ld for ld in all_loads if 'surface_charge' not in ld]
+        rho = float(mat_spec.get('rho', 0.0) or 0.0)
+        mech_loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld) for ld in mech_loads]
+        load_info: list = []
+        F = assemble_F(mesh, mech_loads, load_info)
+        Q = pz.charge_vector(mesh, all_loads, load_info)
+        udofs, uvals = dirichlet(mesh, mech_bcs) if mech_bcs else (np.zeros(0, np.int64), np.zeros(0))
+        vnodes, vvals, groups = pz.voltage_dirichlet(mesh, all_bcs)
+        if not len(udofs):
+            raise ValueError('Piezoeléctrico: faltan apoyos mecánicos (movimiento de cuerpo rígido).')
+        if not len(vnodes):
+            raise ValueError('Piezoeléctrico: define al menos un electrodo con potencial impuesto (p. ej. 0 V).')
+        self._emit(socketio, run_id, 20, f'ensamblando u + φ ({n_dof:,} incógnitas)', t_start)
+        K, Kuu, Kuf, Kff = pz.assemble(mesh, pm)
+        rhs = np.concatenate([F, -Q])
+        dofs = np.concatenate([udofs, 3 * n + vnodes])
+        vals = np.concatenate([uvals, vvals])
+        x = np.zeros(n_dof)
+        x[dofs] = vals
+        mask = np.ones(n_dof, bool)
+        mask[dofs] = False
+        free = np.flatnonzero(mask)
+        self._emit(socketio, run_id, 50, 'resolviendo el sistema acoplado (directo)', t_start)
+        # symmetric diagonal scaling: stiffness ~1e11 vs permittivity ~1e-8 would cost ~8 digits in the LU
+        Kf = K[free][:, free].tocsc()
+        sc = 1.0 / np.sqrt(np.abs(Kf.diagonal()))
+        Ds = sp.diags(sc)
+        y = spsolve((Ds @ Kf @ Ds).tocsc(), sc * (rhs[free] - K[free][:, dofs] @ vals))
+        x[free] = sc * y
+        u, phi = x[:3 * n], x[3 * n:]
+        R = K @ x - rhs
+        resid = float(np.linalg.norm(R[free]) / max(np.linalg.norm(rhs), np.linalg.norm(R[dofs]), 1e-30))
+        reaction = [float(R[:3 * n][c::3][udofs[udofs % 3 == c] // 3].sum()) for c in range(3)]
+        applied = [float(F[c::3].sum()) for c in range(3)]
+        scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        electrodes = [{'label': bc.get('label'), 'voltage_V': float(bc['voltage']),
+                       'charge_C': float(-R[3 * n + nodes].sum()), 'n_nodes': int(len(nodes))}
+                      for bc, nodes in groups]
+        post = pz.postprocess(mesh, pm, u, phi)
+        el_vm = tb.von_mises_v(post['sigma_gp'].mean(axis=1))
+        node_vm = tb.von_mises_v(post['sigma_nodal'])
+        Emag = np.linalg.norm(post['E_nodal'], axis=1)
+        disp = u.reshape(-1, 3)
+        dmag = np.linalg.norm(disp, axis=1)
+        d = pm.d_matrix()
+        s = {
+            'physics': ['piezoelectric'],
+            'max_displacement_m': float(dmag.max()), 'max_displacement_mm': round(float(dmag.max()) * 1000, 6),
+            'max_von_mises_pa': float(el_vm.max()), 'max_von_mises_mpa': round(float(el_vm.max()) / 1e6, 4),
+            'max_von_mises_nodal_mpa': round(float(node_vm.max()) / 1e6, 4),
+            'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': n_dof, 'element_type': mesh.element_type,
+            'tier': tier, 'converged': bool(resid < 1e-8), 'n_iterations': 1, 'final_residual': resid,
+            'solver_method': 'direct_coupled', 'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'applied_load_N': applied, 'reaction_N': reaction,
+            'equilibrium_error': float(np.abs(np.add(reaction, applied)).max() / scale)
+            if max(np.abs(applied).max(), np.abs(reaction).max()) > 0 else 0.0,
+            'loads': load_info, 'n_constrained_dofs': int(len(dofs)), 'material_model': 'piezoelectric',
+            'piezo': {'electrodes': electrodes, 'min_potential_V': float(phi.min()), 'max_potential_V': float(phi.max()),
+                      'max_field_V_m': float(Emag.max()),
+                      'd_pC_N': {'d31': d[2, 0] * 1e12, 'd33': d[2, 2] * 1e12, 'd15': d[0, 5] * 1e12}
+                      if np.allclose(pm.R, np.eye(3)) else None},
+            'extra_fields': [{'key': 'phi', 'label': 'Potencial eléctrico', 'unit': 'V'},
+                             {'key': 'Emag', 'label': '|E| campo eléctrico', 'unit': 'kV/mm'}],
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(x),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'displacement': disp.tolist(), 'displacement_magnitude': dmag.tolist(),
+            'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
+            'sigma_elemental': post['sigma_gp'].mean(axis=1).tolist(), 'potential': phi,
+            'extra_fields': {'phi': phi, 'Emag': Emag / 1e6},
+            'solve_info': {'method': 'direct_coupled', 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
         }
@@ -799,6 +898,9 @@ class FEMKernel:
                          'equivalent_plastic_strain', 'equivalent_plastic_strain_elemental'):
                 if result.get(name) is not None:
                     fields.create_dataset(f'{name}/step_0', data=np.array(result[name]))
+
+            for key, data in (result.get('extra_fields') or {}).items():   # generic nodal fields (new physics)
+                fields.create_dataset(f'x_{key}/step_0', data=np.asarray(data, dtype=np.float64))
 
             surf = result.get('surface_triangles', [])
             if surf:

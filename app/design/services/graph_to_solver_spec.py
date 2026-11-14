@@ -91,6 +91,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['n_load_steps'] = int(props.get('load_steps') or 10)
         elif spec['material']['type'] == 'viscoelastic_maxwell':
             _viscoelastic_material(spec, mat_node)
+        elif spec['material']['type'] == 'piezoelectric':
+            _piezo_material(spec, mat_node)
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -173,6 +175,12 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['loads'].append(load_entry)
 
     _set_physics(spec, material_nodes[0] if material_nodes else None)
+    if spec['material'].get('type') == 'piezoelectric':
+        if 'thermal' in spec['physics']:
+            raise GraphSpecError('El material piezoeléctrico no admite condiciones térmicas todavía.')
+        spec['physics'] = ['piezoelectric']
+    elif any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
+        raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material no es piezoeléctrico.')
     return spec
 
 
@@ -208,6 +216,26 @@ def _orthotropic_material(spec: dict, node) -> None:
             m[key] = a
     try:
         LinearElasticOrthotropic.from_dict(m)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material'] = m
+
+
+def _piezo_material(spec: dict, node) -> None:
+    """Piezoelectric (6mm, poling = material axis 3): c11 c12 c13 c33 c44 c66 [Pa], e31 e33 e15 [C/m²],
+    eps11 eps33 (relative, constant strain), optional axis_1/axis_2. Replaces the isotropic E/ν."""
+    from app.design.services.fem.piezo import KEYS, PiezoMaterial
+    p = node.properties or {}
+    missing = [k for k in KEYS if p.get(k) in (None, '')]
+    if missing:
+        raise GraphSpecError(f'"{node.label}": material piezoeléctrico sin {", ".join(missing)}.')
+    m = {'type': 'piezoelectric', **{k: float(p[k]) for k in KEYS}, 'rho': spec['material']['rho']}
+    for key in ('axis_1', 'axis_2'):
+        a = _axis(p, key)
+        if a is not None:
+            m[key] = a
+    try:
+        PiezoMaterial(m)
     except ValueError as e:
         raise GraphSpecError(f'"{node.label}": {e}')
     spec['material'] = m
@@ -372,6 +400,15 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     props = node.properties or {}
     faces = _faces(ctx, node)
     bc_type = props.get('bc_type', 'fixed')
+    if bc_type == 'voltage':                      # electrode (piezoelectric)
+        v = props.get('voltage', props.get('value'))
+        if v in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta el potencial del electrodo (V).')
+        entry = {'voltage': float(v), 'label': node.label}
+        _target(entry, faces, props, 'z0', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if bc_type == 'temperature':
         t = props.get('temperature', props.get('value'))
         if t in (None, ''):
@@ -398,10 +435,7 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         entry['symmetry'] = True
     elif props.get('keep_solid') is False:
         entry['keep_solid'] = False
-    if faces:
-        entry['face_set'] = faces
-    else:
-        entry['node_set'] = props.get('node_set', 'fixed')
+    _target(entry, faces, props, 'fixed')       # CAD faces > face_set > node_set (default 'fixed')
     if geometry_id:
         entry['geometry_id'] = geometry_id
     return entry
@@ -454,6 +488,12 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
                 raise GraphSpecError(f'"{node.label}": la convección necesita h > 0 (W/m²·K).')
             entry['convection'] = {'h': float(h), 'T_inf': float(props.get('T_inf') or 0.0)}
             _target(entry, faces, props, '@free', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type == 'surface_charge':             # free charge density on a face (piezoelectric)
+        entry['surface_charge'] = mag * {'C/m²': 1.0, 'mC/m²': 1e-3, 'µC/m²': 1e-6}.get(props.get('unit') or 'C/m²', 1.0)
+        _target(entry, _faces(ctx, node), props, 'z1', face=True)
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry

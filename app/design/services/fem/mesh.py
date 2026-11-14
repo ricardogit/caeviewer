@@ -121,6 +121,7 @@ class FEMMesh:
         Node sets and face sets (boundary triangles, for consistent surface loads):
             'fixed': face x = 0 (clamped)
             'tip':   face x = length (free tip, for tip load)
+            'y0' / 'y1', 'z0' / 'z1': side faces y = 0 / width and z = 0 / height
         """
         try:
             import gmsh
@@ -150,11 +151,19 @@ class FEMMesh:
                     surf = {}
                     eps = 1e-4 * length   # OCC bboxes are inflated by the shape tolerance
                     for _, tag in gmsh.model.getEntities(2):
-                        xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(2, tag)
+                        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, tag)
                         if xmax < eps:
                             surf['fixed'] = tag
                         elif xmin > length - eps:
                             surf['tip'] = tag
+                        elif ymax < eps:                 # side faces (electrodes, walls, …)
+                            surf['y0'] = tag
+                        elif ymin > width - eps:
+                            surf['y1'] = tag
+                        elif zmax < eps:
+                            surf['z0'] = tag
+                        elif zmin > height - eps:
+                            surf['z1'] = tag
                     nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
 
                     logger.info(f"Cantilever mesh: {len(nodes_)} nodes, "

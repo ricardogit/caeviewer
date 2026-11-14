@@ -15,7 +15,7 @@ import { AccountTree } from '@mui/icons-material';
 import useResultsStore from '../../stores/resultsStore';
 import useWorkspaceStore from '../../stores/workspaceStore';
 import { colormap, COLORBAR_CSS } from '../../utils/colormap';
-import { FIELDS, autoScale, availableFields, fieldValues, fmt, normalizer, range } from './resultsField';
+import { autoScale, fieldMeta, availableFields, fieldValues, fmt, normalizer, range } from './resultsField';
 
 function FitOnce({ box, keyId }) {
   const { camera, controls } = useThree();
@@ -62,6 +62,15 @@ export function SummaryRows({ header }) {
       ['E₀ / E∞', `${fmt(s.viscoelastic.E0 / 1e9)} / ${fmt(s.viscoelastic.E_inf / 1e9)} GPa`],
       ['Despl. final / inicial', s.viscoelastic.creep_ratio != null ? `×${fmt(s.viscoelastic.creep_ratio)}` : '—'],
     ] : []),
+    ...(s.piezo ? [
+      ['Modelo', 'Piezoeléctrico (u + φ)'],
+      ['Potencial', `${fmt(s.piezo.min_potential_V)} … ${fmt(s.piezo.max_potential_V)} V`],
+      ['|E| máx.', `${fmt(s.piezo.max_field_V_m / 1e6)} kV/mm`],
+      ...(s.piezo.d_pC_N ? [['d31 / d33 / d15', `${fmt(s.piezo.d_pC_N.d31)} / ${fmt(s.piezo.d_pC_N.d33)} / `
+        + `${fmt(s.piezo.d_pC_N.d15)} pC/N`]] : []),
+      ...(s.piezo.electrodes || []).map((el, i) => [`Electrodo ${el.label || i + 1}`,
+        `${fmt(el.voltage_V)} V · Q = ${fmt(el.charge_C * 1e9)} nC`]),
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
@@ -72,7 +81,9 @@ export function SummaryRows({ header }) {
     ...(hasU ? [
       header?.material?.E1
         ? ['E1 / E2 / E3', [header.material.E1, header.material.E2, header.material.E3].map(v => fmt(v / 1e9)).join(' / ') + ' GPa']
-        : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
+        : header?.material?.c33
+          ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
+          : ['E',header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
     ] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
@@ -136,7 +147,7 @@ export default function ResultsViewer() {
       </Box>
     );
   }
-  const f = FIELDS[field];
+  const f = fieldMeta(pack, field);
   return (
     <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
       <Canvas camera={{ fov: 40, position: [300, 200, 400] }} onCreated={({ gl }) => gl.setClearColor('#20242a')}>
@@ -172,7 +183,7 @@ export default function ResultsViewer() {
             <ToggleButtonGroup size="small" exclusive value={field} onChange={(_, v) => v && setField(v)}
               sx={{ bgcolor: '#1a1a1a' }}>
               {fields.map((key) => (
-                <ToggleButton key={key} value={key} sx={{ fontSize: 11, py: 0.25, textTransform: 'none' }}>{FIELDS[key].label}</ToggleButton>
+                <ToggleButton key={key} value={key} sx={{ fontSize: 11, py: 0.25, textTransform: 'none' }}>{fieldMeta(pack, key).label}</ToggleButton>
               ))}
             </ToggleButtonGroup>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, bgcolor: '#1a1a1acc', px: 1, borderRadius: 1 }}

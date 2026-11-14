@@ -20,14 +20,23 @@ export function availableFields(pack) {
   if (groups.includes('u')) out.push('vm', 'umag', 'ux', 'uy', 'uz');
   if (groups.includes('ep')) out.push('ep');
   if (groups.includes('T')) out.push('T', 'q');
+  // generic nodal fields of the newer physics (piezo φ, fluid velocity/pressure, magnetic B …): 'x_<key>'
+  (pack?.header?.extra_fields || []).forEach((m) => out.push(`x_${m.key}`));
   return out;
+}
+
+/** Label/unit of a field: built-in FIELDS or the pack's extra_fields metadata. */
+export function fieldMeta(pack, field) {
+  if (FIELDS[field]) return FIELDS[field];
+  const m = (pack?.header?.extra_fields || []).find((x) => `x_${x.key}` === field);
+  return m ? { label: m.label, unit: m.unit || '' } : { label: field, unit: '' };
 }
 
 export function fieldValues(pack, field) {
   const n = pack.nNodes;
   const out = new Float32Array(n);
   const u = pack.u.data;
-  if (field === 'vm' || field === 'T' || field === 'q' || field === 'ep') {
+  if (field === 'vm' || field === 'T' || field === 'q' || field === 'ep' || field.startsWith('x_')) {
     out.set(pack[field].data);
   } else if (field === 'umag') {
     for (let i = 0; i < n; i += 1) out[i] = Math.hypot(u[3 * i], u[3 * i + 1], u[3 * i + 2]);

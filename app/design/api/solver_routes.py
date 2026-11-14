@@ -32,11 +32,13 @@ PHYSICS_LABELS = {
     ('structural',): 'Estructural 3D (elástico lineal)',
     ('thermal',): 'Térmico estacionario 3D (conducción)',
     ('structural', 'thermal'): 'Termo-mecánico 3D (térmico → estructural)',
+    ('piezoelectric',): 'Piezoeléctrico 3D (desplazamiento + potencial eléctrico)',
 }
 
 
 # material models only the plain kernel run supports (Newton / time stepping)
-NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell')
+NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
+                       'piezoelectric')     # (piezo is linear but coupled: plain kernel run only)
 MATERIAL_LABELS = {
     'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
     'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',
@@ -776,7 +778,7 @@ def run_surface(run_id):
     with h5py.File(path, 'r') as f:
         has_u = 'fields/displacement/step_0' in f
         has_t = 'fields/temperature/step_0' in f
-        if 'surface_triangles' not in f or not (has_u or has_t):
+        if 'surface_triangles' not in f or not (has_u or has_t or any(k.startswith('x_') for k in f['fields'])):
             return jsonify({'error': 'El run no tiene superficie ni campos guardados.'}), 404
         X = f['nodes'][:]
         tris = np.asarray(f['surface_triangles'][:], np.int64)
@@ -788,6 +790,8 @@ def run_surface(run_id):
         summary = {}
         if 'summary_json' in f.attrs:
             summary = json.loads(f.attrs['summary_json'])
+        extras = [(m, f[f"fields/x_{m['key']}/step_0"][:]) for m in summary.get('extra_fields') or []
+                  if f"fields/x_{m['key']}/step_0" in f]
     used, inv = np.unique(tris.ravel(), return_inverse=True)
     t = inv.reshape(-1, 3).astype(np.uint32)
     xyz = (X[used] * 1000.0).astype(np.float32)
@@ -807,6 +811,12 @@ def run_surface(run_id):
         'summary': summary, 'material': ((run.solver_config or {}).get('material') or {}),
     }
     arrays = [('xyz', xyz), ('tris', t), ('u', u), ('vm', v)]
+    header['extra_fields'] = []
+    for meta, data in extras:                    # generic nodal scalars (piezo φ, fluid velocity, magnetic B …)
+        vals = np.asarray(data, float)[used].astype(np.float32)
+        header['extra_fields'].append({**meta, 'min': float(np.min(data)), 'max': float(np.max(data))})
+        header['units'][f"x_{meta['key']}"] = meta.get('unit', '')
+        arrays.append((f"x_{meta['key']}", vals))
     if EP is not None:
         header['max_ep'] = float(np.max(EP)) if len(EP) else 0.0
         arrays.append(('ep', np.asarray(EP, float)[used].astype(np.float32)))

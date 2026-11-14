@@ -277,8 +277,24 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
 - Non-linear / history models (`NONLINEAR_MATERIALS` in solver_routes: J2, Neo-Hookean, Maxwell) run only through
   the plain kernel run: topology / ROM / uncertainty / adaptive get 422. Preflight labels in `MATERIAL_LABELS`.
   UI: `HyperelasticFields.jsx`, `ViscoelasticFields.jsx`; test `MaterialModelFields.test.jsx`.
-- Stubs still: `Piezoelectric`, `ThermoPiezoelectric`, `NewtonianFluid`, `LinearMagnetic` (shown disabled in the
-  MATERIAL model list).
+- `Piezoelectric` (`fem/piezo.py`): linear, stress-charge form σ = cᴱε − eᵀE, D = eε + εˢE, hexagonal 6mm class
+  (keys c11 c12 c13 c33 c44 c66 [Pa], e31 e33 e15 [C/m²], eps11 eps33 relative at constant strain; poling = material
+  axis 3, optional `axis_1`/`axis_2` like orthotropic: e_g = Rᵀe_mT, κ_g = Rᵀκ_mR). Coupled u + φ (4 DOF/node), one
+  symmetric indefinite system [[Kuu, Kuφ], [Kuφᵀ, −Kφφ]] solved directly with symmetric diagonal scaling (without it
+  the residual stalls at ~1e-6; `PIEZO_MAX_DOF` 400K). Spec: `physics ['piezoelectric']`, BC `{'voltage': V,
+  face_set}` (electrode; the face's φ is fixed), load `{'surface_charge': C/m², face_set}`; electrode charge =
+  −reaction of the φ equations. Graph: MATERIAL `model_type: 'piezoelectric'`, BC `bc_type: 'voltage'` (default face
+  z0), LOAD `load_type: 'surface_charge'` (C/m², mC/m², µC/m²; default z1); thermal + piezo → 422, electrodes without
+  a piezo material → 422. `generate_cantilever` also tags the side faces `y0 y1 z0 z1`. Summary `piezo`
+  {electrodes [{voltage_V, charge_C}], min/max potential, max_field_V_m, d_pC_N}. UI `DesignGraph/PiezoFields.jsx`
+  (PZT-5H preset). Hito `python validate_piezo.py [--server …]`: datasheet d31/d33/d15/ε33ᵀ within 0.5 %, converse
+  effect + free capacitance, open-circuit sensor voltage, d15 shear, blocked stress, poling along x — all exact
+  (1e-13); server: graph → run → φ field → |u| exact. Tests `tests/test_piezo.py`.
+- **Generic extra result fields** (newer physics): the kernel result may carry `extra_fields {key: nodal array}`
+  + summary `extra_fields [{key, label, unit}]` → HDF5 `fields/x_<key>/step_0` → `/surface` packs `x_<key>` with
+  header `extra_fields` (min/max) → Results viewer lists them (`resultsField.availableFields/fieldMeta`).
+- Mechanical BC nodes honour `face_set` on parametric meshes (before, only `node_set` was read, default `fixed`).
+- Stubs still: `ThermoPiezoelectric`, `NewtonianFluid`, `LinearMagnetic` (shown disabled in the MATERIAL list).
 
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,

@@ -306,7 +306,25 @@ class ViscoelasticMaxwell:
         return cls(float(d['E']), float(d['nu']), d.get('prony') or [], d.get('rho', 0.0))
 
 
-class Piezoelectric(_Stub): pass
+class Piezoelectric:
+    """Linear piezoelectricity (stress-charge form, poling along material axis 3): ``fem.piezo``.
+    get_D_matrix() is the short-circuit stiffness Cᴱ (global)."""
+
+    def __init__(self, spec: dict):
+        from app.design.services.fem.piezo import PiezoMaterial
+        self.rho = float(spec.get('rho') or 0.0)
+        self.pm = PiezoMaterial(spec)
+
+    def get_D_matrix(self, state=None) -> np.ndarray:
+        return self.pm.C
+
+    def get_coupling_terms(self, pl): return {'e': self.pm.e, 'kappa': self.pm.kappa}
+    def update_internal_variables(self, si): return {}
+    def is_linear(self): return True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'Piezoelectric':
+        return cls(d)
 class ThermoPiezoelectric(_Stub): pass
 class NewtonianFluid(_Stub): pass
 class LinearMagnetic(_Stub): pass
