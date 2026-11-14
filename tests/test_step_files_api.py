@@ -17,6 +17,7 @@ DATA;
 #1=CARTESIAN_POINT('',(0.,0.,0.));
 #2=DIRECTION('',(0.,0.,1.));
 #3=AXIS2_PLACEMENT_3D('',#1,#2,$);
+#4=MANIFOLD_SOLID_BREP('',#5);
 ENDSEC;
 END-ISO-10303-21;
 """
@@ -66,6 +67,8 @@ def test_disk_files_are_registered_with_real_ids(app):
         f.write(STEP)
     with open(os.path.join(folder, 'notes.txt'), 'w') as f:
         f.write('not a STEP file')
+    with open(os.path.join(folder, 'loose.stp'), 'w') as f:     # no B-rep: never registered
+        f.write(STEP.replace("#4=MANIFOLD_SOLID_BREP('',#5);\n", ''))
     c = app.test_client()
     files = c.get('/api/step-view/files').get_json()['files']
     assert [f['filename'] for f in files] == ['tiny_part.stp']
@@ -75,6 +78,26 @@ def test_disk_files_are_registered_with_real_ids(app):
     assert [f['id'] for f in again] == [files[0]['id']]
     meta = c.get(f"/api/step-view/model/{files[0]['id']}/metadata")
     assert meta.status_code == 200
+
+
+def test_delete_part_with_header(app):
+    # the Part -> STEPFileHeader relationship must let the DB cascade (part_id is NOT NULL)
+    from app.extensions import db
+    from app.models import Part
+    from app.models.step_storage import STEPFileHeader
+    c = app.test_client()
+    with app.app_context():
+        part = Part(name='with_header', file_path='/nonexistent/with_header.stp', material='steel')
+        db.session.add(part)
+        db.session.flush()
+        db.session.add(STEPFileHeader(part_id=part.id, file_name='with_header.stp'))
+        db.session.commit()
+        pid = str(part.id)
+    r = c.delete(f'/api/step-view/files/{pid}')
+    assert r.status_code == 200, r.get_json()
+    with app.app_context():
+        assert db.session.get(Part, uuid.UUID(pid)) is None
+        assert STEPFileHeader.query.filter_by(part_id=uuid.UUID(pid)).count() == 0
 
 
 def test_non_uuid_model_id_is_404_not_500(app):

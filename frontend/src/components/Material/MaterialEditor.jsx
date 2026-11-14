@@ -8,7 +8,7 @@ import {
   List, ListItemButton, ListItemText, Divider, MenuItem, Select, FormControl, InputLabel, Table, TableHead,
   TableRow, TableCell, TableBody, Tooltip, CircularProgress,
 } from '@mui/material';
-import { Close, Add, UploadFile, Link as LinkIcon, Save, Delete } from '@mui/icons-material';
+import { Close, Add, UploadFile, Link as LinkIcon, Save, Delete, ContentCopy } from '@mui/icons-material';
 import {
   ComposedChart, Line, Scatter, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from 'recharts';
@@ -20,7 +20,33 @@ export const PARAM_ROWS = [
   ['nu', 'Coeficiente de Poisson ν', '', 1],
   ['rho', 'Densidad ρ', 'kg/m³', 1],
   ['sigma_y', 'Límite elástico σy (0.2 %)', 'MPa', 1e-6],
+  ['sigma_u', 'Resistencia a tracción σu', 'MPa', 1e-6],
+  ['sigma_c', 'Resistencia a compresión σc', 'MPa', 1e-6],
+  ['elongation', 'Alargamiento a rotura', '%', 100],
+  ['k', 'Conductividad térmica k', 'W/m·K', 1],
+  ['alpha', 'Dilatación térmica α', 'µm/m·K', 1e6],
+  ['cp', 'Calor específico cp', 'J/kg·K', 1],
 ];
+// rows shown even when empty (the rest only when the material has them)
+const BASE_ROWS = new Set(['E', 'nu', 'rho', 'sigma_y', 'sigma_u', 'k', 'alpha']);
+export const SOURCE_LABELS = {
+  seed: ['Catálogo', '#90caf9'], user: ['Usuario', '#bdbdbd'], test: ['Ensayo', '#a5d6a7'],
+  import: ['Importado', '#ffcc80'], capp: ['CAPP', '#ce93d8'],
+};
+
+/** Library list filtered by text (name / category) and grouped by category (user materials first). */
+export function groupMaterials(materials, query = '') {
+  const q = query.trim().toLowerCase();
+  const groups = new Map();
+  materials
+    .filter((m) => !q || `${m.name} ${m.category || ''}`.toLowerCase().includes(q))
+    .forEach((m) => {
+      const g = m.category || 'Mis materiales';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(m);
+    });
+  return [...groups.entries()].sort(([a], [b]) => (a === 'Mis materiales' ? -1 : b === 'Mis materiales' ? 1 : a.localeCompare(b)));
+}
 const SPEC_COLORS = ['#90caf9', '#ce93d8', '#a5d6a7', '#ffcc80', '#ef9a9a', '#80deea'];
 const tf = { inputProps: { style: { color: '#fff', fontSize: 12 } }, InputLabelProps: { style: { color: '#888' } } };
 
@@ -34,17 +60,17 @@ export function fitQuality(r2) {
 
 const fmt = (v, scale = 1, digits = 4) => (v == null || Number.isNaN(v) ? '' : Number((v * scale).toPrecision(digits)));
 
-function ParamEditor({ params, onChange }) {
+function ParamEditor({ params, onChange, readOnly = false }) {
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 110px 110px', gap: 1, alignItems: 'center' }}>
-      {PARAM_ROWS.map(([k, label, unit, sc]) => {
+      {PARAM_ROWS.filter(([k]) => BASE_ROWS.has(k) || params[k]).map(([k, label, unit, sc]) => {
         const p = params[k] || {};
         return (
           <React.Fragment key={k}>
             <Typography sx={{ fontSize: 12, color: '#bbb' }}>{label}{unit && ` [${unit}]`}</Typography>
-            <TextField size="small" type="number" label="Valor" value={fmt(p.value, sc, 6)}
+            <TextField size="small" type="number" label="Valor" value={fmt(p.value, sc, 6)} disabled={readOnly}
               onChange={(e) => onChange(k, 'value', e.target.value === '' ? null : Number(e.target.value) / sc)} {...tf} />
-            <TextField size="small" type="number" label="± desv." value={fmt(p.std, sc, 4)}
+            <TextField size="small" type="number" label="± desv." value={fmt(p.std, sc, 4)} disabled={readOnly}
               onChange={(e) => onChange(k, 'std', e.target.value === '' ? 0 : Number(e.target.value) / sc)} {...tf} />
           </React.Fragment>
         );
@@ -88,9 +114,11 @@ function FitChart({ curves, model }) {
 export default function MaterialEditor({ open, onClose, graphId = null, nodeId = null, onAssigned = null }) {
   const {
     materials, current, fit, files, fitOptions, busy, error, list, open: openMat, create, save, remove,
-    setFitOption, fitFiles, assign,
+    setFitOption, fitFiles, assign, duplicate,
   } = useMaterialStore();
   const [newName, setNewName] = useState('');
+  const [query, setQuery] = useState('');
+  const groups = useMemo(() => groupMaterials(materials, query), [materials, query]);
   const [name, setName] = useState('');
   const [params, setParams] = useState({});
   const [dirty, setDirty] = useState(false);
@@ -108,6 +136,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
   }, [current]);
 
   const cal = current?.calibration || {};
+  const locked = current?.source === 'seed';     // catalog entries are read-only: duplicate to edit
   const results = fit?.all_results || cal.all_results || [];
   const curves = fit?.curves || cal.curves;
   const best = fit?.best_model || cal.best_model;
@@ -148,13 +177,26 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
               <Add fontSize="small" />
             </IconButton>
           </Box>
+          <Box sx={{ px: 1, pb: 0.5 }}>
+            <TextField size="small" fullWidth placeholder="Buscar (nombre o familia)" value={query}
+              onChange={(e) => setQuery(e.target.value)} {...tf} />
+          </Box>
           <List dense sx={{ overflow: 'auto', flex: 1 }}>
-            {materials.map((m) => (
-              <ListItemButton key={m.id} selected={current?.id === m.id} onClick={() => openMat(m.id)}>
-                <ListItemText primary={m.name} primaryTypographyProps={{ fontSize: 12 }}
-                  secondary={m.calibration?.label ? `${m.calibration.label} · R² ${m.calibration.r_squared?.toFixed(4)}` : m.model_type}
-                  secondaryTypographyProps={{ fontSize: 10, color: '#888' }} />
-              </ListItemButton>
+            {groups.map(([group, items]) => (
+              <React.Fragment key={group}>
+                <Typography sx={{ fontSize: 10, color: '#777', px: 1.5, pt: 1, textTransform: 'uppercase' }}>
+                  {group} ({items.length})
+                </Typography>
+                {items.map((m) => (
+                  <ListItemButton key={m.id} selected={current?.id === m.id} onClick={() => openMat(m.id)}>
+                    <ListItemText primary={m.name} primaryTypographyProps={{ fontSize: 12 }}
+                      secondary={m.calibration?.label
+                        ? `${m.calibration.label} · R² ${m.calibration.r_squared?.toFixed(4)}`
+                        : (SOURCE_LABELS[m.source] || SOURCE_LABELS.user)[0]}
+                      secondaryTypographyProps={{ fontSize: 10, color: '#888' }} />
+                  </ListItemButton>
+                ))}
+              </React.Fragment>
             ))}
             {!materials.length && (
               <Typography variant="caption" sx={{ color: '#777', p: 1.5, display: 'block' }}>
@@ -171,28 +213,57 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
           {current && (
             <>
               <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                <TextField size="small" label="Nombre" value={name} sx={{ flex: 1 }}
+                <TextField size="small" label="Nombre" value={name} sx={{ flex: 1 }} disabled={locked}
                   onChange={(e) => { setName(e.target.value); setDirty(true); }} {...tf} />
-                <Button size="small" variant="contained" startIcon={<Save />} disabled={!dirty} onClick={onSave}>Guardar</Button>
+                {locked ? (
+                  <Tooltip title="Los materiales del catálogo son de solo lectura: crea una copia propia para editarla o ajustarla a tus ensayos">
+                    <Button size="small" variant="contained" startIcon={<ContentCopy />}
+                      onClick={() => duplicate(current.id)}>
+                      Duplicar para editar
+                    </Button>
+                  </Tooltip>
+                ) : (
+                  <Button size="small" variant="contained" startIcon={<Save />} disabled={!dirty} onClick={onSave}>Guardar</Button>
+                )}
                 {graphId && nodeId && (
                   <Button size="small" variant="outlined" startIcon={<LinkIcon />} onClick={onAssign}>
                     Asignar al nodo
                   </Button>
                 )}
-                <Tooltip title="Quitar de la biblioteca">
-                  <IconButton size="small" sx={{ color: '#ef5350' }} onClick={() => remove(current.id)}><Delete fontSize="small" /></IconButton>
-                </Tooltip>
+                {!locked && (
+                  <Tooltip title="Quitar de la biblioteca">
+                    <IconButton size="small" sx={{ color: '#ef5350' }} onClick={() => remove(current.id)}><Delete fontSize="small" /></IconButton>
+                  </Tooltip>
+                )}
               </Box>
               {assigned && (
                 <Alert severity="success" sx={{ fontSize: 12 }}>
-                  Asignado: E, ν, ρ y σy (con su desviación) en el nodo MATERIAL.
+                  Asignado: E, ν, ρ y σy (con su desviación), k y α en el nodo MATERIAL.
                 </Alert>
+              )}
+              {(current.category || current.source_ref || current.source === 'seed') && (
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {(() => {
+                    const [lbl, col] = SOURCE_LABELS[current.source] || SOURCE_LABELS.user;
+                    return <Chip size="small" label={lbl} sx={{ height: 20, fontSize: 11, color: '#111', bgcolor: col }} />;
+                  })()}
+                  {current.category && <Chip size="small" variant="outlined" label={current.category}
+                    sx={{ height: 20, fontSize: 11, color: '#bbb', borderColor: '#555' }} />}
+                  {current.source_ref && (
+                    <Typography variant="caption" sx={{ color: '#888' }}>Fuente: {current.source_ref}</Typography>
+                  )}
+                </Box>
+              )}
+              {current.description && (
+                <Typography variant="caption" sx={{ color: current.source === 'seed' ? '#ffb74d' : '#888' }}>
+                  {current.description}
+                </Typography>
               )}
               <Typography sx={{ fontSize: 12, color: '#888' }}>
                 Modelo constitutivo: <b style={{ color: '#ddd' }}>{cal.label || 'Elástico lineal isótropo'}</b>
                 {cal.label && ' — el solver FEM usa la parte elástica (E, ν); σy alimenta el criterio de fallo del estudio de incertidumbre.'}
               </Typography>
-              <ParamEditor params={params} onChange={setParam} />
+              <ParamEditor params={params} onChange={setParam} readOnly={locked} />
               {Object.entries(params).filter(([k]) => k.includes('.') || k === 'uts').length > 0 && (
                 <Typography variant="caption" sx={{ color: '#888' }}>
                   {Object.entries(params).filter(([k]) => k.includes('.') || k === 'uts').map(([k, v]) => (
@@ -204,11 +275,16 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
 
               <Divider sx={{ borderColor: '#333' }} />
               <Typography sx={{ fontSize: 13, fontWeight: 700 }}>Ensayo de tracción</Typography>
+              {locked && (
+                <Typography variant="caption" sx={{ color: '#888' }}>
+                  Para ajustar este material a tus ensayos, duplícalo primero (el catálogo no se modifica).
+                </Typography>
+              )}
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input ref={fileRef} type="file" accept=".csv,.txt,.dat" multiple hidden data-testid="fit-files"
                   onChange={(e) => { if (e.target.files.length) fitFiles(e.target.files); e.target.value = ''; }} />
                 <Button size="small" variant="outlined" startIcon={busy ? <CircularProgress size={14} /> : <UploadFile />}
-                  disabled={busy} onClick={() => fileRef.current?.click()}>
+                  disabled={busy || locked} onClick={() => fileRef.current?.click()}>
                   Subir datos de ensayo (.csv)
                 </Button>
                 <FormControl size="small" sx={{ minWidth: 110 }}>

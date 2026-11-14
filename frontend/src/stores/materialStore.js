@@ -54,6 +54,19 @@ const useMaterialStore = create((set, get) => ({
       return null;
     }
   },
+  /** Editable copy of a material (catalog entries are read-only). */
+  duplicate: async (id, name = null) => {
+    set({ error: null });
+    try {
+      const r = await axios.post(`${API}/${id}/duplicate`, name ? { name } : {});
+      await get().list();
+      set({ current: r.data, fit: null, files: [] });
+      return r.data;
+    } catch (e) {
+      set({ error: e.response?.data?.error || e.message });
+      return null;
+    }
+  },
   remove: async (id) => {
     await axios.delete(`${API}/${id}`);
     set((s) => ({ current: s.current?.id === id ? null : s.current }));

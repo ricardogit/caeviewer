@@ -418,6 +418,9 @@ def _recalibrate_tensile(exp, graph_id, mode: str, apply: bool):
         return {'error': 'El ensayo no está ligado a un material: elige uno de la biblioteca.'}, 422
     if mode not in ('replace', 'bayes'):
         return {'error': "mode debe ser 'replace' o 'bayes'"}, 422
+    from app.design.api.material_routes import is_locked, LOCKED_MESSAGE
+    if apply and is_locked(mat):
+        return {'error': LOCKED_MESSAGE, 'locked': True}, 409
     raw = exp.raw_data or {}
     try:
         r = ModelRecalibrator().tensile(mat, raw['strain'], raw['stress'], mode)

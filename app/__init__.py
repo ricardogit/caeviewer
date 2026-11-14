@@ -114,6 +114,7 @@ def _register_blueprints(app):
     app.register_blueprint(geometry_bp, url_prefix='/api/geometry', strict_slashes=False)
     from app.catalog import init_catalog
     init_catalog(app)
+    _register_material_cli(app)
 
     # Design module — new-generation CAE (FASE 0+)
     try:
@@ -217,3 +218,20 @@ def _warn_if_schema_behind(app):
                 sorted(current) or '<empty>', sorted(heads))
     except Exception as e:
         logging.getLogger(__name__).debug("schema check skipped: %s", e)
+
+
+def _register_material_cli(app):
+    """flask materials seed [--prune] — typical-value material catalog (seed_data.py), idempotent."""
+    import click
+    from flask.cli import AppGroup
+
+    group = AppGroup('materials', help='Material library')
+
+    @group.command('seed')
+    @click.option('--prune', is_flag=True, help='Disable unmodified catalog rows no longer in seed_data')
+    def seed(prune):
+        from app.extensions import db
+        from app.design.services.material.seed_data import seed_materials
+        click.echo(seed_materials(db, prune=prune))
+
+    app.cli.add_command(group)

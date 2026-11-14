@@ -63,6 +63,15 @@ imported at module level from web code.
 edit tools in `app/catalog/seed_data.py`, then run `flask catalog seed` (idempotent upsert by slug;
 `--prune` disables removed slugs). Run it once after `flask db upgrade` on a fresh database.
 
+**Material catalog:** `app/design/services/material/seed_data.py` = 40 typical-value materials (steels, stainless,
+cast irons, Al, Ti, Ni, Cu, Mg, polymers, elastomers, concrete, glass, alumina; mechanical E ν ρ σy σu σc elongation +
+thermal k α cp, SI, ± std from a CV per category, `source_ref` per entry). `flask materials seed [--prune]` upserts by
+`seed_key` (idempotent; run after `flask db upgrade`). `material_models` columns `category`, `source`
+(seed|user|test|import|capp), `source_ref`, `seed_key` (migration `a1f3c5e7b9d2`). **Catalog rows are read-only**
+(`is_locked`: PUT / DELETE / fit / tensile recalibration → 409); `POST /api/design/material/<id>/duplicate` makes an
+editable user copy (UI "Duplicar para editar"). A fit sets `source = 'test'`. Assigning to a MATERIAL node also
+copies k and α (used only by thermal studies; hashes unchanged) and drops a stale σy for brittle materials.
+
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
 image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.
 From Git Bash, prefix `docker run -e VAR=/path` with `MSYS_NO_PATHCONV=1`.

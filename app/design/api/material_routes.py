@@ -54,6 +54,15 @@ def _finite(x):
     return x
 
 
+LOCKED_MESSAGE = ('Material del catálogo semilla: es de solo lectura. Use «Duplicar para editar» para crear una '
+                  'copia propia que pueda modificar o ajustar con sus ensayos.')
+
+
+def is_locked(m: MaterialModel) -> bool:
+    """Catalog (seed) materials are read-only: edits, fits, recalibration and delete go to a copy."""
+    return m.source == 'seed'
+
+
 def _get_material(material_id):
     try:
         return db.session.get(MaterialModel, _uuid.UUID(str(material_id)))
@@ -64,7 +73,9 @@ def _get_material(material_id):
 def _mat_dict(m: MaterialModel, full: bool = True) -> dict:
     d = {'id': str(m.id), 'name': m.name, 'model_type': m.model_type, 'parameters': m.parameters or {},
          'description': m.description, 'graph_id': str(m.graph_id) if m.graph_id else None,
-         'is_active': m.is_active, 'created_at': m.created_at.isoformat() if m.created_at else None,
+         'is_active': m.is_active, 'category': m.category, 'source': m.source or 'user',
+         'source_ref': m.source_ref, 'seed_key': m.seed_key,
+         'created_at': m.created_at.isoformat() if m.created_at else None,
          'updated_at': m.updated_at.isoformat() if m.updated_at else None}
     cal = m.calibration or {}
     if full:
@@ -123,7 +134,7 @@ def create_material():
         return jsonify({'error': 'Parámetros inválidos'}), 422
     m = MaterialModel(name=name, model_type=body.get('model_type') or 'linear_elastic_isotropic',
                       parameters=params, calibration={}, description=body.get('description'),
-                      graph_id=body.get('graph_id'))
+                      graph_id=body.get('graph_id'), category=body.get('category') or None, source='user')
     db.session.add(m)
     db.session.commit()
     return jsonify(_mat_dict(m)), 201
@@ -142,6 +153,8 @@ def update_material(material_id):
     m = _get_material(material_id)
     if m is None:
         return jsonify({'error': 'Material not found'}), 404
+    if is_locked(m):
+        return jsonify({'error': LOCKED_MESSAGE, 'locked': True}), 409
     body = request.get_json(silent=True) or {}
     if 'name' in body:
         if not (body['name'] or '').strip():
@@ -151,6 +164,8 @@ def update_material(material_id):
         m.model_type = body['model_type']
     if 'description' in body:
         m.description = body['description']
+    if 'category' in body:
+        m.category = body['category'] or None
     if 'parameters' in body:
         try:
             m.parameters = _clean_parameters(body['parameters'])
@@ -167,9 +182,29 @@ def delete_material(material_id):
     m = _get_material(material_id)
     if m is None:
         return jsonify({'error': 'Material not found'}), 404
+    if is_locked(m):
+        return jsonify({'error': LOCKED_MESSAGE, 'locked': True}), 409
     m.is_active = False
     db.session.commit()
     return jsonify({'deleted': str(m.id)}), 200
+
+
+@bp.route('/<string:material_id>/duplicate', methods=['POST'])
+def duplicate_material(material_id):
+    """Editable copy (source 'user') of any material, e.g. a read-only catalog entry. Body: {name?}."""
+    m = _get_material(material_id)
+    if m is None:
+        return jsonify({'error': 'Material not found'}), 404
+    body = request.get_json(silent=True) or {}
+    name = (body.get('name') or '').strip() or f'{m.name} (copia)'
+    cal = {k: v for k, v in (m.calibration or {}).items() if k != 'seed'}
+    ref = m.source_ref or ''
+    copy = MaterialModel(name=name, model_type=m.model_type, parameters=dict(m.parameters or {}), calibration=cal,
+                         description=m.description, category=m.category, source='user',
+                         source_ref=(f'Copia de «{m.name}»' + (f' — {ref}' if ref else '')))
+    db.session.add(copy)
+    db.session.commit()
+    return jsonify(_mat_dict(copy)), 201
 
 
 # ── Curve fitting ─────────────────────────────────────────────────────────────
@@ -246,6 +281,8 @@ def fit_material(material_id):
     m = _get_material(material_id)
     if m is None:
         return jsonify({'error': 'Material not found'}), 404
+    if is_locked(m):
+        return jsonify({'error': LOCKED_MESSAGE, 'locked': True}), 409
     res, pm, err = _run_fit()
     if err:
         return err
@@ -264,6 +301,7 @@ def apply_fit_to_material(m: MaterialModel, res: dict, chosen: dict, parameters:
     """Store a curve fit in the material (parameters, model type, calibration; keeps the history).
     Does not commit."""
     m.parameters = parameters
+    m.source = 'test'                                   # values now come from the user's own tests
     m.model_type = f"elastoplastic_{chosen['model']}" if chosen['elastoplastic'] else 'linear_elastic_isotropic'
     per0 = chosen['_per'][0]
     history = list((m.calibration or {}).get('history') or [])
@@ -295,6 +333,12 @@ def node_props_from_material(m: MaterialModel, props: dict) -> dict:
     if 'sigma_y' in P:
         props['yield_strength'] = P['sigma_y']['value']
         props['yield_std'] = P['sigma_y'].get('std') or 0.0
+    elif 'sigma_u' in P:                    # brittle material (σu, no yield): drop a stale σy
+        props.pop('yield_strength', None)
+        props.pop('yield_std', None)
+    for k in ('k', 'alpha'):               # thermal properties (used only when the study is thermal)
+        if k in P:
+            props[k] = P[k]['value']
     props.pop('E_source', None)                      # E comes from the material again (not a structural E*)
     props['material_id'] = str(m.id)
     props['material_name'] = m.name

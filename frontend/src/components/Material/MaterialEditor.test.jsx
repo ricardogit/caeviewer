@@ -3,7 +3,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import axios from 'axios';
-import MaterialEditor, { fitQuality } from './MaterialEditor';
+import MaterialEditor, { fitQuality, groupMaterials } from './MaterialEditor';
 import useMaterialStore from '../../stores/materialStore';
 
 vi.mock('axios');
@@ -70,6 +70,41 @@ describe('MaterialEditor', () => {
     expect(screen.getByText(/estricción/)).toBeTruthy();
     fireEvent.click(screen.getByText('Asignar al nodo'));
     await waitFor(() => expect(onAssigned).toHaveBeenCalledWith({ E: 69e9, yield_strength: 276e6 }));
+  });
+
+  it('shows catalog materials read-only and duplicates them to edit', async () => {
+    const SEED = {
+      id: 's1', name: 'Acero S355JR', model_type: 'linear_elastic_isotropic', source: 'seed', category: 'Acero',
+      source_ref: 'EN 10025-2', description: 'Acero estructural. Valores típicos del catálogo semilla.',
+      parameters: { E: { value: 210e9, std: 6.3e9 }, k: { value: 50, std: 2.5 }, alpha: { value: 12e-6, std: 6e-7 } },
+      calibration: {},
+    };
+    const COPY = { ...SEED, id: 'c1', name: 'Acero S355JR (copia)', source: 'user' };
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/design/material/') return Promise.resolve({ data: { materials: [SEED] } });
+      if (url === '/api/design/material/s1') return Promise.resolve({ data: SEED });
+      return Promise.reject(new Error(url));
+    });
+    axios.post.mockImplementation((url) => (url.endsWith('/s1/duplicate')
+      ? Promise.resolve({ data: COPY }) : Promise.reject(new Error(url))));
+    render(<MaterialEditor open onClose={() => {}} />);
+    fireEvent.click(await screen.findByText('Acero S355JR'));
+    const e = await screen.findByDisplayValue('210');
+    expect(e.disabled).toBe(true);
+    expect(screen.getByDisplayValue('12')).toBeTruthy();          // α shown in µm/m·K
+    expect(screen.getAllByText('Catálogo').length).toBe(2);           // list + chip
+    expect(screen.queryByText('Guardar')).toBeNull();
+    expect(screen.queryByLabelText('Quitar de la biblioteca')).toBeNull();
+    fireEvent.click(screen.getByText('Duplicar para editar'));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/design/material/s1/duplicate', {}));
+    expect(await screen.findByText('Guardar')).toBeTruthy();
+    expect(screen.getByDisplayValue('210').disabled).toBe(false);
+  });
+
+  it('groups and filters the library', () => {
+    const mats = [{ name: 'Acero S235', category: 'Acero' }, { name: 'Mi pieza' }, { name: 'Al 6061', category: 'Aluminio' }];
+    expect(groupMaterials(mats).map(([g]) => g)).toEqual(['Mis materiales', 'Acero', 'Aluminio']);
+    expect(groupMaterials(mats, 'alum').map(([g, it]) => [g, it.length])).toEqual([['Aluminio', 1]]);
   });
 
   it('grades the fit quality', () => {
