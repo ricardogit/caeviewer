@@ -8,7 +8,6 @@ from flask import Blueprint, jsonify, current_app
 from app.models import Part
 from app.models.step_storage import STEPFileHeader
 from app.extensions import db
-from app.step_view_pro.backend.entity_graph import ENTITY_GRAPH_AVAILABLE
 
 logger = logging.getLogger(__name__)
 bp = Blueprint('files_api', __name__)
@@ -85,7 +84,6 @@ def list_files():
                 'entity_count': entity_count,
                 'file_size_mb': file_size_mb,
                 'source': 'upload',
-                'entity_graph': ENTITY_GRAPH_AVAILABLE,
                 'created_at': part.created_at.isoformat() if part.created_at else None,
             })
     except Exception as e:

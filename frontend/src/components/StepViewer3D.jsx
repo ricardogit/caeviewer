@@ -4,7 +4,7 @@ import { OrbitControls, PerspectiveCamera, Grid, GizmoHelper, GizmoViewport } fr
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader';
-import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer';
+import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer';
 import { Box, CircularProgress, Alert, IconButton, Paper, Typography, Chip, Tooltip } from '@mui/material';
 import { ZoomIn, ZoomOut, CenterFocusStrong, MyLocation, Layers } from '@mui/icons-material';
 
@@ -28,69 +28,6 @@ function LabelRenderLoop({ labelRendererRef }) {
   useFrame(() => {
     labelRendererRef.current?.render(scene, camera);
   });
-  return null;
-}
-
-function PMILabels({ annotations }) {
-  const { scene } = useThree();
-  const groupRef = useRef(null);
-
-  useEffect(() => {
-    if (groupRef.current) {
-      scene.remove(groupRef.current);
-      groupRef.current = null;
-    }
-    if (!annotations || annotations.length === 0) return;
-
-    const group = new THREE.Group();
-    group.name = 'PMIOverlay';
-
-    const typeColors = {
-      DIMENSION: '#64b5f6',
-      'GD&T': '#ce93d8',
-      SURFACE_FINISH: '#a5d6a7',
-      DATUM: '#ffcc02',
-      NOTE: '#90a4ae',
-    };
-
-    annotations.slice(0, 30).forEach((ann, i) => {
-      const text = formatPMIValue(ann);
-      if (!text) return;
-
-      const color = typeColors[ann.pmi_type] || '#90caf9';
-      const div = document.createElement('div');
-      div.textContent = text;
-      Object.assign(div.style, {
-        color,
-        background: 'rgba(0,0,0,0.78)',
-        padding: '2px 7px',
-        borderRadius: '3px',
-        fontSize: '11px',
-        fontFamily: 'monospace',
-        border: `1px solid ${color}`,
-        whiteSpace: 'nowrap',
-        userSelect: 'none',
-      });
-
-      const obj = new CSS2DObject(div);
-      // Spread annotations in an arc above the model; real geometry positions need face data
-      const angle = (i / Math.max(annotations.length - 1, 1)) * Math.PI * 2;
-      const r = 25 + Math.floor(i / 8) * 12;
-      obj.position.set(Math.cos(angle) * r, 30 + Math.floor(i / 8) * 8, Math.sin(angle) * r);
-      group.add(obj);
-    });
-
-    scene.add(group);
-    groupRef.current = group;
-
-    return () => {
-      scene.remove(group);
-      group.traverse(obj => {
-        if (obj.element) obj.element.remove();
-      });
-    };
-  }, [annotations, scene]);
-
   return null;
 }
 
@@ -223,7 +160,7 @@ function GLBModel({ modelId, onLoaded, onError, onProgress, pickingMode, onPoint
         let resp;
         try {
           resp = await fetch(`/api/step-view/model/${modelId}/glb`);
-        } catch (netErr) {
+        } catch {
           onError('Error de red al cargar el modelo 3D.');
           return;
         }
@@ -234,7 +171,7 @@ function GLBModel({ modelId, onLoaded, onError, onProgress, pickingMode, onPoint
           try {
             const data = await resp.json();
             if (data.retry_after) retryAfter = data.retry_after * 1000;
-          } catch {}
+          } catch { /* body is not JSON: keep the default */ }
           await new Promise(res => setTimeout(res, retryAfter));
           continue;
         }
@@ -258,7 +195,7 @@ function GLBModel({ modelId, onLoaded, onError, onProgress, pickingMode, onPoint
             } else {
               msg = raw;
             }
-          } catch {}
+          } catch { /* body is not JSON: keep the default */ }
           onError(msg);
           return;
         }
@@ -294,6 +231,7 @@ function GLBModel({ modelId, onLoaded, onError, onProgress, pickingMode, onPoint
       onError('Tiempo de espera agotado. El archivo puede ser demasiado grande o complejo.');
     }
     fetchAndLoad();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per model; the callbacks are not memoized by the parent
   }, [modelId]);
 
   if (!gltfScene) return null;
@@ -326,6 +264,7 @@ function MarkupCanvas({ active, tool, color, strokeWidth, strokes, onStrokesChan
 
   useEffect(() => {
     redraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- redraw is recreated every render; strokes/active are its inputs
   }, [strokes, active]);
 
   function getPos(e) {
@@ -453,13 +392,10 @@ function MarkupCanvas({ active, tool, color, strokeWidth, strokes, onStrokesChan
 export default function StepViewer3D({
   headerId,
   filename,
-  selectedEntityId,
-  onEntitySelect,
   pickingMode = false,
   onPointPicked,
   clippingPlane = null,
   measurements = [],
-  pmiAnnotations = [],
   markupActive = false,
   markupTool = 'pen',
   markupColor = '#ff0000',
@@ -628,7 +564,6 @@ export default function StepViewer3D({
         )}
 
         <MeasurementLines measurements={measurements} />
-        {pmiAnnotations.length > 0 && <PMILabels annotations={pmiAnnotations} />}
 
         <GizmoHelper alignment="bottom-left" margin={[72, 72]}>
           <GizmoViewport axisColors={['#ff4060', '#80ff40', '#4080ff']} labelColor="white" />
@@ -682,14 +617,4 @@ export default function StepViewer3D({
       </Paper>
     </Box>
   );
-}
-
-function formatPMIValue(ann) {
-  if (ann.text) return ann.text;
-  if (!ann.value) return ann.label || '';
-  const unit = ann.unit || 'mm';
-  if (ann.subtype === 'DIAMETER') return `Ø${parseFloat(ann.value).toFixed(2)} ${unit}`;
-  if (ann.subtype === 'RADIUS') return `R${parseFloat(ann.value).toFixed(2)} ${unit}`;
-  if (ann.subtype === 'ANGULAR') return `${parseFloat(ann.value).toFixed(1)}°`;
-  return `${parseFloat(ann.value).toFixed(2)} ${unit}`;
 }

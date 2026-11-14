@@ -23,7 +23,7 @@ def _allowed_file(filename):
 
 def register_step_file(file_path, name=None, material='aluminum_6061'):
     """Create (or find) the Part of a STEP file already on disk. Returns (part_id, header_id,
-    parsing_status). The entity graph is not parsed: see ``backend/entity_graph.py``."""
+    parsing_status). The STEP entity graph is not parsed (that module lives in CAPP)."""
     existing = Part.query.filter_by(file_path=file_path).first()
     if existing:
         return str(existing.id), None, 'unavailable'
