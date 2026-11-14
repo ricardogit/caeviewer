@@ -195,6 +195,7 @@ function GLBModel({ modelId, onLoaded, onError, onProgress, pickingMode, onPoint
             } else {
               msg = raw;
             }
+            if (data.removed) msg += ' Se ha eliminado de la lista de archivos (actualice la lista).';
           } catch { /* body is not JSON: keep the default */ }
           onError(msg);
           return;

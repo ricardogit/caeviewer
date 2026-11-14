@@ -27,14 +27,18 @@ def _adopt_disk_files():
         db.session.rollback()
         logger.warning(f"Could not read registered files: {e}")
         return
-    from app.step_view_pro.backend.api.upload_routes import register_step_file, ALLOWED_EXTENSIONS
+    from app.step_view_pro.backend.api.upload_routes import (
+        ALLOWED_EXTENSIONS, InvalidSTEPError, register_step_file)
     for fname in sorted(os.listdir(upload_folder)):
         fpath = os.path.abspath(os.path.join(upload_folder, fname))
-        if os.path.splitext(fname.lower())[1] not in ALLOWED_EXTENSIONS or fpath in known                 or not os.path.isfile(fpath):
+        if (os.path.splitext(fname.lower())[1] not in ALLOWED_EXTENSIONS or fpath in known
+                or not os.path.isfile(fpath)):
             continue
         try:
             part_id, _, _ = register_step_file(fpath)
             logger.info(f"Adopted {fname} from disk as part {part_id}")
+        except InvalidSTEPError as e:
+            logger.info(f"Not adopting {fname}: {e}")
         except Exception as e:
             db.session.rollback()
             logger.warning(f"Could not adopt {fname}: {e}")
@@ -93,6 +97,26 @@ def list_files():
     return jsonify({'files': files, 'total': len(files)}), 200
 
 
+def delete_part(part) -> None:
+    """Remove a STEP Part: file on disk, GLB cache, DB rows (headers cascade in the DB). Commits."""
+    if part.file_path and os.path.exists(part.file_path):
+        try:
+            os.remove(part.file_path)
+        except Exception as e:
+            logger.warning(f"Could not remove file {part.file_path}: {e}")
+    try:
+        from flask import current_app
+        glb_dir = os.path.join(str(current_app.config.get('UPLOAD_FOLDER', 'data/uploads')), 'glb_cache')
+        for ext in ('', '.processing', '.error'):
+            glb = os.path.join(glb_dir, f"{part.file_hash or part.id}.glb{ext}")
+            if os.path.exists(glb):
+                os.remove(glb)
+    except Exception:
+        pass
+    db.session.delete(part)
+    db.session.commit()
+
+
 @bp.route('/files/<string:file_id>', methods=['DELETE'])
 def delete_file(file_id):
     """Delete a STEP file and its DB records."""
@@ -100,27 +124,7 @@ def delete_file(file_id):
         part = Part.query.filter_by(id=file_id).first()
         if not part:
             return jsonify({'error': 'File not found'}), 404
-
-        # Remove from disk
-        if part.file_path and os.path.exists(part.file_path):
-            try:
-                os.remove(part.file_path)
-            except Exception as e:
-                logger.warning(f"Could not remove file {part.file_path}: {e}")
-
-        # Remove GLB cache
-        try:
-            from flask import current_app
-            glb_dir = os.path.join(str(current_app.config.get('UPLOAD_FOLDER', 'data/uploads')), 'glb_cache')
-            for ext in ('', '.processing', '.error'):
-                glb = os.path.join(glb_dir, f"{part.file_hash or part.id}.glb{ext}")
-                if os.path.exists(glb):
-                    os.remove(glb)
-        except Exception:
-            pass
-
-        db.session.delete(part)
-        db.session.commit()
+        delete_part(part)
         return jsonify({'success': True, 'deleted_id': file_id}), 200
     except Exception as e:
         db.session.rollback()

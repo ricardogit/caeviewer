@@ -197,6 +197,18 @@ def get_model_glb(model_id):
                     error_msg = f.read().strip()
             except Exception:
                 error_msg = 'Conversion failed (see server logs)'
+            if 'no transferable shapes' in error_msg.lower():
+                # unusable STEP that slipped past the upload check: it must not stay in the library
+                from app.geometry.step_check import INVALID_STEP_MESSAGE
+                from app.step_view_pro.backend.api.files_routes import delete_part
+                logger.info(f"Removing STEP part {part.id} ({part.name}): {error_msg}")
+                try:
+                    delete_part(part)
+                except Exception as e:
+                    db.session.rollback()
+                    logger.warning(f"Could not remove invalid STEP part {part.id}: {e}")
+                return jsonify({'error': 'GLB conversion failed', 'message': INVALID_STEP_MESSAGE,
+                                'removed': True}), 422
             return jsonify({'error': 'GLB conversion failed', 'message': error_msg}), 500
 
         # ── 3. Conversion in progress → tell client to retry ──────────────────

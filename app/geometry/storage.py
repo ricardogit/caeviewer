@@ -46,6 +46,10 @@ def store_step_upload(file_storage) -> tuple[str, str, int]:
                 out.write(chunk)
         if size == 0:
             raise ValueError('Archivo vacío')
+        from app.geometry.step_check import step_problem
+        problem = step_problem(tmp)
+        if problem:                      # no B-rep solid/shell: the OCC import would fail ("No shapes")
+            raise ValueError(problem)
         sha = h.hexdigest()
         rel = f'geometry/files/{sha[:2]}/{sha}.step'
         dest = data_dir() / rel

@@ -16,6 +16,9 @@ bp = Blueprint('upload_api', __name__)
 ALLOWED_EXTENSIONS = {'.stp', '.step', '.p21'}
 
 
+class InvalidSTEPError(ValueError):
+    """The STEP file has no B-rep solid/shell (see app.geometry.step_check)."""
+
 
 def _allowed_file(filename):
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
@@ -27,6 +30,10 @@ def register_step_file(file_path, name=None, material='aluminum_6061'):
     existing = Part.query.filter_by(file_path=file_path).first()
     if existing:
         return str(existing.id), None, 'unavailable'
+    from app.geometry.step_check import step_problem
+    problem = step_problem(file_path)
+    if problem:                          # never register a STEP that cannot produce any shape
+        raise InvalidSTEPError(problem)
     part = Part(name=name or os.path.splitext(os.path.basename(file_path))[0], file_path=file_path,
                 material=material)
     db.session.add(part)
@@ -59,6 +66,16 @@ def upload_step_file():
     os.makedirs(upload_folder, exist_ok=True)
     file_path = os.path.join(str(upload_folder), filename)
     file.save(file_path)
+
+    from app.geometry.step_check import step_problem
+    problem = step_problem(file_path)
+    if problem:                          # reject before it reaches the DB (and the folder the list adopts from)
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.info(f'Rejected STEP upload {filename}: {problem}')
+        return jsonify({'error': problem, 'message': problem}), 422
 
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
