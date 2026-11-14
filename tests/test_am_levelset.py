@@ -132,3 +132,15 @@ def test_printability_metrics_of_a_run():
     assert am['unsupported_volume_fraction'] == pytest.approx(0.0, abs=1e-9)  # a box stands on its own
     assert am['overhang_area_fraction'] == pytest.approx(0.0)
     assert am['build_direction'] == [0.0, 0.0, 1.0] and am['constrained'] is False
+
+
+def test_level_set_and_simp_report_the_same_initial_compliance():
+    from app.design.services.topology.levelset import LevelSetOptimizer
+    beam = FEMMesh.generate_cantilever(0.06, 0.02, 0.01, n_along_length=8)
+    args = (beam, D, [{'face_set': 'tip', 'force': [0, -1000, 0]}], [{'face_set': 'fixed', 'dofs': [0, 1, 2]}])
+    ls = LevelSetOptimizer(*args, {'volume_fraction': 0.4})
+    simp = SIMPOptimizer(*args, {'volume_fraction': 0.4, 'projection': False})
+    rho = np.full(simp.mesh.n_elements, 0.4)
+    rho[simp.passive_solid] = 1.0
+    assert ls._initial_compliance() == pytest.approx(simp.compliance_and_sensitivity(rho)[0], rel=1e-10)
+    assert ls.s.p_penalization == 1.0                                # restored for the level-set loop

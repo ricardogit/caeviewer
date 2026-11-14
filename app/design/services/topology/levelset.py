@@ -223,8 +223,16 @@ class LevelSetOptimizer(SIMPOptimizer):
         }
 
     def _initial_compliance(self) -> float:
-        """Compliance of the uniform design at the target volume (same reference as SIMP)."""
+        """Compliance of the uniform design at the target volume, with SIMP's default penalisation
+        (p = 3, void 1e-6), comparable to SIMP's first iterate (which is also projected at β = 1, so
+        ρ̄ ≈ 0.39 for V = 0.4); the level set itself runs p = 1."""
         rho = np.full(self.mesh.n_elements, self.ls.volume_fraction)
         rho[self.passive_solid] = 1.0
         rho[self.passive_void] = 0.0
-        return self.compliance_and_sensitivity(rho)[0]
+        ref = SIMPSettings()
+        p, e = self.s.p_penalization, self.s.emin_ratio
+        self.s.p_penalization, self.s.emin_ratio = ref.p_penalization, ref.emin_ratio
+        try:
+            return self.compliance_and_sensitivity(rho)[0]
+        finally:
+            self.s.p_penalization, self.s.emin_ratio = p, e
