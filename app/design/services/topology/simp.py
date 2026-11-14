@@ -253,7 +253,7 @@ class SIMPOptimizer:
         if n <= DIRECT_MAX_DOF or state.get('direct'):
             return spla.spsolve(K.tocsc(), self.rhs), 1
         from app.design.services.fem.solver import _amg_preconditioner, _CG_TOL_KW
-        if state.get('M') is None or state.get('age', 0) >= 4 or \
+        if state.get('M') is None or state.get('age', 0) >= 4 or state.get('always_fresh') or \
                 state.get('last_it', 0) > 2.5 * max(state.get('base_it', 1), 10):
             M, method = _amg_preconditioner(K, self.B)
             if M is None:                                    # no pyamg: Jacobi
@@ -264,14 +264,24 @@ class SIMPOptimizer:
 
         def cb(_):
             it[0] += 1
-        u, info = spla.cg(K, self.rhs, x0=x0, M=state['M'], atol=0.0, maxiter=max(2000, 20 * int(np.sqrt(n))),
+        full = max(2000, 20 * int(np.sqrt(n)))
+        # a reused (stale) hierarchy gets a few times the iterations of a fresh one: with a sharp projection
+        # (β = 16) the design changes enough between iterations that it never converges, and running it to
+        # ``full`` wasted ~2000 iterations per solve (the AM hito spent most of its 28 min there)
+        stale = not state.get('fresh')
+        cap = max(60, 5 * max(state.get('base_it', 10), 10)) if stale else full
+        u, info = spla.cg(K, self.rhs, x0=x0, M=state['M'], atol=0.0, maxiter=cap,
                           callback=cb, **{_CG_TOL_KW: self.s.cg_tol})
-        if info != 0 and not state.get('fresh'):           # stale hierarchy: rebuild once and retry
+        if stale:
+            state['stale_fail'] = state.get('stale_fail', 0) + 1 if info != 0 else 0
+            if state['stale_fail'] >= 2:                   # keeps failing: rebuild every solve from now on
+                state['always_fresh'] = True
+        if info != 0 and stale:                            # stale hierarchy: rebuild once and retry
             M, _ = _amg_preconditioner(K, self.B)
             if M is not None:
                 state.update(M=M, age=0, fresh=True)
                 it[0] = 0
-                u, info = spla.cg(K, self.rhs, x0=u, M=M, atol=0.0, maxiter=max(2000, 20 * int(np.sqrt(n))),
+                u, info = spla.cg(K, self.rhs, x0=u, M=M, atol=0.0, maxiter=full,
                                   callback=cb, **{_CG_TOL_KW: self.s.cg_tol})
         if info != 0:
             # near-void regions (e.g. the AM filter early on) make K too ill-conditioned for PCG:

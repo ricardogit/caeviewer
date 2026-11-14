@@ -65,7 +65,13 @@ class AMConstraints:
         order = np.argsort(self.layer, kind='stable')
         bounds = np.flatnonzero(np.diff(self.layer[order])) + 1
         self.layers = [g for g in np.split(order, bounds) if len(g)]
-        self.S_layers = [S[g] for g in self.layers]
+        # per layer: its supporters only (columns compacted), so a layer costs O(its supports), not O(n)
+        self.S_layers, self.S_cols = [], []
+        for g in self.layers:
+            Sg = S[g]
+            cols = np.unique(Sg.indices)
+            self.S_cols.append(cols)
+            self.S_layers.append(Sg[:, cols].tocsr())
         self._cache = None
         logger.info('AM filter: %d elements, %d layers, %.1f supporters/element, %d orphans, angle %.0f°',
                     n, len(self.layers), n_sup[~self.base].mean() if (~self.base).any() else 0.0,
@@ -82,11 +88,11 @@ class AMConstraints:
         P = self.P
         xi = np.array(rho, float)
         partials = []
-        for g, Sg in zip(self.layers, self.S_layers):
+        for g, Sg, cols in zip(self.layers, self.S_layers, self.S_cols):
             if self.base[g[0]]:
                 partials.append(None)
                 continue
-            agg = Sg @ (np.maximum(xi, 0.0) ** P)
+            agg = Sg @ (np.maximum(xi[cols], 0.0) ** P)
             sig = (agg + 1e-300) ** (1.0 / P)
             val, a, bb = self._smin(rho[g], sig)
             xi[g] = val
@@ -103,14 +109,14 @@ class AMConstraints:
         lam = np.array(g_xi, float)
         out = np.zeros_like(lam)
         xp = np.maximum(xi, 0.0) ** (P - 1)
-        for g, Sg, part in zip(self.layers[::-1], self.S_layers[::-1], partials[::-1]):
+        for g, Sg, cols, part in zip(self.layers[::-1], self.S_layers[::-1], self.S_cols[::-1], partials[::-1]):
             if part is None:
                 out[g] += lam[g]
                 continue
             a, bb, sig = part
             out[g] += lam[g] * a
             w = lam[g] * bb * sig ** (1 - P)              # ∂ξ_i/∂Σ_i · ∂Σ_i/∂(ξ_j^P)·P/P
-            lam += (Sg.T @ w) * xp
+            lam[cols] += (Sg.T @ w) * xp[cols]
         return out
 
     # ── evaluation (independent of the optimizer) ─────────────────────────────

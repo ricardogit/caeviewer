@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when a change in the FEM code changes numerical results for the same inputs
 # (element formulation, quadrature, load integration, solver strategy...).
-FEM_KERNEL_VERSION = 3
+FEM_KERNEL_VERSION = 4          # 4: SIMP caps the CG of a reused AMG hierarchy (topology iterates)
 
 # Top-level spec keys that do not change the numerical result.
 NON_PHYSICAL_KEYS = {

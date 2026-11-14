@@ -415,7 +415,9 @@ volume-weighted density filter (`filter.py`, KD-tree, r = 2 × mean edge by defa
 projection with β continuation 1 → 16, OC update with bisection evaluated through filter+projection.
 Ke⁰ of every element is stored once; each iteration rescales it into a fixed reduced (free-DOF) CSR
 pattern with one `bincount`. Solves: direct ≤ 3000 DOF, else PCG with a seeded pyamg hierarchy reused
-for a few iterations (warm start); if PCG fails the hierarchy is rebuilt once, then the run switches to
+for a few iterations (warm start; a reused hierarchy gets at most 5× the fresh iteration count, and after two
+stale failures it is rebuilt every solve — before, β = 16 made every stale attempt run 2000 CG iterations and the
+AM hito took 28 min instead of 69 s); if PCG fails the hierarchy is rebuilt once, then the run switches to
 direct solves (≤ `DIRECT_FALLBACK_DOF` = 100K; near-void regions, e.g. AM early on, make K too
 ill-conditioned). Limit `MAX_ELEMENTS` = 150 000. T10 study meshes are reduced to T4.
 - Elements touching BC/load sets are passive solid, except BCs flagged `symmetry` or `keep_solid: False`
@@ -458,7 +460,8 @@ ill-conditioned). Limit `MAX_ELEMENTS` = 150 000. T10 study meshes are reduced t
 - Same job kind `topology.simp`, method in `spec['topology']['method']` (`simp` | `levelset`); API
   `POST /<graph_id>/run-levelset` (keys `LEVELSET_KEYS`); the OPTIMIZATION node stores `method`.
   UI: method selector, AM switch + build direction (±X/±Y/±Z) + angle in `TopologyPanel.jsx`.
-- Hito: `python validate_am_levelset.py [h] [png prefix]` (see its docstring for the measured numbers).
+- The AM filter keeps, per layer, only its supporters' columns (`S_cols`), so a layer costs O(its supports).
+- Hito: `python validate_am_levelset.py [h] [png prefix]` (see its docstring for the measured numbers; ~2 min).
   Tests: `tests/test_am_levelset.py`.
 
 ## Reduced-Order Models (FASE 5)

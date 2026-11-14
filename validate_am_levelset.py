@@ -18,14 +18,17 @@ Same bridge problem as validate_topology.py (plate 200 × 100 × 10 mm, pinned b
      6. compliance penalty vs SIMP < 15 %
      7. still a connected bridge
 
-Measured (h = 5 mm, 9055 T4): see the end of this docstring. The AM run is slow: PCG fails on the
-near-void designs and every iteration falls back to a direct solve (~6 s), 250 iterations ≈ 26 min.
-The AM design is not fully printable under the sharp check (~12 % unsupported remains: the smooth max
-P = 40 and the grey elements are more permissive than the 0/1 recursion).
+Measured (h = 5 mm, 9055 T4): see the end of this docstring. The AM design is not fully printable under
+the sharp check (~12 % unsupported remains: the smooth max P = 40 and the grey elements are more permissive
+than the 0/1 recursion), and it stops at 250 iterations without meeting the change tolerance.
+Before 2026-11-14 the AM run took ≈ 28 min: from β = 16 on, every solve first ran the reused AMG
+hierarchy to the 2000-iteration CG limit (4.4 s) before rebuilding it (0.05 s, ~20 iterations). The stale
+attempt is now capped (5 × the fresh iteration count) and the hierarchy is rebuilt every solve after two
+stale failures; the AM filter evaluates each layer on its supporters only (bitwise identical, 2.3× faster).
 
-Measured, h = 5 mm:  SIMP C0/1 0.1581, 38.2 % unsupported, 9.4 % overhang area (40 s);
-level set C0/1 0.1642 (+3.8 %), IoU 0.87, 69 it (27 s); SIMP + AM (+X) C0/1 0.1722 (+8.9 %),
-11.9 % unsupported, 6.5 % overhang, 250 it without converging (≈ 28 min).
+Measured, h = 5 mm:  SIMP C0/1 0.1581, 38.2 % unsupported, 9.4 % overhang area (23 s);
+level set C0/1 0.1642 (+3.8 %), IoU 0.87, 69 it (11 s); SIMP + AM (+X) C0/1 0.1722 (+8.9 %),
+11.7 % unsupported, 6.5 % overhang, 250 it without converging (69 s).
 
 Usage: python validate_am_levelset.py [mesh size m, default 0.005] [output prefix for PNGs]
 """
