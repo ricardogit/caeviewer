@@ -201,7 +201,8 @@ def server(check, S):
         rom = requests.post(f'{S}/api/design/rom/{gid}/build', json={})
         check(rom.status_code == 422, f'ROM rechaza el material ortótropo → {rom.status_code}')
         rep = requests.get(f"{V}/{b['run_id']}/report", params={'format': 'markdown'})
-        check(rep.ok and 'ortótropo' in rep.text, 'el informe describe el material ortótropo')
+        check(rep.ok and 'ortótropo' in rep.text, f'el informe describe el material ortótropo ({rep.status_code}: '
+              + next((ln for ln in rep.text.splitlines() if 'Material' in ln), rep.text[:120]) + ')')
     finally:
         requests.delete(f'{G}/{gid}', params={'cascade': 1})
 

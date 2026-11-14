@@ -258,7 +258,7 @@ class AutoReporter:
         if mesh.get('curved_t10_rejected'):
             w.append('Malla T10 con nodos intermedios rectos: los curvos invertían elementos '
                      '(la geometría curva se aproxima por facetas).')
-        if (run.provenance or {}).get('git_commit', '').endswith('-dirty'):
+        if ((run.provenance or {}).get('git_commit') or '').endswith('-dirty'):
             w.append('El código tenía cambios sin commit al ejecutar: el commit registrado no basta para '
                      'reconstruir el kernel.')
         return w

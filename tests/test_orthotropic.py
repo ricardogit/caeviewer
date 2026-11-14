@@ -93,3 +93,11 @@ def test_rotated_conduction_patch_and_free_expansion():
     coef, *_ = np.linalg.lstsq(X, u, rcond=None)
     eps = 0.5 * (coef[1:].T + coef[1:])
     assert np.allclose(eps, rotate_tensor(mat['alpha'], material_axes(mat)) * 100.0, rtol=0, atol=1e-12)
+
+
+def test_report_warnings_without_git_commit():
+    """Docker images have no git: provenance git_commit is None (the Markdown report crashed on the VPS)."""
+    from types import SimpleNamespace
+    from app.design.services.traceability.reporter import AutoReporter
+    run = SimpleNamespace(summary={'converged': True}, provenance={'git_commit': None})
+    assert AutoReporter()._warnings(run) == []
