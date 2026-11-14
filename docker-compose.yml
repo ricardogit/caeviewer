@@ -38,7 +38,10 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_FILE=/app/logs/cae_viewer.log
+    # app and workers are separate containers: everything under DATA_DIR (geometry, meshes,
+    # experiments, topology/ROM/uncertainty results...) must be shared, not only these subfolders
     volumes: &shared_data
+      - data:/app/data
       - uploads:/app/data/uploads
       - solver_data:/app/data/solver
       - design_data:/app/data/design
@@ -102,6 +105,8 @@ services:
           memory: ${GEOMETRY_WORKER_MEM:-4g}
 
 volumes:
+  data:
+    name: caeviewer_data
   postgres_data:
     name: caeviewer_postgres_data
   uploads:
