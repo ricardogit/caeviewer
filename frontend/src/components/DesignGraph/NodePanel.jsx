@@ -19,6 +19,7 @@ import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields from './PiezoFields';
 import FluidFields from './FluidFields';
+import MagneticFields from './MagneticFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -31,6 +32,7 @@ export const MATERIAL_TYPES = [
   ['viscoelastic_maxwell', 'Viscoelástico Maxwell (Prony)', true],
   ['piezoelectric', 'Piezoeléctrico (6mm, u + φ)', true],
   ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
+  ['linear_magnetic', 'Magnético lineal (μr, imán Br)', true],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -40,26 +42,29 @@ const BC_TYPES = [
   ['symmetry', 'Simetría (normal = 0)'], ['temperature', 'Temperatura impuesta (térmico)'],
   ['voltage', 'Potencial eléctrico / electrodo (piezo)'],
   ['velocity', 'Velocidad impuesta / entrada (fluido)'],
+  ['magnetic_potential', 'Potencial magnético / polo (magnético)'],
 ];
 const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
 const LOAD_TYPES = [
   ['force', 'Fuerza total sobre caras'], ['pressure', 'Presión normal'], ['gravity', 'Gravedad (peso propio)'],
   ['heat_flux', 'Flujo de calor (térmico)'], ['convection', 'Convección (térmico)'],
   ['heat_source', 'Fuente de calor interna (térmico)'],
-  ['surface_charge', 'Carga eléctrica superficial (piezo)'], ['torque', 'Par (próximamente)'],
+  ['surface_charge', 'Carga eléctrica superficial (piezo)'],
+  ['magnetic_flux', 'Flujo magnético normal Bn (magnético)'], ['torque', 'Par (próximamente)'],
 ];
 const LOAD_UNITS = {
   force: ['N', 'kN', 'MN', 'lbf'], pressure: ['Pa', 'kPa', 'MPa', 'GPa', 'psi', 'bar'], gravity: ['m/s²', 'g'],
   heat_flux: ['W/m²', 'kW/m²'], convection: ['W/m²·K'], heat_source: ['W/m³', 'kW/m³', 'MW/m³'],
-  surface_charge: ['C/m²', 'mC/m²', 'µC/m²'],
+  surface_charge: ['C/m²', 'mC/m²', 'µC/m²'], magnetic_flux: ['T', 'mT'],
 };
 const THERMAL_LOADS = ['heat_flux', 'convection', 'heat_source'];
 // face-based scalar loads of the field physics (same panel as the thermal ones)
-const FIELD_LOADS = [...THERMAL_LOADS, 'surface_charge'];
+const FIELD_LOADS = [...THERMAL_LOADS, 'surface_charge', 'magnetic_flux'];
 // BCs that prescribe a scalar field on faces instead of displacements: [property, label, default face set]
 export const SCALAR_BC = {
   temperature: ['temperature', 'Temperatura [°C]', 'fixed'],
   voltage: ['voltage', 'Potencial [V]', 'z0'],
+  magnetic_potential: ['magnetic_potential', 'Potencial magnético ψ [A·vuelta]', 'fixed'],
 };
 // FASE 2 multiphysics: conductivity for thermal studies, α and T_ref for thermal stresses
 const THERMAL_MATERIAL = [['k', 'Conductividad k [W/m·K]', 'ej: 50'], ['alpha', 'Dilatación α [1/K]', 'ej: 1.2e-5'],
@@ -262,7 +267,7 @@ export default function NodePanel({ node, graphId, onClose }) {
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
               ['yield_strength', 'Límite elástico σy [Pa]', '']]
-              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'newtonian_fluid']
+              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'newtonian_fluid', 'linear_magnetic']
                 .includes(props.model_type) || k === 'rho')
               .filter(([k]) => !['hyperelastic_neohookean', 'viscoelastic_maxwell'].includes(props.model_type)
                 || k !== 'yield_strength')
@@ -297,6 +302,7 @@ export default function NodePanel({ node, graphId, onClose }) {
             {props.model_type === 'viscoelastic_maxwell' && <ViscoelasticFields props={props} setProp={setProp} />}
             {props.model_type === 'piezoelectric' && <PiezoFields props={props} setProp={setProp} />}
             {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
+            {props.model_type === 'linear_magnetic' && <MagneticFields props={props} setProp={setProp} />}
             <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
             {THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}
@@ -503,7 +509,8 @@ export default function NodePanel({ node, graphId, onClose }) {
                 ) : (
                   <Box sx={{ display: 'flex', gap: 1 }}>
                     {num('magnitude', lt === 'heat_flux' ? 'Flujo (+ entra al sólido)'
-                      : lt === 'surface_charge' ? 'Densidad de carga libre' : 'Potencia por volumen', 0)}
+                      : lt === 'surface_charge' ? 'Densidad de carga libre'
+                        : lt === 'magnetic_flux' ? 'Bn (+ entra al sólido)' : 'Potencia por volumen', 0)}
                     <FormControl size="small" sx={{ flex: 1 }}>
                       <InputLabel sx={{ color: '#888' }}>Unidad</InputLabel>
                       <Select value={unit} label="Unidad" onChange={e => setProp('unit', e.target.value)} sx={{ color: '#fff' }}>

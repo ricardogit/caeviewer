@@ -309,7 +309,24 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   [--server …]`: plane Poiseuille (profile, Q, linear p, wall force Δp·A), Couette (wall shear μU/H·A) and
   hydrostatics in a closed box exact (1e-10); square duct vs Fourier series −0.125 % at h = a/3, order 3.9; mass
   balance 1e-12. Tests `tests/test_fluid.py`. Not Navier-Stokes: no convection term, no turbulence, steady only.
-- Stubs still: `ThermoPiezoelectric`, `LinearMagnetic` (shown disabled in the MATERIAL list).
+- `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
+  potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
+  the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes), no coils /
+  currents, no saturation. BC `{'magnetic_potential': ψ, face_set}` = equipotential pole face against ideal iron
+  (B normal); the ψ difference between two faces is the MMF (a coil's N·I enters as the jump across a cut, e.g. the
+  toroid hito); load `{'magnetic_flux': Bn [T], face_set}` (positive enters); free faces are flux walls (Bn = 0).
+  No potential BC → node 0 pinned (imposed fluxes must balance, else ValueError). Mechanical/thermal conditions →
+  error. Summary `magnetic` {mu_r, Br_T, max_B_T, max_H_A_m, min/max potential, poles [{potential_A, flux_in_Wb}]
+  (flux = reaction ×μ₀), flux_loads, field_energy_J = ½∫μ|H|², and with two potential levels, no magnet and no
+  flux load: mmf_A, flux_Wb, permeance_H (= inductance for 1 turn), reluctance}; extra fields Bmag/Bx/By/Bz [T],
+  Hmag [kA/m], psi [A]. Graph: MATERIAL `model_type: 'linear_magnetic'` + `mu_r`, `Br_x/Br_y/Br_z`; BC `bc_type:
+  'magnetic_potential'` (default face `fixed`), LOAD `load_type: 'magnetic_flux'` (T | mT, default `tip`); magnetic
+  conditions without the material → 422. Topology / ROM / uncertainty / adaptive → 422. UI
+  `DesignGraph/MagneticFields.jsx` (presets steel, NdFeB, ferrite, air). Hito `python validate_magnetic.py
+  [--server …]`: bar circuit (B, permeance μA/L, energy), magnet short / open circuit (tilted Br), imposed flux,
+  harmonic quadratic ψ — all exact (1e-13); quarter toroidal core permeance μt·ln(b/a)/(π/2) to 1e-6, order 3.7.
+  Tests `tests/test_magnetic.py`.
+- Stub still: `ThermoPiezoelectric` (not listed in the MATERIAL selector).
 
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,

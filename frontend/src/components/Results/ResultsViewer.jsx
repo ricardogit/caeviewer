@@ -81,6 +81,17 @@ export function SummaryRows({ header }) {
       ['Balance de masa', `${fmt(100 * s.fluid.mass_balance_error)} %`],
       ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.reynolds > 1 ? ' ⚠ > 1' : ''}`],
     ] : []),
+    ...(s.magnetic ? [
+      ['Modelo', `Magnético · μr = ${fmt(s.magnetic.mu_r)}${(s.magnetic.Br_T || []).some(b => b)
+        ? ` · Br = [${s.magnetic.Br_T.map(fmt).join(', ')}] T` : ''}`],
+      ['|B| máx.', `${fmt(s.magnetic.max_B_T)} T`],
+      ['|H| máx.', `${fmt(s.magnetic.max_H_A_m / 1e3)} kA/m`],
+      ['Potencial ψ', `${fmt(s.magnetic.min_potential_A)} … ${fmt(s.magnetic.max_potential_A)} A`],
+      ...(s.magnetic.poles || []).map((p, i) => [`Polo ${p.label || i + 1}`,
+        `ψ = ${fmt(p.potential_A)} A · Φ = ${fmt(p.flux_in_Wb * 1e6)} µWb (${p.flux_in_Wb >= 0 ? 'entra' : 'sale'})`]),
+      ...(s.magnetic.permeance_H != null ? [['Permeancia (L para 1 vuelta)', `${fmt(s.magnetic.permeance_H * 1e6)} µH`]] : []),
+      ['Energía del campo', `${fmt(s.magnetic.field_energy_J * 1e3)} mJ`],
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
@@ -95,7 +106,7 @@ export function SummaryRows({ header }) {
           ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
           : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : s.fluid ? [] : [['k', header?.material?.k
+    ] : (s.fluid || s.magnetic) ? [] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
       : '—']]),
   ];

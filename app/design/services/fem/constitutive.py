@@ -345,7 +345,26 @@ class NewtonianFluid:
     @classmethod
     def from_dict(cls, d: dict) -> 'NewtonianFluid':
         return cls(d)
-class LinearMagnetic(_Stub): pass
+class LinearMagnetic:
+    """Linear magnetic material for current-free magnetostatics (``fem.magnetic``): relative permeability
+    mu_r and remanent flux density Br [T] (permanent magnet)."""
+
+    def __init__(self, spec: dict):
+        from app.design.services.fem.magnetic import MagneticMaterial
+        self.mm = MagneticMaterial(spec)
+        self.mu_r, self.Br = self.mm.mu_r, self.mm.Br
+
+    def get_D_matrix(self, state=None) -> np.ndarray:
+        from app.design.services.fem.magnetic import MU0
+        return MU0 * self.mu_r * np.eye(3)
+
+    def get_coupling_terms(self, pl): return {}
+    def update_internal_variables(self, si): return {}
+    def is_linear(self): return True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'LinearMagnetic':
+        return cls(d)
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────

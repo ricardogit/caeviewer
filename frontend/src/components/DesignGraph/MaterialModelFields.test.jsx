@@ -7,6 +7,7 @@ import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields, { PZT5H } from './PiezoFields';
 import FluidFields from './FluidFields';
+import MagneticFields from './MagneticFields';
 import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
 
@@ -78,6 +79,21 @@ describe('material model fields (item 8)', () => {
     expect(screen.getByText('Caudal Salida')).toBeTruthy();
     expect(screen.queryByText('Caudal z0')).toBeNull();
     expect(screen.getByText(/⚠ > 1/)).toBeTruthy();
+    expect(screen.queryByText('k')).toBeNull();
+  });
+
+  it('magnetic: NdFeB preset sets μr and Br; summary shows poles and permeance', () => {
+    const setProp = vi.fn();
+    render(<MagneticFields props={{}} setProp={setProp} />);
+    expect(screen.getByText('Falta la permeabilidad μr.')).toBeTruthy();
+    fireEvent.click(screen.getByText('NdFeB N42 (+Z)'));
+    expect(setProp).toHaveBeenCalledWith('mu_r', 1.05);
+    expect(setProp).toHaveBeenCalledWith('Br_z', 1.3);
+    render(<SummaryRows header={{ fields: [], summary: { magnetic: { mu_r: 1000, Br_T: [0, 0, 0], max_B_T: 3.14,
+      max_H_A_m: 2500, min_potential_A: 0, max_potential_A: 100, field_energy_J: 0.0157, permeance_H: 3.14e-6,
+      poles: [{ label: 'N', potential_A: 100, flux_in_Wb: 3.14e-4 }] } } }} />);
+    expect(screen.getByText('Polo N')).toBeTruthy();
+    expect(screen.getByText('Permeancia (L para 1 vuelta)')).toBeTruthy();
     expect(screen.queryByText('k')).toBeNull();
   });
 });

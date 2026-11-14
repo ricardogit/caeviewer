@@ -99,6 +99,14 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 raise GraphSpecError(f'"{mat_node.label}": el fluido necesita la viscosidad dinámica μ > 0 (Pa·s).')
             spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
                                 'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
+        elif spec['material']['type'] == 'linear_magnetic':
+            mu_r = props.get('mu_r')
+            if mu_r in (None, '') or float(mu_r) <= 0:
+                raise GraphSpecError(f'"{mat_node.label}": el material magnético necesita la permeabilidad '
+                                     'relativa μr > 0.')
+            spec['material'] = {'type': 'linear_magnetic', 'mu_r': float(mu_r),
+                                'Br': [float(props.get(k) or 0) for k in ('Br_x', 'Br_y', 'Br_z')],
+                                'rho': spec['material']['rho']}
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -185,6 +193,15 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         if 'thermal' in spec['physics']:
             raise GraphSpecError('El material piezoeléctrico no admite condiciones térmicas todavía.')
         spec['physics'] = ['piezoelectric']
+    if spec['material'].get('type') != 'linear_magnetic' and (
+            any('magnetic_potential' in b for b in spec['bcs']) or any('magnetic_flux' in ld for ld in spec['loads'])):
+        raise GraphSpecError('Hay condiciones magnéticas pero el material no es magnético (μr, Br).')
+    if spec['material'].get('type') == 'linear_magnetic':
+        n_mech = sum('magnetic_potential' not in b for b in spec['bcs']) +             sum('magnetic_flux' not in ld for ld in spec['loads'])
+        if n_mech:
+            raise GraphSpecError('El material magnético solo admite BC de potencial magnético y cargas de flujo '
+                                 f'magnético ({n_mech} condiciones mecánicas o térmicas en el estudio).')
+        spec['physics'] = ['magnetic']
     elif spec['material'].get('type') == 'newtonian_fluid':
         if 'thermal' in spec['physics']:
             raise GraphSpecError('El fluido newtoniano (Stokes) no admite condiciones térmicas todavía.')
@@ -430,6 +447,15 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if bc_type == 'magnetic_potential':           # equipotential pole face (ideal iron), ψ in A·turn
+        v = props.get('magnetic_potential', props.get('value'))
+        if v in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta el potencial magnético (A).')
+        entry = {'magnetic_potential': float(v), 'label': node.label}
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if bc_type == 'velocity':                     # fluid inlet / moving wall [m/s or mm/s]
         f = {'m/s': 1.0, 'mm/s': 1e-3}.get(props.get('unit') or 'm/s', 1.0)
         values = [float(props.get(k) or 0) * f for k in ('vx', 'vy', 'vz')]
@@ -514,6 +540,12 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
     if load_type == 'surface_charge':             # free charge density on a face (piezoelectric)
         entry['surface_charge'] = mag * {'C/m²': 1.0, 'mC/m²': 1e-3, 'µC/m²': 1e-6}.get(props.get('unit') or 'C/m²', 1.0)
         _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type == 'magnetic_flux':              # normal flux density entering the face [T]
+        entry['magnetic_flux'] = mag * {'T': 1.0, 'mT': 1e-3}.get(props.get('unit') or 'T', 1.0)
+        _target(entry, _faces(ctx, node), props, 'tip', face=True)
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry

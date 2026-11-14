@@ -26,7 +26,7 @@ from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs
 from app.design.services.fem.constitutive import (build_material, ElastoplasticVonMises, conductivity,
                                                   thermal_expansion, HyperelasticNeoHookean,
                                                   ViscoelasticMaxwell, Piezoelectric,
-                                                  NewtonianFluid)
+                                                  NewtonianFluid, LinearMagnetic)
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
@@ -256,6 +256,11 @@ class FEMKernel:
                 raise ValueError('El fluido newtoniano no admite condiciones térmicas todavía.')
             return self._solve_fluid(mesh, mesh_meta, material, solver_spec, all_bcs, all_loads, tier,
                                      socketio, run_id, t_start)
+        if isinstance(material, LinearMagnetic):                  # magnetostatics, scalar potential
+            if T is not None:
+                raise ValueError('El material magnético no admite condiciones térmicas todavía.')
+            return self._solve_magnetic(mesh, mesh_meta, material, all_bcs, all_loads, tier,
+                                        socketio, run_id, t_start)
         if isinstance(material, ViscoelasticMaxwell):             # time stepping (creep / relaxation)
             if T is not None:
                 raise ValueError('El material viscoelástico no admite el acoplamiento térmico todavía: quita '
@@ -696,6 +701,73 @@ class FEMKernel:
             'extra_fields': {'vmag': vmag * 1e3, 'vx': v[:, 0] * 1e3, 'vy': v[:, 1] * 1e3, 'vz': v[:, 2] * 1e3,
                              'p': p},
             'solve_info': {'method': 'direct_saddle_point', 'converged': s['converged'], 'final_residual': resid},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    # ── Linear magnetostatics (scalar potential, current-free) ───────────────
+
+    def _solve_magnetic(self, mesh, mesh_meta, material, all_bcs, all_loads, tier,
+                        socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import magnetic as mg
+        mm = material.mm
+        bcs = [b for b in all_bcs if mg.is_magnetic_bc(b)]
+        loads = [ld for ld in all_loads if mg.is_magnetic_load(ld)]
+        other = len(all_bcs) - len(bcs) + len(all_loads) - len(loads)
+        if other:
+            raise ValueError('Magnético: solo admite potencial magnético (BC) y flujo magnético impuesto (carga); '
+                             f'hay {other} condiciones mecánicas/térmicas.')
+        if not bcs and not loads and not np.any(mm.Br):
+            raise ValueError('Magnético: sin imán (Br), potencial ni flujo impuesto el campo es nulo.')
+        self._emit(socketio, run_id, 30, f'magnetostática: resolviendo ψ ({mesh.n_nodes:,} incógnitas)', t_start)
+        disp = FEMSolverDispatcher()
+        info_lin: dict = {}
+
+        def lin(Kf, r):
+            x, inf = disp.solve_linear(Kf, r, tier=tier, tol=1e-10)
+            info_lin.update(inf)
+            return x
+
+        psi, info = mg.solve(mesh, mm, bcs, loads, linear_solve=lin)
+        H, B = mg.fields(mesh, psi, mm)
+        Bm, Hm = np.linalg.norm(B, axis=1), np.linalg.norm(H, axis=1)
+        poles = [{'label': b.get('label'), 'potential_A': float(b['magnetic_potential']),
+                  'face_set': b.get('face_set') if isinstance(b.get('face_set'), str)
+                  else f"{len(b.get('face_set') or [])} caras",
+                  'flux_in_Wb': f} for b, f in zip(bcs, info['flux_in_Wb'])]
+        W = mg.energy(mesh, psi, mm)
+        mag = {'mu_r': mm.mu_r, 'Br_T': mm.Br.tolist(), 'max_B_T': float(Bm.max()), 'max_H_A_m': float(Hm.max()),
+               'min_potential_A': float(psi.min()), 'max_potential_A': float(psi.max()),
+               'poles': poles, 'flux_loads': info['loads'], 'field_energy_J': W,
+               'potential_pinned': info['pinned']}
+        levels = sorted({p['potential_A'] for p in poles})
+        if len(levels) == 2 and not loads and not np.any(mm.Br):
+            mmf = levels[1] - levels[0]
+            phi = sum(p['flux_in_Wb'] for p in poles if p['potential_A'] == levels[1])
+            mag.update(mmf_A=mmf, flux_Wb=phi, permeance_H=phi / mmf if mmf else None,
+                       reluctance_1_H=mmf / phi if phi else None)
+        resid = info['residual']
+        s = {
+            'physics': ['magnetic'],
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_nodes,
+            'element_type': mesh.element_type, 'tier': tier, 'converged': bool(resid < 1e-6), 'n_iterations': 1,
+            'final_residual': resid, 'solver_method': info_lin.get('method', 'direct'),
+            'wall_time_s': round(time.perf_counter() - t_start, 3), 'loads': info['loads'],
+            'material_model': 'linear_magnetic', 'magnetic': mag,
+            'extra_fields': [{'key': 'Bmag', 'label': '|B| densidad de flujo', 'unit': 'T'},
+                             {'key': 'Bx', 'label': 'Bx', 'unit': 'T'}, {'key': 'By', 'label': 'By', 'unit': 'T'},
+                             {'key': 'Bz', 'label': 'Bz', 'unit': 'T'},
+                             {'key': 'Hmag', 'label': '|H| intensidad de campo', 'unit': 'kA/m'},
+                             {'key': 'psi', 'label': 'Potencial magnético ψ', 'unit': 'A'}],
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(psi),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'magnetic_potential': psi,
+            'extra_fields': {'Bmag': Bm, 'Bx': B[:, 0], 'By': B[:, 1], 'Bz': B[:, 2], 'Hmag': Hm / 1e3, 'psi': psi},
+            'solve_info': {'method': s['solver_method'], 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
         }
