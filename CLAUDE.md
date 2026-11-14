@@ -71,6 +71,10 @@ thermal k α cp, SI, ± std from a CV per category, `source_ref` per entry). `fl
 (`is_locked`: PUT / DELETE / fit / tensile recalibration → 409); `POST /api/design/material/<id>/duplicate` makes an
 editable user copy (UI "Duplicar para editar"). A fit sets `source = 'test'`. Assigning to a MATERIAL node also
 copies k and α (used only by thermal studies; hashes unchanged) and drops a stale σy for brittle materials.
+**Import:** `POST /api/design/material/import/preview|import` (multipart `file` .csv/.xlsx, `on_duplicate`
+skip|update|new; `importer.py`: Spanish/English header aliases, unit in the header or guessed from the magnitude with a
+note, `<prop> std` columns, per-row errors; name + E + ν required), `GET /import/template?format=csv|xlsx`; rows →
+`source = 'import'`; catalog rows are never matched. UI `Material/MaterialImportDialog.jsx`. Needs `openpyxl`.
 
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
 image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.

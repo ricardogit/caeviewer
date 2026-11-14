@@ -207,6 +207,116 @@ def duplicate_material(material_id):
     return jsonify(_mat_dict(copy)), 201
 
 
+# ── Import from CSV / Excel ───────────────────────────────────────────────────
+
+IMPORT_MODES = ('skip', 'update', 'new')
+
+
+def _import_plan(filename: str, data: bytes, mode: str):
+    """Parsed rows with the action each one would get: create | update | skip | error."""
+    from app.design.services.material.importer import parse_material_table
+    parsed = parse_material_table(data, filename)
+    existing = {}
+    for m in MaterialModel.query.filter(MaterialModel.is_active.is_(True)).all():
+        if m.source != 'seed':
+            existing.setdefault(m.name.strip().lower(), m)
+    seen = set()
+    for r in parsed['rows']:
+        key = r['name'].strip().lower()
+        r['action'], r['target_id'] = 'create', None
+        if r['errors']:
+            r['action'] = 'error'
+            continue
+        if key in seen:
+            r['errors'].append('Nombre repetido en el archivo.')
+            r['action'] = 'error'
+            continue
+        seen.add(key)
+        m = existing.get(key)
+        if m is None or mode == 'new':
+            if m is not None:
+                r['warnings'].append('Ya existe un material con este nombre: se crea otro.')
+            continue
+        if mode == 'skip':
+            r['action'], r['target_id'] = 'skip', str(m.id)
+            r['warnings'].append('Ya existe en la biblioteca: se omite.')
+        elif (m.calibration or {}).get('best_model'):
+            r['action'], r['target_id'] = 'skip', str(m.id)
+            r['warnings'].append('Ya existe y está ajustado a ensayos: no se sobrescribe.')
+        else:
+            r['action'], r['target_id'] = 'update', str(m.id)
+    counts = {a: sum(r['action'] == a for r in parsed['rows']) for a in ('create', 'update', 'skip', 'error')}
+    return {**parsed, 'counts': counts, 'filename': filename, 'mode': mode}
+
+
+def _import_request():
+    from app.design.services.material.importer import MaterialImportError
+    f = request.files.get('file')
+    if f is None or not f.filename:
+        return None, (jsonify({'error': 'Suba un archivo CSV o Excel (.xlsx).'}), 422)
+    mode = (request.form.get('on_duplicate') or 'skip').lower()
+    if mode not in IMPORT_MODES:
+        return None, (jsonify({'error': f'on_duplicate debe ser uno de {IMPORT_MODES}'}), 422)
+    try:
+        return _import_plan(f.filename, f.read(), mode), None
+    except MaterialImportError as e:
+        return None, (jsonify({'error': str(e)}), 422)
+
+
+@bp.route('/import/preview', methods=['POST'])
+def import_preview():
+    """Multipart ``file`` (.csv / .xlsx) + ``on_duplicate`` skip|update|new → rows, column mapping, actions."""
+    plan, err = _import_request()
+    if err:
+        return err
+    return jsonify(_finite(plan)), 200
+
+
+@bp.route('/import', methods=['POST'])
+def import_materials():
+    """Same input as /import/preview; creates / updates the valid rows (source 'import')."""
+    plan, err = _import_request()
+    if err:
+        return err
+    ref = f'Importado de {plan["filename"]}'
+    ids = []
+    for r in plan['rows']:
+        if r['action'] == 'create':
+            m = MaterialModel(name=r['name'], model_type='linear_elastic_isotropic', parameters=r['parameters'],
+                              calibration={}, description=r['description'], category=r['category'],
+                              source='import', source_ref=r['source_ref'] or ref)
+            db.session.add(m)
+        elif r['action'] == 'update':
+            m = db.session.get(MaterialModel, _uuid.UUID(r['target_id']))
+            m.parameters = {**(m.parameters or {}), **r['parameters']}
+            for k in ('category', 'description'):
+                if r[k]:
+                    setattr(m, k, r[k])
+            m.source, m.source_ref = 'import', r['source_ref'] or ref
+            m.updated_at = datetime.utcnow()
+        else:
+            continue
+        db.session.flush()
+        ids.append(str(m.id))
+        r['material_id'] = str(m.id)
+    db.session.commit()
+    for r in plan['rows']:
+        if r['action'] == 'update':
+            sync_material_nodes(db.session.get(MaterialModel, _uuid.UUID(r['target_id'])))
+    return jsonify(_finite({**plan, 'material_ids': ids})), 200
+
+
+@bp.route('/import/template', methods=['GET'])
+def import_template():
+    """Template with the recognised headers and one example row: ?format=csv (default) | xlsx."""
+    from app.design.services.material.importer import template_csv, template_xlsx
+    if (request.args.get('format') or 'csv').lower() == 'xlsx':
+        return Response(template_xlsx(), mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': 'attachment; filename=plantilla_materiales.xlsx'})
+    return Response('﻿' + template_csv(), mimetype='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename=plantilla_materiales.csv'})
+
+
 # ── Curve fitting ─────────────────────────────────────────────────────────────
 
 def _datasets_from_request():

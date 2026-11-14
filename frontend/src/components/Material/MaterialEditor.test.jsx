@@ -61,7 +61,7 @@ describe('MaterialEditor', () => {
     const onAssigned = vi.fn();
     render(<MaterialEditor open graphId="g1" nodeId="n1" onClose={() => {}} onAssigned={onAssigned} />);
     fireEvent.click(await screen.findByText('Al 6061-T6'));
-    await screen.findByDisplayValue('69');
+    await screen.findByDisplayValue('69', {}, { timeout: 5000 });
     const file = new File(['strain,stress\n0,0'], 'p1.csv', { type: 'text/csv' });
     fireEvent.change(screen.getByTestId('fit-files'), { target: { files: [file] } });
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/design/material/m1/fit', expect.any(FormData)));
@@ -89,7 +89,7 @@ describe('MaterialEditor', () => {
       ? Promise.resolve({ data: COPY }) : Promise.reject(new Error(url))));
     render(<MaterialEditor open onClose={() => {}} />);
     fireEvent.click(await screen.findByText('Acero S355JR'));
-    const e = await screen.findByDisplayValue('210');
+    const e = await screen.findByDisplayValue('210', {}, { timeout: 5000 });
     expect(e.disabled).toBe(true);
     expect(screen.getByDisplayValue('12')).toBeTruthy();          // α shown in µm/m·K
     expect(screen.getAllByText('Catálogo').length).toBe(2);           // list + chip

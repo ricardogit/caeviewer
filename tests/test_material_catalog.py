@@ -67,3 +67,71 @@ def test_node_props_carry_thermal_and_drop_stale_yield(app):  # noqa: F811
         glass = MaterialModel.query.filter_by(seed_key='glass_soda_lime').one()
         props = node_props_from_material(glass, props)
         assert 'yield_strength' not in props and props['E'] == 70e9
+
+
+# ── CSV / Excel import ────────────────────────────────────────────────────────
+
+CSV_ES = """Material;Familia;Módulo de Young (MPa);Poisson;Densidad g/cm3;Límite elástico;UTS [ksi];Dilatación;desv E
+Mi aluminio;Aluminio;69000;0,33;2,70;270;45;23,6;1500
+Sin E;;;0,3;7,8;;;;
+Malo;Acero;210000;0,6;7,85;abc;;;
+"""
+
+
+def test_parse_units_aliases_and_row_errors():
+    from app.design.services.material.importer import parse_material_table
+    r = parse_material_table(CSV_ES.encode('cp1252'), 'm.csv')
+    al, no_e, bad = r['rows']
+    p = al['parameters']
+    assert p['E']['value'] == 69e9 and p['E']['std'] == 1.5e9          # std column takes the value's unit
+    assert p['nu']['value'] == 0.33 and p['rho']['value'] == 2700       # decimal comma, g/cm³
+    assert p['sigma_y']['value'] == 270e6 and p['sigma_u']['value'] == pytest.approx(45 * 6.894757e6)
+    assert p['alpha']['value'] == pytest.approx(23.6e-6) and al['category'] == 'Aluminio' and not al['errors']
+    assert any('sin unidad' in n for n in r['notes'])
+    assert 'Falta E (obligatorio).' in no_e['errors']
+    assert any('ν' in e for e in bad['errors']) and any('abc' in e for e in bad['errors'])
+
+
+def test_parse_template_csv_and_xlsx():
+    from app.design.services.material.importer import parse_material_table, template_csv, template_xlsx
+    for data, name in ((template_csv().encode(), 't.csv'), (template_xlsx(), 't.xlsx')):
+        (row,) = parse_material_table(data, name)['rows']
+        assert not row['errors'] and row['parameters']['E']['value'] == 205e9
+        assert row['parameters']['alpha']['value'] == pytest.approx(11.7e-6)
+        assert row['parameters']['elongation']['value'] == pytest.approx(0.15) and row['source_ref']
+
+
+def test_parse_rejects_files_without_header():
+    from app.design.services.material.importer import MaterialImportError, parse_material_table
+    with pytest.raises(MaterialImportError):
+        parse_material_table(b'1;2;3\n4;5;6\n', 'x.csv')
+    with pytest.raises(MaterialImportError):
+        parse_material_table(b'Nombre;E [Mbar]\nA;1\n', 'x.csv')        # unknown unit
+
+
+def test_import_api_preview_create_skip_update(app):  # noqa: F811
+    import io
+    c = app.test_client()
+
+    def post(url, text, mode='skip'):
+        return c.post(url, data={'file': (io.BytesIO(text.encode('utf-8')), 'mats.csv'), 'on_duplicate': mode},
+                      content_type='multipart/form-data')
+    pre = post('/api/design/material/import/preview', CSV_ES).get_json()
+    assert pre['counts'] == {'create': 1, 'update': 0, 'skip': 0, 'error': 2}
+    n0 = len(c.get('/api/design/material/').get_json()['materials'])
+    res = post('/api/design/material/import', CSV_ES).get_json()
+    assert len(res['material_ids']) == 1
+    mats = c.get('/api/design/material/').get_json()['materials']
+    assert len(mats) == n0 + 1
+    m = next(x for x in mats if x['name'] == 'Mi aluminio')
+    assert m['source'] == 'import' and m['source_ref'] == 'Importado de mats.csv' and m['category'] == 'Aluminio'
+    again = post('/api/design/material/import', CSV_ES).get_json()        # skip existing
+    assert again['counts']['skip'] == 1 and again['material_ids'] == []
+    upd = post('/api/design/material/import', CSV_ES.replace('69000', '70000'), 'update').get_json()
+    assert upd['counts']['update'] == 1
+    assert c.get(f"/api/design/material/{m['id']}").get_json()['parameters']['E']['value'] == 70e9
+    # a catalog name in the file creates a user copy, the catalog row is never touched
+    cat = post('/api/design/material/import', 'Nombre;E [GPa];nu\nAcero S355JR;1;0.3\n', 'update').get_json()
+    assert cat['counts']['create'] == 1
+    t = c.get('/api/design/material/import/template?format=xlsx')
+    assert t.status_code == 200 and t.data[:2] == b'PK'

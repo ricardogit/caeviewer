@@ -13,6 +13,7 @@ import {
   ComposedChart, Line, Scatter, Area, XAxis, YAxis, Tooltip as RTooltip, ResponsiveContainer, CartesianGrid, Legend,
 } from 'recharts';
 import useMaterialStore from '../../stores/materialStore';
+import MaterialImportDialog from './MaterialImportDialog';
 
 // display rows: key, label, unit, scale (SI → display)
 export const PARAM_ROWS = [
@@ -118,6 +119,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
   } = useMaterialStore();
   const [newName, setNewName] = useState('');
   const [query, setQuery] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
   const groups = useMemo(() => groupMaterials(materials, query), [materials, query]);
   const [name, setName] = useState('');
   const [params, setParams] = useState({});
@@ -162,6 +164,8 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth
       PaperProps={{ sx: { bgcolor: '#1a1a1a', color: '#ddd', height: '88vh' } }}>
+      <MaterialImportDialog open={importOpen} onClose={() => setImportOpen(false)}
+        onImported={(ids) => { list().catch(() => {}); if (ids.length === 1) openMat(ids[0]); }} />
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', fontSize: 15, py: 1 }}>
         <Box sx={{ flex: 1 }}>Materiales — modelos activos con incertidumbre</Box>
         <IconButton size="small" onClick={onClose} sx={{ color: '#888' }}><Close fontSize="small" /></IconButton>
@@ -180,6 +184,12 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
           <Box sx={{ px: 1, pb: 0.5 }}>
             <TextField size="small" fullWidth placeholder="Buscar (nombre o familia)" value={query}
               onChange={(e) => setQuery(e.target.value)} {...tf} />
+          </Box>
+          <Box sx={{ px: 1, pb: 0.5 }}>
+            <Button size="small" fullWidth startIcon={<UploadFile />} onClick={() => setImportOpen(true)}
+              sx={{ fontSize: 11, justifyContent: 'flex-start' }}>
+              Importar CSV / Excel
+            </Button>
           </Box>
           <List dense sx={{ overflow: 'auto', flex: 1 }}>
             {groups.map(([group, items]) => (
