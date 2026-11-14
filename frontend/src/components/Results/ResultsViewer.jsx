@@ -71,6 +71,16 @@ export function SummaryRows({ header }) {
       ...(s.piezo.electrodes || []).map((el, i) => [`Electrodo ${el.label || i + 1}`,
         `${fmt(el.voltage_V)} V · Q = ${fmt(el.charge_C * 1e9)} nC`]),
     ] : []),
+    ...(s.fluid ? [
+      ['Modelo', `Stokes · μ = ${fmt(s.fluid.mu)} Pa·s`],
+      ['|v| máx.', `${fmt(s.fluid.max_velocity_m_s * 1e3)} mm/s`],
+      ['Presión', `${fmt(s.fluid.min_pressure_pa)} … ${fmt(s.fluid.max_pressure_pa)} Pa`],
+      ...(s.fluid.flow_rates || []).filter(f => Math.abs(f.flow_m3_s) > 1e-6 * Math.max(
+        ...(s.fluid.flow_rates || []).map(g => Math.abs(g.flow_m3_s)))).map(f => [
+        `Caudal ${f.label || f.face_set}`, `${fmt(f.flow_m3_s * 6e7)} mL/min (${f.flow_m3_s > 0 ? 'sale' : 'entra'})`]),
+      ['Balance de masa', `${fmt(100 * s.fluid.mass_balance_error)} %`],
+      ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.reynolds > 1 ? ' ⚠ > 1' : ''}`],
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
@@ -83,9 +93,9 @@ export function SummaryRows({ header }) {
         ? ['E1 / E2 / E3', [header.material.E1, header.material.E2, header.material.E3].map(v => fmt(v / 1e9)).join(' / ') + ' GPa']
         : header?.material?.c33
           ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
-          : ['E',header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
+          : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : [['k', header?.material?.k
+    ] : s.fluid ? [] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
       : '—']]),
   ];

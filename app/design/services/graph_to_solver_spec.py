@@ -93,6 +93,12 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             _viscoelastic_material(spec, mat_node)
         elif spec['material']['type'] == 'piezoelectric':
             _piezo_material(spec, mat_node)
+        elif spec['material']['type'] == 'newtonian_fluid':
+            mu = props.get('mu')
+            if mu in (None, '') or float(mu) <= 0:
+                raise GraphSpecError(f'"{mat_node.label}": el fluido necesita la viscosidad dinámica μ > 0 (Pa·s).')
+            spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
+                                'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -179,6 +185,12 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         if 'thermal' in spec['physics']:
             raise GraphSpecError('El material piezoeléctrico no admite condiciones térmicas todavía.')
         spec['physics'] = ['piezoelectric']
+    elif spec['material'].get('type') == 'newtonian_fluid':
+        if 'thermal' in spec['physics']:
+            raise GraphSpecError('El fluido newtoniano (Stokes) no admite condiciones térmicas todavía.')
+        if any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
+            raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material es un fluido.')
+        spec['physics'] = ['fluid']               # T10 required: the kernel raises a clear error for T4
     elif any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
         raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material no es piezoeléctrico.')
     return spec
@@ -418,6 +430,14 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if bc_type == 'velocity':                     # fluid inlet / moving wall [m/s or mm/s]
+        f = {'m/s': 1.0, 'mm/s': 1e-3}.get(props.get('unit') or 'm/s', 1.0)
+        values = [float(props.get(k) or 0) * f for k in ('vx', 'vy', 'vz')]
+        entry = {'dofs': [0, 1, 2], 'values': values, 'label': node.label}
+        _target(entry, faces, props, 'fixed')
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if props.get('dofs'):
         dofs = sorted({int(d) for d in props['dofs'] if int(d) in (0, 1, 2)})
         if not dofs:
@@ -507,9 +527,9 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
 
     faces = _faces(ctx, node)
     if load_type == 'pressure':
-        if not faces:
+        if not faces and not props.get('face_set'):
             raise GraphSpecError(f'"{node.label}": la presión necesita caras seleccionadas.')
-        entry['face_set'] = faces
+        entry['face_set'] = faces or props['face_set']      # parametric beam: named face set
         entry['pressure'] = mag * _unit(PRESSURE_UNITS, props.get('unit'), node, 'Pa')
     else:
         f = mag * _unit(FORCE_UNITS, props.get('unit'), node, 'N')

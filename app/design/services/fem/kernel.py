@@ -25,7 +25,8 @@ from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs
                                                reduce_system, resolve_free_faces)
 from app.design.services.fem.constitutive import (build_material, ElastoplasticVonMises, conductivity,
                                                   thermal_expansion, HyperelasticNeoHookean,
-                                                  ViscoelasticMaxwell, Piezoelectric)
+                                                  ViscoelasticMaxwell, Piezoelectric,
+                                                  NewtonianFluid)
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
@@ -250,6 +251,11 @@ class FEMKernel:
                 raise ValueError('El material piezoeléctrico no admite el acoplamiento térmico todavía.')
             return self._solve_piezo(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs, all_loads,
                                      tier, socketio, run_id, t_start)
+        if isinstance(material, NewtonianFluid):                  # steady Stokes flow (velocity + pressure)
+            if T is not None:
+                raise ValueError('El fluido newtoniano no admite condiciones térmicas todavía.')
+            return self._solve_fluid(mesh, mesh_meta, material, solver_spec, all_bcs, all_loads, tier,
+                                     socketio, run_id, t_start)
         if isinstance(material, ViscoelasticMaxwell):             # time stepping (creep / relaxation)
             if T is not None:
                 raise ValueError('El material viscoelástico no admite el acoplamiento térmico todavía: quita '
@@ -614,6 +620,82 @@ class FEMKernel:
             'sigma_elemental': post['sigma_gp'].mean(axis=1).tolist(), 'potential': phi,
             'extra_fields': {'phi': phi, 'Emag': Emag / 1e6},
             'solve_info': {'method': 'direct_coupled', 'converged': s['converged'], 'final_residual': resid},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    # ── Newtonian fluid (steady Stokes, Taylor-Hood) ─────────────────────────
+
+    FLUID_MAX_DOF = 400_000           # sparse direct solve of the saddle-point system
+
+    def _solve_fluid(self, mesh, mesh_meta, material, spec, all_bcs, all_loads, tier,
+                     socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import stokes as st
+        fm = material.fm
+        n = mesh.n_nodes
+        n_dof = 3 * n + len(np.unique(mesh.elements[:, :4]))
+        if mesh.element_type != 'T10':
+            raise ValueError('Fluido (Stokes): hace falta malla cuadrática T10 (elementos Taylor-Hood P2-P1).')
+        if n_dof > self.FLUID_MAX_DOF:
+            raise ValueError(f'Fluido: {n_dof:,} incógnitas (velocidad + presión) superan el límite del solver '
+                             f'directo ({self.FLUID_MAX_DOF:,}); usa una malla más gruesa.')
+        loads = [({**ld, 'density': ld.get('density', fm.rho)} if 'gravity' in ld else ld) for ld in all_loads]
+        load_info: list = []
+        F = assemble_F(mesh, loads, load_info)
+        dofs, vals = dirichlet(mesh, all_bcs) if all_bcs else (np.zeros(0, np.int64), np.zeros(0))
+        if not len(dofs):
+            raise ValueError('Fluido: faltan condiciones de velocidad (paredes sin deslizamiento, entrada …).')
+        self._emit(socketio, run_id, 30, f'Stokes: resolviendo velocidad + presión ({n_dof:,} incógnitas)', t_start)
+        v, p, info = st.solve(mesh, fm, F, dofs, vals)
+        vmag = np.linalg.norm(v, axis=1)
+        flows, seen = [], set()
+        for e in all_bcs + all_loads:
+            fs = e.get('face_set')
+            key = repr(fs)
+            if fs is None or key in seen:
+                continue
+            seen.add(key)
+            q, area = st.flow_rate(mesh, v, fs)
+            flows.append({'face_set': fs if isinstance(fs, str) else f'{len(fs)} caras', 'label': e.get('label'),
+                          'flow_m3_s': q, 'area_m2': area})
+        net, _ = st.flow_rate(mesh, v, '@all')
+        q_scale = max([abs(f['flow_m3_s']) for f in flows] + [1e-300])
+        ext = mesh.nodes.max(0) - mesh.nodes.min(0)
+        Lc = float(ext[ext > 0].min()) if np.any(ext > 0) else 0.0
+        Re = fm.rho * float(vmag.max()) * Lc / fm.mu
+        R = info['reaction']
+        wall = [float(-R[dofs[dofs % 3 == c]].sum()) for c in range(3)]
+        resid = info['residual']
+        s = {
+            'physics': ['fluid'],
+            'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': info['n_dof'], 'element_type': mesh.element_type,
+            'tier': tier, 'converged': bool(resid < 1e-8), 'n_iterations': 1, 'final_residual': resid,
+            'solver_method': 'direct_saddle_point', 'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'loads': load_info, 'n_constrained_dofs': int(len(dofs)), 'material_model': 'newtonian_fluid',
+            'fluid': {'mu': fm.mu, 'rho': fm.rho, 'max_velocity_m_s': float(vmag.max()),
+                      'min_pressure_pa': float(p.min()), 'max_pressure_pa': float(p.max()),
+                      'flow_rates': flows, 'mass_balance_error': abs(net) / q_scale if flows else abs(net),
+                      'reynolds': Re, 'length_scale_m': Lc, 'pressure_pinned': info['pressure_pinned'],
+                      'wall_force_N': wall,
+                      'max_shear_rate_1_s': st.velocity_gradient_max(mesh, v)},
+            'extra_fields': [{'key': 'vmag', 'label': '|v| velocidad', 'unit': 'mm/s'},
+                             {'key': 'vx', 'label': 'vx', 'unit': 'mm/s'},
+                             {'key': 'vy', 'label': 'vy', 'unit': 'mm/s'},
+                             {'key': 'vz', 'label': 'vz', 'unit': 'mm/s'},
+                             {'key': 'p', 'label': 'Presión', 'unit': 'Pa'}],
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(np.concatenate([v.ravel(), p])),
+        }
+        if Re > 1.0:
+            s['warnings'] = [f'Re ≈ {Re:.3g} > 1: el modelo de Stokes (flujo lento) desprecia la inercia; '
+                             'el resultado no es fiable a este Reynolds.']
+        if mesh_meta:
+            s['mesh'] = {k: val for k, val in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'velocity': v, 'pressure': p,
+            'extra_fields': {'vmag': vmag * 1e3, 'vx': v[:, 0] * 1e3, 'vy': v[:, 1] * 1e3, 'vz': v[:, 2] * 1e3,
+                             'p': p},
+            'solve_info': {'method': 'direct_saddle_point', 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
         }

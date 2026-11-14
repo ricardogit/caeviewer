@@ -33,18 +33,19 @@ PHYSICS_LABELS = {
     ('thermal',): 'Térmico estacionario 3D (conducción)',
     ('structural', 'thermal'): 'Termo-mecánico 3D (térmico → estructural)',
     ('piezoelectric',): 'Piezoeléctrico 3D (desplazamiento + potencial eléctrico)',
+    ('fluid',): 'Fluido newtoniano 3D (Stokes, flujo lento)',
 }
 
 
 # material models only the plain kernel run supports (Newton / time stepping)
 NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
-                       'piezoelectric')     # (piezo is linear but coupled: plain kernel run only)
+                       'piezoelectric', 'newtonian_fluid')   # (piezo / fluid: linear, plain kernel run only)
 MATERIAL_LABELS = {
     'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
     'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',
     'viscoelastic_maxwell': 'viscoelástico (Maxwell generalizado, pasos de tiempo)',
     'linear_elastic_orthotropic': 'elástico ortótropo',
-}
+}   # piezo / fluid: their physics label already names the model
 
 
 def prepare_spec(graph_id: str, data: dict, adjust=None, full_kernel: bool = False,
@@ -863,7 +864,8 @@ def preflight(graph_id):
         if mtype in MATERIAL_LABELS:
             out['physics_label'] = (out['physics_label'].replace('(elástico lineal)', '').strip()
                                     + ' · ' + MATERIAL_LABELS[mtype])
-            out['nonlinear'] = mtype in NONLINEAR_MATERIALS
+        if mtype in NONLINEAR_MATERIALS:
+            out['nonlinear'] = True
         out['tier_declared'] = int(spec.get('tier', g.tier if g.tier is not None else 1))
         out['mesh_source'] = spec.get('mesh_source')
         size = estimate_problem_size(spec)

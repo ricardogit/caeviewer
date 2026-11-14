@@ -6,6 +6,7 @@ import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields, { PZT5H } from './PiezoFields';
+import FluidFields from './FluidFields';
 import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
 
@@ -62,5 +63,21 @@ describe('material model fields (item 8)', () => {
       electrodes: [{ label: 'top', voltage_V: 100, charge_C: 2e-9 }] } }, material: { c11: 127e9, c33: 117e9 } }} />);
     expect(screen.getByText('Electrodo top')).toBeTruthy();
     expect(screen.getByText('c11ᴱ / c33ᴱ')).toBeTruthy();
+  });
+
+  it('fluid: preset sets μ and ρ; summary shows flow rates and Reynolds', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{}} setProp={setProp} />);
+    expect(screen.getByText('Falta la viscosidad μ.')).toBeTruthy();
+    fireEvent.click(screen.getByText('Glicerina 20 °C'));
+    expect(setProp).toHaveBeenCalledWith('mu', 1.41);
+    expect(setProp).toHaveBeenCalledWith('rho', 1261);
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { mu: 1.41, max_velocity_m_s: 2e-3, min_pressure_pa: 0,
+      max_pressure_pa: 100, mass_balance_error: 1e-12, reynolds: 2.5,
+      flow_rates: [{ face_set: 'tip', label: 'Salida', flow_m3_s: 3e-9 }, { face_set: 'z0', flow_m3_s: 0 }] } } }} />);
+    expect(screen.getByText('Caudal Salida')).toBeTruthy();
+    expect(screen.queryByText('Caudal z0')).toBeNull();
+    expect(screen.getByText(/⚠ > 1/)).toBeTruthy();
+    expect(screen.queryByText('k')).toBeNull();
   });
 });

@@ -326,7 +326,25 @@ class Piezoelectric:
     def from_dict(cls, d: dict) -> 'Piezoelectric':
         return cls(d)
 class ThermoPiezoelectric(_Stub): pass
-class NewtonianFluid(_Stub): pass
+class NewtonianFluid:
+    """Incompressible Newtonian fluid for steady Stokes flow (``fem.stokes``): viscosity mu [Pa·s], rho.
+    get_D_matrix() = μ·diag(2,2,2,1,1,1) (viscous stress per strain rate, engineering shear)."""
+
+    def __init__(self, spec: dict):
+        from app.design.services.fem.stokes import FluidMaterial
+        self.fm = FluidMaterial(spec)
+        self.mu, self.rho = self.fm.mu, self.fm.rho
+
+    def get_D_matrix(self, state=None) -> np.ndarray:
+        return self.mu * np.diag([2.0, 2.0, 2.0, 1.0, 1.0, 1.0])
+
+    def get_coupling_terms(self, pl): return {}
+    def update_internal_variables(self, si): return {}
+    def is_linear(self): return True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'NewtonianFluid':
+        return cls(d)
 class LinearMagnetic(_Stub): pass
 
 

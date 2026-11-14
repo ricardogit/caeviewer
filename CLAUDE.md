@@ -294,7 +294,22 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   + summary `extra_fields [{key, label, unit}]` → HDF5 `fields/x_<key>/step_0` → `/surface` packs `x_<key>` with
   header `extra_fields` (min/max) → Results viewer lists them (`resultsField.availableFields/fieldMeta`).
 - Mechanical BC nodes honour `face_set` on parametric meshes (before, only `node_set` was read, default `fixed`).
-- Stubs still: `ThermoPiezoelectric`, `NewtonianFluid`, `LinearMagnetic` (shown disabled in the MATERIAL list).
+- `NewtonianFluid` (`fem/stokes.py`): steady incompressible **Stokes** flow (creeping, inertia neglected),
+  Taylor-Hood P2-P1 (velocity on all T10 nodes, pressure on corners; T4 → ValueError), Laplacian form μ∫∇w:∇v, so
+  a face without velocity BCs is a "do nothing" outlet (μ∂v/∂n − p n = 0, i.e. p = 0) or carries a `pressure` load
+  (inlet pressure, positive pushes into the fluid). Velocity BCs reuse `dofs`/`values` (no-slip = fixed, slip =
+  roller, inlet = values [m/s]); `gravity` uses ρ. Saddle system solved directly (μ-normalised, `FLUID_MAX_DOF` 400K);
+  if every boundary node has its normal velocity prescribed the first corner pressure is pinned to 0
+  (`stokes.is_enclosed`). Summary `fluid` {mu, rho, max_velocity_m_s, min/max pressure, flow_rates per referenced
+  face set (outward ∫v·n dA), mass_balance_error, reynolds (ρ·vmax·smallest bbox extent/μ; `warnings` when > 1),
+  wall_force_N, max_shear_rate_1_s}; extra fields vmag/vx/vy/vz [mm/s] and p [Pa]; no displacement field.
+  Graph: MATERIAL `model_type: 'newtonian_fluid'` + `mu` (rho default 1000), BC `bc_type: 'velocity'` (vx, vy, vz,
+  `unit` m/s|mm/s), pressure LOAD on the parametric beam via `face_set`; thermal / electrodes → 422. Topology / ROM /
+  uncertainty / adaptive → 422. UI `DesignGraph/FluidFields.jsx` (presets). Hito `python validate_fluid.py
+  [--server …]`: plane Poiseuille (profile, Q, linear p, wall force Δp·A), Couette (wall shear μU/H·A) and
+  hydrostatics in a closed box exact (1e-10); square duct vs Fourier series −0.125 % at h = a/3, order 3.9; mass
+  balance 1e-12. Tests `tests/test_fluid.py`. Not Navier-Stokes: no convection term, no turbulence, steady only.
+- Stubs still: `ThermoPiezoelectric`, `LinearMagnetic` (shown disabled in the MATERIAL list).
 
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,

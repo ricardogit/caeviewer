@@ -18,6 +18,7 @@ import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields from './PiezoFields';
+import FluidFields from './FluidFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -29,7 +30,7 @@ export const MATERIAL_TYPES = [
   ['hyperelastic_neohookean', 'Hiperelástico Neo-Hookean', true],
   ['viscoelastic_maxwell', 'Viscoelástico Maxwell (Prony)', true],
   ['piezoelectric', 'Piezoeléctrico (6mm, u + φ)', true],
-  ['newtonian_fluid', 'Fluido newtoniano', false],
+  ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -38,6 +39,7 @@ const BC_TYPES = [
   ['roller_x', 'Rodillo: UX = 0'], ['roller_y', 'Rodillo: UY = 0'], ['roller_z', 'Rodillo: UZ = 0'],
   ['symmetry', 'Simetría (normal = 0)'], ['temperature', 'Temperatura impuesta (térmico)'],
   ['voltage', 'Potencial eléctrico / electrodo (piezo)'],
+  ['velocity', 'Velocidad impuesta / entrada (fluido)'],
 ];
 const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
 const LOAD_TYPES = [
@@ -260,10 +262,11 @@ export default function NodePanel({ node, graphId, onClose }) {
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
               ['yield_strength', 'Límite elástico σy [Pa]', '']]
-              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric'].includes(props.model_type)
-                || k === 'rho')
+              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'newtonian_fluid']
+                .includes(props.model_type) || k === 'rho')
               .filter(([k]) => !['hyperelastic_neohookean', 'viscoelastic_maxwell'].includes(props.model_type)
                 || k !== 'yield_strength')
+              .map(([k, lbl, d0]) => [k, lbl, props.model_type === 'newtonian_fluid' && k === 'rho' ? 1000 : d0])
               .map(([k, lbl, def]) => (
               <Box key={k} sx={{ display: 'flex', gap: 0.5 }}>
                 <TextField
@@ -293,6 +296,7 @@ export default function NodePanel({ node, graphId, onClose }) {
             {props.model_type === 'hyperelastic_neohookean' && <HyperelasticFields props={props} setProp={setProp} />}
             {props.model_type === 'viscoelastic_maxwell' && <ViscoelasticFields props={props} setProp={setProp} />}
             {props.model_type === 'piezoelectric' && <PiezoFields props={props} setProp={setProp} />}
+            {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
             <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
             {THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}
@@ -363,7 +367,38 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </>
               );
             })()}
-            {props.bc_type !== 'symmetry' && !SCALAR_BC[props.bc_type] && (
+            {props.bc_type === 'velocity' && (
+              <>
+                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                  {['vx', 'vy', 'vz'].map(k => (
+                    <TextField key={k} label={k} size="small" type="number" sx={{ flex: 1 }}
+                      value={props[k] ?? ''}
+                      onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+                      inputProps={{ style: { color: '#fff' }, 'aria-label': `velocidad ${k}` }}
+                      InputLabelProps={{ style: { color: '#888' } }} />
+                  ))}
+                  <Select size="small" value={props.unit || 'm/s'} onChange={e => setProp('unit', e.target.value)}
+                    sx={{ color: '#fff', minWidth: 72 }}>
+                    {['m/s', 'mm/s'].map(u => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  </Select>
+                </Box>
+                <Typography variant="caption" sx={{ color: '#777' }}>
+                  Fluido: «Empotrado» = pared sin deslizamiento; «Rodillo» = pared con deslizamiento; caras sin
+                  condición = salida libre (p = 0) o presión impuesta con una CARGA «Presión normal».
+                </Typography>
+                {!studyGeometryId && (
+                  <TextField
+                    label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                    value={props.face_set || ''}
+                    onChange={e => setProp('face_set', e.target.value || null)}
+                    placeholder="fixed (fixed, tip, y0, y1, z0, z1)"
+                    inputProps={{ style: { color: '#fff' } }}
+                    InputLabelProps={{ style: { color: '#888' } }}
+                  />
+                )}
+              </>
+            )}
+            {props.bc_type !== 'symmetry' && props.bc_type !== 'velocity' && !SCALAR_BC[props.bc_type] && (
               <Box>
                 <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
                   Desplazamientos restringidos:
@@ -400,7 +435,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </Box>
               </Box>
             )}
-            {!SCALAR_BC[props.bc_type] && (
+            {!SCALAR_BC[props.bc_type] && props.bc_type !== 'velocity' && (
               <TextField
                 label="Desplazamiento prescrito [m]"
                 size="small" fullWidth type="number"
@@ -520,9 +555,21 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </FormControl>
               </Box>
               {lt === 'pressure' ? (
-                <Typography variant="caption" sx={{ color: '#888' }}>
-                  Normal a cada cara; positiva empuja hacia el interior del sólido.
-                </Typography>
+                <>
+                  <Typography variant="caption" sx={{ color: '#888' }}>
+                    Normal a cada cara; positiva empuja hacia el interior del sólido (fluido: presión de entrada).
+                  </Typography>
+                  {!studyGeometryId && (
+                    <TextField
+                      label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                      value={props.face_set || ''}
+                      onChange={e => setProp('face_set', e.target.value || null)}
+                      placeholder="fixed, tip, y0, y1, z0, z1"
+                      inputProps={{ style: { color: '#fff' } }}
+                      InputLabelProps={{ style: { color: '#888' } }}
+                    />
+                  )}
+                </>
               ) : (
                 <>
                   <Box sx={{ display: 'flex', gap: 1 }}>
