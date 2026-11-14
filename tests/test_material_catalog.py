@@ -135,3 +135,57 @@ def test_import_api_preview_create_skip_update(app):  # noqa: F811
     assert cat['counts']['create'] == 1
     t = c.get('/api/design/material/import/template?format=xlsx')
     assert t.status_code == 200 and t.data[:2] == b'PK'
+
+
+# ── CAPP import (read only; option a: E, ν, k, α, cp completed from the seed catalog) ──
+
+CAPP_ROWS = [
+    {'code': 'AL6061', 'name': 'Aluminum 6061-T6', 'category': 'Aluminum', 'grade': 'T6', 'standard': 'ASTM',
+     'standard_number': 'B221', 'density': 2.7, 'yield_strength': 275.0, 'tensile_strength': 310.0, 'is_active': True},
+    {'code': '1020', 'name': 'Steel 1020', 'category': 'Steel', 'grade': 'N/A', 'standard': 'ASTM',
+     'standard_number': 'A36', 'density': 7.85, 'yield_strength': 290.0, 'tensile_strength': 380.0, 'is_active': True},
+    {'code': 'X1', 'name': 'Unobtainium', 'category': 'Exotic', 'density': 3.0, 'is_active': True},
+    {'code': 'OLD', 'name': 'Old 7075', 'category': 'Aluminum', 'is_active': False},
+]
+
+
+def test_capp_entry_units_and_fill():
+    from app.design.services.material.capp_import import capp_entry, match_seed
+    e = capp_entry(CAPP_ROWS[0])
+    p = e['parameters']
+    assert p['rho']['value'] == 2700 and p['sigma_y']['value'] == 275e6 and p['sigma_u']['value'] == 310e6  # CAPP
+    assert p['E']['value'] == 68.9e9 and p['nu']['value'] == 0.33 and p['alpha']['value'] == pytest.approx(23.6e-6)
+    assert e['info']['filled_from_catalog'][:2] == ['E', 'nu'] and 'rho' in e['info']['from_capp']
+    assert e['category'] == 'Aluminio' and e['seed_key'] == 'capp:AL6061' and 'del catálogo' in e['source_ref']
+    assert match_seed(CAPP_ROWS[1]) == 'astm_a36'                          # by the declared standard
+    assert match_seed({'code': '4140', 'standard_number': 'A36'}) == 'aisi_4140'   # code before standard
+    assert capp_entry(CAPP_ROWS[2])['errors']                               # no E/ν, no catalog match
+    full = capp_entry({'code': 'Z', 'name': 'Z 6061', 'modulus_elasticity': 70, 'poissons_ratio': 0.32,
+                       'thermal_expansion': 23})
+    assert full['parameters']['E']['value'] == 70e9 and full['parameters']['nu']['value'] == 0.32
+    assert full['parameters']['alpha']['value'] == pytest.approx(23e-6) and 'E' not in full['info']['filled_from_catalog']
+
+
+def test_capp_import_upsert_read_only_and_prune(app, tmp_path):  # noqa: F811
+    import csv
+    from app.extensions import db
+    from app.design.services.material.capp_import import import_capp, read_capp
+    f = tmp_path / 'materials.csv'
+    cols = sorted({k for r in CAPP_ROWS for k in r})
+    with open(f, 'w', newline='', encoding='utf-8') as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        w.writerows(CAPP_ROWS)
+    rows = read_capp(csv_path=str(f))
+    with app.app_context():
+        r = import_capp(db, rows)
+        assert (r['created'], len(r['rejected'])) == (2, 1) and r['rejected'][0]['code'] == 'X1'
+        assert import_capp(db, rows)['unchanged'] == 2
+    c = app.test_client()
+    al = next(m for m in c.get('/api/design/material/').get_json()['materials'] if m['seed_key'] == 'capp:AL6061')
+    assert al['source'] == 'capp'
+    assert c.put(f"/api/design/material/{al['id']}", json={'name': 'x'}).status_code == 409
+    assert c.post(f"/api/design/material/{al['id']}/duplicate", json={}).get_json()['source'] == 'user'
+    with app.app_context():
+        r = import_capp(db, rows[1:], prune=True)                          # AL6061 gone from CAPP
+        assert r['disabled'] == 1

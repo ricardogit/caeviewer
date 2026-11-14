@@ -75,6 +75,11 @@ copies k and α (used only by thermal studies; hashes unchanged) and drops a sta
 skip|update|new; `importer.py`: Spanish/English header aliases, unit in the header or guessed from the magnitude with a
 note, `<prop> std` columns, per-row errors; name + E + ν required), `GET /import/template?format=csv|xlsx`; rows →
 `source = 'import'`; catalog rows are never matched. UI `Material/MaterialImportDialog.jsx`. Needs `openpyxl`.
+**CAPP:** `flask materials import-capp --url <cappdb> | --csv <COPY of materials>` [`--prune`] (`capp_import.py`): read-only
+session, one SELECT on CAPP's `materials` (units GPa, g/cm³, MPa, %, µm/m·K); CAPP lacks E/ν/k/α/cp, so missing ones are
+completed from the equivalent seed material (`match_seed`: code/name/grade first, then standard number; what came from
+where in `calibration.capp` and `source_ref`); rows still without E/ν are reported, not imported. Rows: `source = 'capp'`,
+`seed_key = 'capp:<code>'`, read-only like the seed catalog (edit in CAPP, import again).
 
 **Docker:** `docker/geometry.Dockerfile` (micromamba + pythonocc-core 7.7.2 + Gmsh wheel) is the
 image for workers and geometry tools; `docker compose` runs `worker-solve` and `worker-geometry`.

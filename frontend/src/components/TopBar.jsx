@@ -4,9 +4,10 @@ import {
 } from '@mui/material';
 import {
   Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree, Category, Apps, Assessment, FactCheck, History,
-  Download, Bolt,
+  Download, Bolt, LibraryBooks,
 } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
+import MaterialEditor from './Material/MaterialEditor';
 import useJobStore, { selectActiveCount } from '../stores/jobStore';
 import { useStudy } from '../stores/designStore';
 
@@ -14,7 +15,7 @@ import { useStudy } from '../stores/designStore';
  * TopBar — FASE 9 §9.2. Three sections:
  *   1. work mode: Design | Resultados | Geometría | STEP | CAE/FEA | Catálogo
  *   2. project context: study name · version · graph status · tier (estimated vs declared)
- *   3. contextual actions on the study: Validar · Simular · Historial · Exportar
+ *   3. contextual actions on the study: Validar · Simular · Historial · Exportar · Materiales (library)
  */
 export const MODES = [
   { key: 'design', label: 'Design', Icon: AccountTree, color: '#7986cb' },
@@ -62,6 +63,7 @@ function ProjectContext({ meta, preflight }) {
 export default function TopBar({ onMenuClick, selectedFile, selectedMesh, onSetMode }) {
   const [jobsAnchor, setJobsAnchor] = useState(null);
   const [exportAnchor, setExportAnchor] = useState(null);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const activeJobs = useJobStore(selectActiveCount);
   const initJobs = useJobStore((st) => st.init);
   useEffect(() => { initJobs(); }, [initJobs]);
@@ -168,6 +170,11 @@ export default function TopBar({ onMenuClick, selectedFile, selectedMesh, onSetM
               onClick={onHistory}>Historial</Button>
             <Button size="small" sx={actionSx} startIcon={<Download sx={{ fontSize: 16 }} />} disabled={!activeGraphId}
               onClick={(e) => setExportAnchor(e.currentTarget)}>Exportar</Button>
+            <Tooltip title="Biblioteca de materiales: catálogo, importar CSV/Excel, ajuste con ensayos">
+              <Button size="small" sx={actionSx} startIcon={<LibraryBooks sx={{ fontSize: 16 }} />}
+                onClick={() => setMaterialsOpen(true)}>Materiales</Button>
+            </Tooltip>
+            {materialsOpen && <MaterialEditor open onClose={() => setMaterialsOpen(false)} />}
             <Menu anchorEl={exportAnchor} open={Boolean(exportAnchor)} onClose={() => setExportAnchor(null)}>
               <MenuItem component="a" href={exportHref('markdown')} disabled={!latestRun} onClick={() => setExportAnchor(null)}
                 sx={{ fontSize: 13 }}>Informe de la última simulación (Markdown)</MenuItem>

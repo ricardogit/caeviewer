@@ -7,7 +7,7 @@ import {
   Box, Typography, TextField, Select, MenuItem, FormControl, InputLabel,
   Divider, IconButton, Chip, Button, Slider, Tooltip,
 } from '@mui/material';
-import { Close, Delete } from '@mui/icons-material';
+import { Close, Delete, LibraryBooks } from '@mui/icons-material';
 import MaterialEditor from '../Material/MaterialEditor';
 import useDesignStore, { useStudy } from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
@@ -246,6 +246,13 @@ export default function NodePanel({ node, graphId, onClose }) {
 
         {nodeType === 'MATERIAL' && (
           <>
+            <Button size="small" variant="contained" color="secondary" startIcon={<LibraryBooks />}
+              onClick={() => setMatEditor(true)}>
+              Biblioteca de materiales…
+            </Button>
+            <Typography variant="caption" sx={{ color: '#888', mt: -0.5 }}>
+              Catálogo (40 materiales), importados de CSV/Excel o CAPP, y ajuste con tus ensayos de tracción.
+            </Typography>
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Modelo constitutivo</InputLabel>
               <Select
@@ -311,9 +318,6 @@ export default function NodePanel({ node, graphId, onClose }) {
                 inputProps={{ style: { color: '#fff' }, 'aria-label': lbl }}
                 InputLabelProps={{ style: { color: '#888' } }} />
             ))}
-            <Button size="small" variant="outlined" onClick={() => setMatEditor(true)}>
-              Biblioteca y ajuste de ensayo…
-            </Button>
             {matEditor && (
               <MaterialEditor open graphId={graphId} nodeId={node.id} onClose={() => setMatEditor(false)}
                 onAssigned={(p) => {

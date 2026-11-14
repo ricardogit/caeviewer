@@ -234,4 +234,21 @@ def _register_material_cli(app):
         from app.design.services.material.seed_data import seed_materials
         click.echo(seed_materials(db, prune=prune))
 
+    @group.command('import-capp')
+    @click.option('--url', envvar='CAPP_DATABASE_URL', help='CAPP database URL (read-only SELECT on materials)')
+    @click.option('--csv', 'csv_path', type=click.Path(exists=True, dir_okay=False),
+                  help='CSV export of the CAPP materials table instead of --url')
+    @click.option('--prune', is_flag=True, help='Disable CAPP materials no longer in CAPP')
+    def import_capp_cmd(url, csv_path, prune):
+        """Import the CAPP material catalog (read only; E, ν, k, α, cp completed from the seed catalog)."""
+        from app.extensions import db
+        from app.design.services.material.capp_import import import_capp, read_capp
+        res = import_capp(db, read_capp(url=url, csv_path=csv_path), prune=prune)
+        for r in res.pop('rows'):
+            click.echo(f"  ok  {r['code']:<14} {r['name']:<28} catálogo={r['catalog']} completado={r['filled']}")
+        for r in res['rejected']:
+            click.echo(f"  NO  {r['code']:<14} {r['name']:<28} {' '.join(r['errors'])}")
+        res.pop('rejected')
+        click.echo(res)
+
     app.cli.add_command(group)

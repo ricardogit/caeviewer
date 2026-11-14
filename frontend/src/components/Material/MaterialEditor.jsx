@@ -138,7 +138,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
   }, [current]);
 
   const cal = current?.calibration || {};
-  const locked = current?.source === 'seed';     // catalog entries are read-only: duplicate to edit
+  const locked = ['seed', 'capp'].includes(current?.source);   // catalog entries are read-only: duplicate to edit
   const results = fit?.all_results || cal.all_results || [];
   const curves = fit?.curves || cal.curves;
   const best = fit?.best_model || cal.best_model;
@@ -226,7 +226,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
                 <TextField size="small" label="Nombre" value={name} sx={{ flex: 1 }} disabled={locked}
                   onChange={(e) => { setName(e.target.value); setDirty(true); }} {...tf} />
                 {locked ? (
-                  <Tooltip title="Los materiales del catálogo son de solo lectura: crea una copia propia para editarla o ajustarla a tus ensayos">
+                  <Tooltip title="Los materiales del catálogo y de CAPP son de solo lectura: crea una copia propia para editarla o ajustarla a tus ensayos">
                     <Button size="small" variant="contained" startIcon={<ContentCopy />}
                       onClick={() => duplicate(current.id)}>
                       Duplicar para editar
@@ -251,7 +251,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
                   Asignado: E, ν, ρ y σy (con su desviación), k y α en el nodo MATERIAL.
                 </Alert>
               )}
-              {(current.category || current.source_ref || current.source === 'seed') && (
+              {(current.category || current.source_ref || locked) && (
                 <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
                   {(() => {
                     const [lbl, col] = SOURCE_LABELS[current.source] || SOURCE_LABELS.user;
@@ -265,7 +265,7 @@ export default function MaterialEditor({ open, onClose, graphId = null, nodeId =
                 </Box>
               )}
               {current.description && (
-                <Typography variant="caption" sx={{ color: current.source === 'seed' ? '#ffb74d' : '#888' }}>
+                <Typography variant="caption" sx={{ color: locked ? '#ffb74d' : '#888' }}>
                   {current.description}
                 </Typography>
               )}

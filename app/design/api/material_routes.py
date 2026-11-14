@@ -54,13 +54,13 @@ def _finite(x):
     return x
 
 
-LOCKED_MESSAGE = ('Material del catálogo semilla: es de solo lectura. Use «Duplicar para editar» para crear una '
-                  'copia propia que pueda modificar o ajustar con sus ensayos.')
+LOCKED_MESSAGE = ('Material del catálogo (semilla o CAPP): es de solo lectura. Use «Duplicar para editar» para crear '
+                  'una copia propia que pueda modificar o ajustar con sus ensayos.')
 
 
 def is_locked(m: MaterialModel) -> bool:
-    """Catalog (seed) materials are read-only: edits, fits, recalibration and delete go to a copy."""
-    return m.source == 'seed'
+    """Catalog materials (seed, CAPP) are read-only: edits, fits, recalibration and delete go to a copy."""
+    return m.source in ('seed', 'capp')
 
 
 def _get_material(material_id):
@@ -218,7 +218,7 @@ def _import_plan(filename: str, data: bytes, mode: str):
     parsed = parse_material_table(data, filename)
     existing = {}
     for m in MaterialModel.query.filter(MaterialModel.is_active.is_(True)).all():
-        if m.source != 'seed':
+        if not is_locked(m):
             existing.setdefault(m.name.strip().lower(), m)
     seen = set()
     for r in parsed['rows']:
