@@ -193,7 +193,13 @@ class AutoReporter:
     def _inputs_md(self, inp: dict) -> list:
         L = []
         mat = inp.get('material') or {}
-        if mat:
+        if mat.get('type') == 'linear_elastic_orthotropic':
+            g = lambda k: _fmt((mat.get(k) or 0) / 1e9, 4)   # noqa: E731
+            L.append(f"- **Material:** ortótropo, E1/E2/E3 = {g('E1')}/{g('E2')}/{g('E3')} GPa, "
+                     f"G12/G13/G23 = {g('G12')}/{g('G13')}/{g('G23')} GPa, ν12/ν13/ν23 = {_fmt(mat.get('nu12'))}/"
+                     f"{_fmt(mat.get('nu13'))}/{_fmt(mat.get('nu23'))}, ejes 1 = {mat.get('axis_1') or [1, 0, 0]}, "
+                     f"2 = {mat.get('axis_2') or [0, 1, 0]}, ρ = {_fmt(mat.get('rho'))} kg/m³")
+        elif mat:
             L.append(f"- **Material:** {mat.get('type', '?')}, E = {_fmt((mat.get('E') or 0) / 1e9, 5)} GPa, "
                      f"ν = {_fmt(mat.get('nu'))}, ρ = {_fmt(mat.get('rho'))} kg/m³")
         src = inp.get('mesh_source')

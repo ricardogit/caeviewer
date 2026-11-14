@@ -84,6 +84,13 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         }
         if spec['material']['type'] == 'elastoplastic_vonmises':
             _plastic_material(spec, mat_node)
+        elif spec['material']['type'] == 'linear_elastic_orthotropic':
+            _orthotropic_material(spec, mat_node)
+        elif spec['material']['type'] == 'hyperelastic_neohookean':
+            # large deformations: Newton with load steps (dead loads), E and ν are the small-strain values
+            spec['n_load_steps'] = int(props.get('load_steps') or 10)
+        elif spec['material']['type'] == 'viscoelastic_maxwell':
+            _viscoelastic_material(spec, mat_node)
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -169,6 +176,88 @@ def graph_to_solver_spec(graph_id: str) -> dict:
     return spec
 
 
+ORTHO_KEYS = ('E1', 'E2', 'E3', 'G12', 'G13', 'G23', 'nu12', 'nu13', 'nu23')
+
+
+def _axis(props: dict, key: str):
+    v = props.get(key)
+    if v in (None, '', []):
+        return None
+    try:
+        out = [float(x) for x in v]
+    except (TypeError, ValueError):
+        out = []
+    if len(out) != 3:
+        raise GraphSpecError(f'{key} debe ser un vector de 3 componentes')
+    return out
+
+
+def _orthotropic_material(spec: dict, node) -> None:
+    """Orthotropic elasticity: E1..E3, G12/G13/G23 [Pa], ν12/ν13/ν23 along the material axes
+    ``axis_1``/``axis_2`` (global/CAD frame; omitted = global axes). Replaces the isotropic E/ν."""
+    from app.design.services.fem.constitutive import LinearElasticOrthotropic
+    p = node.properties or {}
+    missing = [k for k in ORTHO_KEYS if p.get(k) in (None, '')]
+    if missing:
+        raise GraphSpecError(f'"{node.label}": material ortótropo sin {", ".join(missing)}.')
+    m = {'type': 'linear_elastic_orthotropic', **{k: float(p[k]) for k in ORTHO_KEYS},
+         'rho': spec['material']['rho']}
+    for key in ('axis_1', 'axis_2'):
+        a = _axis(p, key)
+        if a is not None:
+            m[key] = a
+    try:
+        LinearElasticOrthotropic.from_dict(m)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material'] = m
+
+
+def _viscoelastic_material(spec: dict, node) -> None:
+    """Generalized Maxwell: E = instantaneous modulus E₀, ``prony_terms`` [{g, tau [s]}], time settings
+    ``t_end`` [s], ``time_steps`` and ``load_history``: creep (load applied at t = 0 and held; with prescribed
+    displacements: relaxation), ramp (linear to full load at ``t_ramp`` then held), recovery (load removed at
+    ``t_unload``)."""
+    from app.design.services.fem.viscoelastic import PronySeries
+    p = node.properties or {}
+    terms = []
+    for t in p.get('prony_terms') or []:
+        try:
+            g, tau = float(t.get('g')), float(t.get('tau'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        terms.append({'g': g, 'tau': tau})
+    try:
+        pr = PronySeries(spec['material']['E'], spec['material']['nu'], terms)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material']['prony'] = terms
+    t_end = float(p.get('t_end') or 10 * float(pr.tau.max()))
+    kind = p.get('load_history') or 'creep'
+    if kind == 'ramp':
+        tr = float(p.get('t_ramp') or 0.1 * t_end)
+        history = [[0.0, 0.0], [min(tr, t_end), 1.0], [t_end, 1.0]]
+    elif kind == 'recovery':
+        tu = float(p.get('t_unload') or 0.5 * t_end)
+        if not 0 < tu < t_end:
+            raise GraphSpecError(f'"{node.label}": t_unload debe estar entre 0 y t_end.')
+        history = [[0.0, 1.0], [tu, 1.0], [tu, 0.0], [t_end, 0.0]]
+    else:
+        history = [[0.0, 1.0], [t_end, 1.0]]
+    spec['time'] = {'t_end': t_end, 'n_steps': int(p.get('time_steps') or 40), 'history': history,
+                    'load_history': kind}
+
+
+def _anisotropic_thermal(props: dict, base: str, label: str):
+    """[v1, v2, v3] when the node gives ``<base>1..3`` (orthotropic materials), else None."""
+    vals = [props.get(f'{base}{i}') for i in (1, 2, 3)]
+    if all(v in (None, '') for v in vals):
+        return None
+    if any(v in (None, '') for v in vals):
+        raise GraphSpecError(f'"{label}": da {base}1, {base}2 y {base}3 (o ninguno).')
+    return [float(v) for v in vals]
+
+
 def _plastic_material(spec: dict, node) -> None:
     """J2 plasticity (FASE 2.5): σy and the hardening law from the MATERIAL node. ``hardening_type``
     perfect | linear (H) | voce (hardening_Q, hardening_b, H) | fit (``hardening_table`` written by the
@@ -213,16 +302,29 @@ def _set_physics(spec: dict, mat_node) -> None:
     spec['physics'] = ['structural', 'thermal'] if structural else ['thermal']
     props = (mat_node.properties or {}) if mat_node is not None else {}
     label = mat_node.label if mat_node is not None else 'MATERIAL'
-    k = props.get('k')
-    if k in (None, '') or float(k) <= 0:
-        raise GraphSpecError(f'"{label}": el análisis térmico necesita la conductividad k (W/m·K).')
-    spec['material']['k'] = float(k)
+    ortho = spec['material'].get('type') == 'linear_elastic_orthotropic'
+    if ortho and not structural:                 # thermal only: elastic constants are not needed
+        for key in ('axis_1', 'axis_2'):
+            a = _axis(props, key)
+            if a is not None:
+                spec['material'][key] = a
+    k3 = _anisotropic_thermal(props, 'k', label) if ortho else None
+    if k3 is not None:
+        if min(k3) <= 0:
+            raise GraphSpecError(f'"{label}": las conductividades k1, k2, k3 deben ser positivas.')
+        spec['material']['k'] = k3
+    else:
+        k = props.get('k')
+        if k in (None, '') or float(k) <= 0:
+            raise GraphSpecError(f'"{label}": el análisis térmico necesita la conductividad k (W/m·K).')
+        spec['material']['k'] = float(k)
     if structural:
+        a3 = _anisotropic_thermal(props, 'alpha', label) if ortho else None
         a = props.get('alpha')
-        if a in (None, ''):
+        if a3 is None and a in (None, ''):
             raise GraphSpecError(f'"{label}": el análisis termo-mecánico necesita el coeficiente de '
                                  'dilatación α (1/K).')
-        spec['material']['alpha'] = float(a)
+        spec['material']['alpha'] = a3 if a3 is not None else float(a)
         spec['material']['T_ref'] = float(props.get('T_ref') if props.get('T_ref') not in (None, '') else 20.0)
 
 

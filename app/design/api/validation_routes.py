@@ -465,6 +465,9 @@ def _recalibrate_structural(exp, graph_id, body, apply: bool):
         return {'error': str(e)}, 409
     sens = comp['sensors']
     E_run = comp['E_run']
+    if not E_run:
+        return {'error': 'La recalibración estructural identifica un E isótropo efectivo; la simulación '
+                         'comparada no usa un material isótropo (p. ej. ortótropo).'}, 422
     std = [x.get('std') for x in sens]
     try:
         r = ModelRecalibrator.structural_stiffness([x['simulated'] for x in sens], [x['value'] for x in sens], E_run,

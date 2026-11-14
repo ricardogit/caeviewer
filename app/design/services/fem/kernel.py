@@ -23,7 +23,9 @@ from app.design.services.fem import tet_batch as tb
 from app.design.services.fem import thermal as th
 from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs, dirichlet,
                                                reduce_system, resolve_free_faces)
-from app.design.services.fem.constitutive import build_material, ElastoplasticVonMises
+from app.design.services.fem.constitutive import (build_material, ElastoplasticVonMises, conductivity,
+                                                  thermal_expansion, HyperelasticNeoHookean,
+                                                  ViscoelasticMaxwell)
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
                                             rigid_body_modes)
@@ -237,6 +239,18 @@ class FEMKernel:
         if isinstance(material, ElastoplasticVonMises):          # FASE 2.5: J2 plasticity, Newton-Raphson
             return self._solve_plastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs, all_loads,
                                        T, thermal, tier, socketio, run_id, t_start)
+        if isinstance(material, HyperelasticNeoHookean):         # large deformations, total Lagrangian
+            if T is not None:
+                raise ValueError('El material Neo-Hookean (grandes deformaciones) no admite el acoplamiento '
+                                 'térmico todavía: quita las condiciones térmicas o usa un material elástico.')
+            return self._solve_hyperelastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs,
+                                            all_loads, tier, socketio, run_id, t_start)
+        if isinstance(material, ViscoelasticMaxwell):             # time stepping (creep / relaxation)
+            if T is not None:
+                raise ValueError('El material viscoelástico no admite el acoplamiento térmico todavía: quita '
+                                 'las condiciones térmicas o usa un material elástico.')
+            return self._solve_viscoelastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs,
+                                            all_loads, tier, socketio, run_id, t_start)
 
         # 4. Assemble K and F
         logger.info(f"Assembling K ({mesh.n_dof_structural:,} DOF, {mesh.element_type})...")
@@ -250,12 +264,12 @@ class FEMKernel:
         F = assemble_F(mesh, loads, load_info)
         eps0 = None
         if T is not None:
-            alpha = float(mat_spec.get('alpha') or 0.0)
+            alpha = thermal_expansion(mat_spec)
             T_ref = float(mat_spec.get('T_ref') or 0.0)
             F = F + th.thermal_load(mesh, D, T, alpha, T_ref)
             eps0 = lambda p: th.thermal_strain_at(mesh.elements, T, alpha, T_ref, p)  # noqa: E731
             load_info.append({'index': len(load_info), 'label': 'dilatación térmica',
-                              'kind': 'thermal_strain', 'alpha': alpha, 'T_ref': T_ref})
+                              'kind': 'thermal_strain', 'alpha': np.asarray(alpha).tolist(), 'T_ref': T_ref})
         t_asm = time.perf_counter() - t_asm
         self._emit(socketio, run_id, 30, 'assembly complete, applying BCs', t_start)
 
@@ -348,12 +362,12 @@ class FEMKernel:
                              'cuerpo rígido). Agrega al menos un nodo BC.')
         eps0_gp = None
         if T is not None:
-            alpha = float(mat_spec.get('alpha') or 0.0)
+            alpha = thermal_expansion(mat_spec)
             T_ref = float(mat_spec.get('T_ref') or 0.0)
             pts, _ = pl.gauss_points(mesh.element_type)
             eps0_gp = np.stack([th.thermal_strain_at(mesh.elements, T, alpha, T_ref, p) for p in pts], axis=1)
             load_info.append({'index': len(load_info), 'label': 'dilatación térmica',
-                              'kind': 'thermal_strain', 'alpha': alpha, 'T_ref': T_ref})
+                              'kind': 'thermal_strain', 'alpha': np.asarray(alpha).tolist(), 'T_ref': T_ref})
         load_path = [float(x) for x in (spec.get('load_path') or [1.0])]
         n_steps = int(spec.get('n_load_steps') or 10)
 
@@ -429,12 +443,173 @@ class FEMKernel:
                     lam, info['n_iterations'], info['n_steps'], info['cutbacks'], float(ep_gp.max()))
         return results
 
+    # ── Hyperelastic (Neo-Hookean, large deformations) ───────────────────────
+
+    def _solve_hyperelastic(self, mesh, mesh_meta, material, mat_spec, spec, all_bcs, all_loads,
+                            tier, socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import hyperelastic as he
+        from app.design.services.fem import plasticity as pl
+        nh = material.nh
+        rho = float(mat_spec.get('rho', 0.0) or 0.0)
+        loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld) for ld in all_loads]
+        load_info: list = []
+        F = assemble_F(mesh, loads, load_info)                   # dead loads on the reference configuration
+        dofs, vals = dirichlet(mesh, all_bcs)
+        if not len(dofs):
+            raise ValueError('Sin condiciones de frontera: el sistema es singular (movimiento de '
+                             'cuerpo rígido). Agrega al menos un nodo BC.')
+        n_steps = int(spec.get('n_load_steps') or 10)
+
+        def progress(it, res, lam):
+            self._emit(socketio, run_id, 30 + int(60 * min(1.0, lam)), f'NR it {it} · λ = {lam:.3f}', t_start,
+                       iter=it, residual=res)
+
+        self._emit(socketio, run_id, 30, f'Neo-Hookean: {n_steps} pasos de carga', t_start)
+        r = he.solve_hyperelastic(mesh, nh, F, dofs, vals, n_steps=n_steps,
+                                  tol=float(spec.get('nl_tolerance') or 1e-8),
+                                  max_iter=int(spec.get('nl_max_iter') or 30), tier=tier,
+                                  near_nullspace=rigid_body_modes(mesh.nodes), progress_cb=progress)
+        u, lam, info, f_int = r['u'], r['load_factor'], r['info'], r['f_int']
+        m, g = r['S_gp'].shape[:2]
+        sig_gp = he.cauchy(r['F_gp'].reshape(-1, 3, 3), r['S_gp'].reshape(-1, 3, 3)).reshape(m, g, 6)
+        Rf = f_int - lam * F
+        reaction = [float(Rf[c::3][dofs[dofs % 3 == c] // 3].sum()) for c in range(3)]
+        applied = [float(lam * F[c::3].sum()) for c in range(3)]
+        scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        equilibrium_error = float(np.abs(np.add(reaction, applied)).max() / scale)
+        # Green-Lagrange strain → max principal (stretch measure for the results)
+        Fg = r['F_gp'].reshape(-1, 3, 3)
+        Egl = 0.5 * (np.einsum('nki,nkj->nij', Fg, Fg) - np.eye(3))
+        e_max = float(np.abs(np.linalg.eigvalsh(Egl)).max()) if len(Egl) else 0.0
+
+        disp = u.reshape(-1, 3)
+        dmag = np.linalg.norm(disp, axis=1)
+        el_sigma = sig_gp.mean(axis=1)
+        el_vm = tb.von_mises_v(el_sigma)
+        nodal_sigma = pl.gp_to_nodal(mesh.n_nodes, mesh.elements, sig_gp)
+        node_vm = tb.von_mises_v(nodal_sigma)
+        s = {
+            'max_displacement_m': float(dmag.max()), 'max_displacement_mm': round(float(dmag.max()) * 1000, 6),
+            'max_von_mises_pa': float(el_vm.max()), 'max_von_mises_mpa': round(float(el_vm.max()) / 1e6, 4),
+            'max_von_mises_nodal_mpa': round(float(node_vm.max()) / 1e6, 4),
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_dof_structural,
+            'element_type': mesh.element_type, 'tier': tier,
+            'converged': info['converged'], 'n_iterations': info['n_iterations'],
+            'final_residual': info['final_residual'], 'solver_method': info['method'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'applied_load_N': applied, 'reaction_N': reaction, 'equilibrium_error': equilibrium_error,
+            'loads': load_info, 'n_constrained_dofs': int(len(dofs)),
+            'material_model': 'hyperelastic_neohookean',
+            'hyperelastic': {**nh.to_dict(), 'load_factor': lam, 'n_steps': info['n_steps'],
+                             'cutbacks': info['cutbacks'], 'stopped_early': info['stopped_early'],
+                             'min_J': r['min_J'], 'max_green_strain': e_max, 'dead_loads': True,
+                             'curve': r['curve']},
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(u),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        logger.info('Neo-Hookean solve: λ=%.4f, %d NR iterations, %d steps, %d cutbacks, min J %.4f',
+                    lam, info['n_iterations'], info['n_steps'], info['cutbacks'], r['min_J'])
+        return {
+            'displacement': disp.tolist(), 'displacement_magnitude': dmag.tolist(),
+            'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
+            'sigma_elemental': el_sigma.tolist(), 'solve_info': info,
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    # ── Viscoelastic (generalized Maxwell, time stepping) ────────────────────
+
+    VISCO_DIRECT_MAX_DOF = 60_000     # one sparse LU of K₀ reused by every time step; above: AMG-PCG per step
+
+    def _solve_viscoelastic(self, mesh, mesh_meta, material, mat_spec, spec, all_bcs, all_loads,
+                            tier, socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import viscoelastic as ve
+        from app.design.services.fem import plasticity as pl
+        prony = material.prony
+        tm = spec.get('time') or {}
+        t_end = float(tm.get('t_end') or 10 * float(prony.tau.max()))
+        n_steps = int(tm.get('n_steps') or 40)
+        history = tm.get('history') or [[0.0, 1.0], [t_end, 1.0]]
+        rho = float(mat_spec.get('rho', 0.0) or 0.0)
+        loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld) for ld in all_loads]
+        load_info: list = []
+        F = assemble_F(mesh, loads, load_info)
+        dofs, vals = dirichlet(mesh, all_bcs)
+        if not len(dofs):
+            raise ValueError('Sin condiciones de frontera: el sistema es singular (movimiento de '
+                             'cuerpo rígido). Agrega al menos un nodo BC.')
+        D0 = material.get_D_matrix()
+        K0 = assemble_K(mesh, D0)
+        lin = None
+        if len(mesh.nodes) * 3 - len(dofs) > self.VISCO_DIRECT_MAX_DOF:
+            disp = FEMSolverDispatcher()
+            B = rigid_body_modes(mesh.nodes)
+            mask = np.ones(mesh.n_dof_structural, bool)
+            mask[dofs] = False
+
+            def lin(Kff, r):
+                x, info = disp.solve_linear(Kff.tocsr(), r, tier=tier, tol=1e-10, near_nullspace=B[mask])
+                return x
+
+        def progress(n, total, t):
+            self._emit(socketio, run_id, 30 + int(60 * (n + 1) / total), f'paso {n + 1}/{total} · t = {t:.4g} s',
+                       t_start)
+
+        self._emit(socketio, run_id, 30, f'viscoelástico: {n_steps} pasos hasta t = {t_end:.4g} s', t_start)
+        r = ve.solve_viscoelastic(mesh, prony, D0, K0, F, dofs, vals, history, t_end, n_steps,
+                                  linear_solver=lin, progress_cb=progress)
+        u, lam, info, f_int = r['u'], r['load_factor'], r['info'], r['f_int']
+        sig_gp = r['sigma_gp']
+        Rf = f_int - lam * F
+        reaction = [float(Rf[c::3][dofs[dofs % 3 == c] // 3].sum()) for c in range(3)]
+        applied = [float(lam * F[c::3].sum()) for c in range(3)]
+        scale = max(1e-30, float(np.abs(applied).max()), float(np.abs(reaction).max()))
+        equilibrium_error = float(np.abs(np.add(reaction, applied)).max() / scale)
+        disp_ = u.reshape(-1, 3)
+        dmag = np.linalg.norm(disp_, axis=1)
+        el_sigma = sig_gp.mean(axis=1)
+        el_vm = tb.von_mises_v(el_sigma)
+        node_vm = tb.von_mises_v(pl.gp_to_nodal(mesh.n_nodes, mesh.elements, sig_gp))
+        curve = r['curve']
+        s = {
+            'max_displacement_m': float(dmag.max()), 'max_displacement_mm': round(float(dmag.max()) * 1000, 6),
+            'max_von_mises_pa': float(el_vm.max()), 'max_von_mises_mpa': round(float(el_vm.max()) / 1e6, 4),
+            'max_von_mises_nodal_mpa': round(float(node_vm.max()) / 1e6, 4),
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_dof_structural,
+            'element_type': mesh.element_type, 'tier': tier,
+            'converged': info['converged'], 'n_iterations': info['n_iterations'],
+            'final_residual': info['final_residual'], 'solver_method': info['method'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'applied_load_N': applied, 'reaction_N': reaction, 'equilibrium_error': equilibrium_error,
+            'loads': load_info, 'n_constrained_dofs': int(len(dofs)),
+            'material_model': 'viscoelastic_maxwell',
+            'viscoelastic': {**prony.to_dict(), 't_end_s': t_end, 'n_time_steps': info['n_time_steps'],
+                             'history': history, 'load_factor': lam,
+                             'initial_max_displacement_m': curve[0]['max_displacement_m'] if curve else 0.0,
+                             'creep_ratio': (curve[-1]['max_displacement_m'] / curve[0]['max_displacement_m']
+                                             if curve and curve[0]['max_displacement_m'] > 0 else None),
+                             'curve': curve},
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(u),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'displacement': disp_.tolist(), 'displacement_magnitude': dmag.tolist(),
+            'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
+            'sigma_elemental': el_sigma.tolist(), 'solve_info': info,
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
     # ── Thermal (FASE 2 multiphysics) ─────────────────────────────────────────
 
     def _solve_thermal(self, mesh: FEMMesh, mat_spec: dict, bcs: list, loads: list,
                        tier: int, tol: float) -> tuple[np.ndarray, dict]:
         """Steady conduction → nodal temperature + summary (heat balance, flux)."""
-        k = float(mat_spec.get('k') or 0.0)
+        k = conductivity(mat_spec)
         t0 = time.perf_counter()
         load_info: list = []
         K, F, conv = th.assemble_thermal(mesh, k, loads, load_info)
@@ -457,7 +632,7 @@ class FEMKernel:
         _, qn = th.heat_flux(mesh.nodes, mesh.elements, T, k)
         qmag = np.linalg.norm(qn, axis=1)
         return T, {
-            'k': k, 'n_dof': int(mesh.n_nodes), 'n_fixed_temperature_nodes': int(len(dofs)),
+            'k': np.asarray(k).tolist(), 'n_dof': int(mesh.n_nodes), 'n_fixed_temperature_nodes': int(len(dofs)),
             'min_temperature': float(T.min()), 'max_temperature': float(T.max()),
             'max_heat_flux_w_m2': float(qmag.max()) if len(qmag) else 0.0,
             'heat_balance_W': {'source': q_src, 'flux_in': q_flux, 'fixed_T_in': q_fixed,

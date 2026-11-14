@@ -48,19 +48,33 @@ def _gauss(et: str):
 
 # ── Element operators ────────────────────────────────────────────────────────
 
-def conductivity_batch(nodes: np.ndarray, elements: np.ndarray, k: float) -> np.ndarray:
-    """Ke = ∫ k ∇Nᵀ ∇N dV for every element, (m, n, n)."""
+def _is_tensor(k) -> bool:
+    return np.ndim(k) == 2
+
+
+def k_is_positive(k) -> bool:
+    """Scalar k > 0, or a symmetric positive definite 3×3 conductivity tensor."""
+    if _is_tensor(k):
+        return bool(np.linalg.eigvalsh(np.asarray(k)).min() > 0)
+    return bool(k) and k > 0
+
+
+def conductivity_batch(nodes: np.ndarray, elements: np.ndarray, k) -> np.ndarray:
+    """Ke = ∫ ∇Nᵀ K ∇N dV for every element, (m, n, n); k scalar or 3×3 tensor (orthotropic)."""
     et = tb.etype_of(elements)
     X = nodes[elements]
     n = tb.N_NODES[et]
     Ke = np.zeros((len(elements), n, n))
     for p, wg in zip(*_gauss(et)):
         det, dN = tb._jac(X, tb.dshape(et, p))                 # dN (m,3,n)
-        Ke += (wg * det * k)[:, None, None] * np.einsum('man,mak->mnk', dN, dN)
+        if _is_tensor(k):
+            Ke += (wg * det)[:, None, None] * np.einsum('man,ab,mbk->mnk', dN, np.asarray(k), dN)
+        else:
+            Ke += (wg * det * k)[:, None, None] * np.einsum('man,mak->mnk', dN, dN)
     return Ke
 
 
-def assemble_Kt(mesh: FEMMesh, k: float) -> sp.csr_matrix:
+def assemble_Kt(mesh: FEMMesh, k) -> sp.csr_matrix:
     n = mesh.n_nodes
     K = sp.csr_matrix((n, n))
     for a in range(0, mesh.n_elements, 20_000):
@@ -104,12 +118,12 @@ def convection_batch(nodes: np.ndarray, tris: np.ndarray, h: float):
 
 # ── Global thermal problem ───────────────────────────────────────────────────
 
-def assemble_thermal(mesh: FEMMesh, k: float, loads: list, info: list | None = None):
+def assemble_thermal(mesh: FEMMesh, k, loads: list, info: list | None = None):
     """Global conductivity (+ convection) matrix and heat-load vector.
 
     Returns (K, F, conv) where ``conv`` lists (tris, h, T_inf) for the heat balance."""
     from app.design.services.fem.assembler import BoundaryConditionError, _face_tris
-    if not k or k <= 0:
+    if not k_is_positive(k):
         raise ValueError('Conductividad térmica k no definida o no positiva (MATERIAL.k, W/m·K).')
     n = mesh.n_nodes
     K = assemble_Kt(mesh, k)
@@ -171,8 +185,12 @@ def convective_heat(mesh: FEMMesh, T: np.ndarray, conv: list) -> float:
     return out
 
 
-def heat_flux(nodes, elements, T: np.ndarray, k: float) -> tuple[np.ndarray, np.ndarray]:
-    """q = −k ∇T: element mean (m,3) and nodal average (N,3) (T10 via Gauss points like stress)."""
+def heat_flux(nodes, elements, T: np.ndarray, k) -> tuple[np.ndarray, np.ndarray]:
+    """q = −K ∇T: element mean (m,3) and nodal average (N,3) (T10 via Gauss points like stress)."""
+    if _is_tensor(k):                       # q = −K∇T = (−∇T) Kᵀ, K symmetric
+        g_elem, g_nodal = heat_flux(nodes, elements, T, 1.0)
+        K = np.asarray(k)
+        return g_elem @ K.T, g_nodal @ K.T
     et = tb.etype_of(elements)
     X = nodes[elements]
     Te = T[elements]
@@ -199,14 +217,17 @@ def heat_flux(nodes, elements, T: np.ndarray, k: float) -> tuple[np.ndarray, np.
 
 # ── Thermo-mechanical coupling ───────────────────────────────────────────────
 
-def thermal_strain_at(elements, T: np.ndarray, alpha: float, T_ref: float, p) -> np.ndarray:
-    """ε_th (m,6) at natural point p."""
+def thermal_strain_at(elements, T: np.ndarray, alpha, T_ref: float, p) -> np.ndarray:
+    """ε_th (m,6) at natural point p; alpha scalar (isotropic) or a global engineering-Voigt 6-vector
+    (orthotropic, constitutive.thermal_expansion)."""
     et = tb.etype_of(elements)
     Tp = T[elements] @ tb.shape(et, p)
+    if np.ndim(alpha):
+        return (Tp - T_ref)[:, None] * np.asarray(alpha)[None, :]
     return (alpha * (Tp - T_ref))[:, None] * VOIGT_M[None, :]
 
 
-def thermal_load(mesh: FEMMesh, D: np.ndarray, T: np.ndarray, alpha: float, T_ref: float) -> np.ndarray:
+def thermal_load(mesh: FEMMesh, D: np.ndarray, T: np.ndarray, alpha, T_ref: float) -> np.ndarray:
     """Consistent structural load F = ∫ Bᵀ D ε_th dV (self-equilibrated)."""
     n_dof = mesh.n_dof_structural
     F = np.zeros(n_dof)

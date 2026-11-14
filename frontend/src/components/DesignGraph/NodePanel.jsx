@@ -14,11 +14,21 @@ import { NODE_COLORS } from './GraphEditor';
 import FaceSelector, { useStudyGeometryId } from './FaceSelector';
 import CadGeometryFields from './CadGeometryFields';
 import PlasticityFields from './PlasticityFields';
+import OrthotropicFields from './OrthotropicFields';
+import HyperelasticFields from './HyperelasticFields';
+import ViscoelasticFields from './ViscoelasticFields';
 
-const MATERIAL_TYPES = [
-  'linear_elastic_isotropic', 'linear_elastic_orthotropic',
-  'elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
-  'fourier_isotropic', 'thermoelastic', 'piezoelectric', 'newtonian_fluid',
+// [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
+export const MATERIAL_TYPES = [
+  ['linear_elastic_isotropic', 'Elástico lineal isótropo', true],
+  ['linear_elastic_orthotropic', 'Elástico lineal ortótropo', true],
+  ['elastoplastic_vonmises', 'Elastoplástico von Mises (J2)', true],
+  ['thermoelastic', 'Termoelástico isótropo (α)', true],
+  ['fourier_isotropic', 'Solo térmico (Fourier isótropo)', true],
+  ['hyperelastic_neohookean', 'Hiperelástico Neo-Hookean', true],
+  ['viscoelastic_maxwell', 'Viscoelástico Maxwell (Prony)', true],
+  ['piezoelectric', 'Piezoeléctrico', false],
+  ['newtonian_fluid', 'Fluido newtoniano', false],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -226,7 +236,9 @@ export default function NodePanel({ node, graphId, onClose }) {
                 label="Modelo constitutivo"
                 sx={{ color: '#fff' }}
               >
-                {MATERIAL_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                {MATERIAL_TYPES.map(([t, lbl, ok]) => (
+                  <MenuItem key={t} value={t} disabled={!ok}>{ok ? lbl : `${lbl} (pendiente)`}</MenuItem>
+                ))}
               </Select>
             </FormControl>
             {props.material_name && (
@@ -236,7 +248,11 @@ export default function NodePanel({ node, graphId, onClose }) {
             {[['E', 'Módulo de Young [Pa]', 70e9],
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
-              ['yield_strength', 'Límite elástico σy [Pa]', '']].map(([k, lbl, def]) => (
+              ['yield_strength', 'Límite elástico σy [Pa]', '']]
+              .filter(([k]) => props.model_type !== 'linear_elastic_orthotropic' || k === 'rho')
+              .filter(([k]) => !['hyperelastic_neohookean', 'viscoelastic_maxwell'].includes(props.model_type)
+                || k !== 'yield_strength')
+              .map(([k, lbl, def]) => (
               <Box key={k} sx={{ display: 'flex', gap: 0.5 }}>
                 <TextField
                   label={lbl} size="small" sx={{ flex: 2 }}
@@ -261,6 +277,9 @@ export default function NodePanel({ node, graphId, onClose }) {
               Las desviaciones alimentan la propagación de incertidumbre (Solver → Incertidumbre).
             </Typography>
             {props.model_type === 'elastoplastic_vonmises' && <PlasticityFields props={props} setProp={setProp} />}
+            {props.model_type === 'linear_elastic_orthotropic' && <OrthotropicFields props={props} setProp={setProp} />}
+            {props.model_type === 'hyperelastic_neohookean' && <HyperelasticFields props={props} setProp={setProp} />}
+            {props.model_type === 'viscoelastic_maxwell' && <ViscoelasticFields props={props} setProp={setProp} />}
             <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
             {THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}

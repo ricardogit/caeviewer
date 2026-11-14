@@ -243,8 +243,42 @@ missing faces. Loads: `force` (total force spread by area; units N/kN/MN/lbf), `
 positive pushes inward), `gravity` (uses material rho). Solid elements have translational DOFs only.
 
 **Constitutive Models:**
-- `LinearElasticIsotropic`: 6×6 D matrix; E, nu, rho. Fully implemented.
-- `LinearElasticOrthotropic`, `Fourier`, `Thermoelastic`, etc.: Stubs with correct registry for FASE 2+.
+- `LinearElasticIsotropic`: 6×6 D matrix; E, nu, rho. Fully implemented. `Thermoelastic` = isotropic + α, T_ref
+  (the kernel's one-way coupling uses them).
+- `LinearElasticOrthotropic`: E1..E3, G12/G13/G23 [Pa], ν12/ν13/ν23 (νij = −εj/εi, tension along i) along the
+  material axes `axis_1`/`axis_2` (global/CAD frame; axis 2 re-orthogonalised, 3 = 1 × 2; default global axes).
+  Compliance → D in the material axes → `rotate_D` (Tᵀ D T, engineering-shear Voigt xx yy zz xy yz xz);
+  non-positive-definite constants raise. Thermal: material `k` and `alpha` may be lists [v1, v2, v3] along the
+  material axes → `conductivity(mat)` (3×3 tensor, `FourierOrthotropic`) / `thermal_expansion(mat)` (Voigt
+  6-vector); scalars keep the isotropic code path (hashes unchanged). Graph: MATERIAL `model_type:
+  'linear_elastic_orthotropic'` + those keys, `axis_1`/`axis_2` [x,y,z], optional `k1..k3`, `alpha1..3`
+  (`graph_to_solver_spec._orthotropic_material`); UI `DesignGraph/OrthotropicFields.jsx`. Adaptive and topology
+  use D as is; ROM and uncertainty parametrise E/ν → 422 (`prepare_spec(isotropic_only=True)`); structural
+  recalibration (effective E) → 422. Hito `python validate_orthotropic.py [--server …]`: isotropic equivalence,
+  off-axis tension exact (Ex(θ), γxy coupling), CFRP cantilever L/h = 40 −0.09 % / −0.21 % vs Timoshenko
+  (fibres along / across), rotated conduction patch and free expansion exact. Tests `tests/test_orthotropic.py`.
+- `HyperelasticNeoHookean` (`fem/hyperelastic.py`): compressible Neo-Hookean W = μ/2(I₁−3) − μ ln J + λ/2(ln J)²,
+  μ/λ from the small-strain E, ν; total Lagrangian (B_NL = sym(Fᵀ∇₀N), material + geometric tangent, checked
+  against finite differences), Newton with load steps (`n_load_steps`, node `load_steps`), tangent predictor for
+  prescribed displacements, cut-backs (a trial J ≤ 0 is a failed iteration). **Dead loads** (pressure keeps the
+  reference normal/area). Thermal coupling → ValueError. Summary `hyperelastic` {min_J, max_green_strain,
+  load_factor, curve}; nodal σvM from the Cauchy stress. Hito `python validate_hyperelastic.py [--server …]`:
+  uniaxial ±50 %/−30 % and simple shear exact, small-load = linear, large-deflection cantilever α = PL²/EI = 2
+  vs Euler elastica +0.03 % (deflection) / +0.02 % (shortening), Newton order ≈ 2. Tests `tests/test_hyperelastic.py`.
+- `ViscoelasticMaxwell` (`fem/viscoelastic.py`): generalized Maxwell, E(t) = E₀[g∞ + Σgᵢe^{−t/τᵢ}] with ν
+  constant (the whole D relaxes), small strain, quasi-static. Exact recursion of the internal stresses for
+  strain linear in the step → each step is (c K₀)Δu = …: K₀ factorised once (splu ≤ 60K free DOF, else AMG-PCG
+  per step). Spec: material `prony` [{g, tau}] (Σg < 1), top-level `time` {t_end, n_steps, history [[t, λ]…]}
+  (a repeated time = jump, solved instantaneously); graph node `prony_terms`, `t_end`, `time_steps`,
+  `load_history` creep|ramp (`t_ramp`)|recovery (`t_unload`). Results = final time; summary `viscoelastic`
+  {E0, E_inf, curve (t, λ, max |u|, reactions), creep_ratio}. Hito `python validate_viscoelastic.py [--server …]`:
+  relaxation exact (1e-15), SLS creep O(Δt²) (rates 2.00), creep + recovery, cantilever = u_el·E₀J(t) (0.005 %).
+  Tests `tests/test_viscoelastic.py`.
+- Non-linear / history models (`NONLINEAR_MATERIALS` in solver_routes: J2, Neo-Hookean, Maxwell) run only through
+  the plain kernel run: topology / ROM / uncertainty / adaptive get 422. Preflight labels in `MATERIAL_LABELS`.
+  UI: `HyperelasticFields.jsx`, `ViscoelasticFields.jsx`; test `MaterialModelFields.test.jsx`.
+- Stubs still: `Piezoelectric`, `ThermoPiezoelectric`, `NewtonianFluid`, `LinearMagnetic` (shown disabled in the
+  MATERIAL model list).
 
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,

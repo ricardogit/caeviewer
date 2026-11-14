@@ -283,8 +283,10 @@ def node_props_from_material(m: MaterialModel, props: dict) -> dict:
     with std, and σy as the yield strength of the failure criterion)."""
     P = m.parameters or {}
     props = dict(props or {})
-    # the user may have switched the node to J2 plasticity: keep it (the fit supplies its hardening)
-    if props.get('model_type') != 'elastoplastic_vonmises':
+    # the user may have switched the node to another E/ν-based model (J2 plasticity: the fit supplies its
+    # hardening; Neo-Hookean, viscoelastic, thermoelastic): keep it
+    if props.get('model_type') not in ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
+                                       'thermoelastic'):
         props['model_type'] = 'linear_elastic_isotropic'
     for k in ('E', 'nu', 'rho'):
         if k in P:
@@ -446,7 +448,7 @@ def _launch_uncertainty(graph_id: str, body: dict, material=None):
         return jsonify({'error': 'Graph not found'}), 404
     keys = ('distributions', 'n_samples', 'confidence', 'seed', 'failure', 'method', 'rom_id')
     data = {k: v for k, v in body.items() if k not in keys}
-    data, err = prepare_spec(graph_id, data)
+    data, err = prepare_spec(graph_id, data, isotropic_only=True)
     if err:
         return err
     if not data.get('loads') or not data.get('bcs'):

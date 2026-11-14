@@ -90,7 +90,7 @@ def study_signature(spec: dict, material_id: str | None = None, n_dof: int | Non
     return {
         'geometry': ident,
         'mesh_source': spec.get('mesh_source'),
-        'E': float(mat.get('E', 210e9)), 'nu': float(mat.get('nu', 0.3)),
+        'E': float(mat.get('E') or mat.get('E1') or 210e9), 'nu': float(mat.get('nu', mat.get('nu12', 0.3))),
         'material_id': material_id,
         'order': int(mp.get('order', spec.get('element_order', 1)) or 1),
         'loads': loads, 'n_bcs': len(spec.get('bcs') or []), 'n_dof': n_dof,

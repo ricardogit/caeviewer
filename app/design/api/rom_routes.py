@@ -78,7 +78,7 @@ def build_rom(graph_id):
     except (ROMError, TypeError, ValueError) as e:
         return jsonify({'error': str(e), 'kind': 'settings'}), 422
     data = {k: v for k, v in body.items() if k not in keys and k != 'parameter_space'}
-    data, err = prepare_spec(graph_id, data)
+    data, err = prepare_spec(graph_id, data, isotropic_only=True)
     if err:
         return err
     if not data.get('loads') or not data.get('bcs'):

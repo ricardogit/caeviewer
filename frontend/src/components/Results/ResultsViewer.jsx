@@ -49,6 +49,19 @@ export function SummaryRows({ header }) {
       ['Carga alcanzada', s.plasticity.limit_load_reached
         ? `${fmt(100 * s.plasticity.load_factor)} % (carga límite)` : 'completa'],
     ] : []),
+    ...(s.hyperelastic ? [
+      ['Modelo', 'Neo-Hookean (grandes def.)'],
+      ['ε Green máx.', fmt(s.hyperelastic.max_green_strain)],
+      ['J mín.', fmt(s.hyperelastic.min_J)],
+      ['Carga alcanzada', s.hyperelastic.stopped_early
+        ? `${fmt(100 * s.hyperelastic.load_factor)} % (sin convergencia)` : 'completa'],
+    ] : []),
+    ...(s.viscoelastic ? [
+      ['Modelo', `Maxwell (${s.viscoelastic.prony?.length || 0} términos)`],
+      ['Tiempo final', `${fmt(s.viscoelastic.t_end_s)} s`],
+      ['E₀ / E∞', `${fmt(s.viscoelastic.E0 / 1e9)} / ${fmt(s.viscoelastic.E_inf / 1e9)} GPa`],
+      ['Despl. final / inicial', s.viscoelastic.creep_ratio != null ? `×${fmt(s.viscoelastic.creep_ratio)}` : '—'],
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
@@ -57,9 +70,13 @@ export function SummaryRows({ header }) {
     ['Elemento', s.element_type || '—'],
     ['Nodos / elementos', s.n_nodes ? `${s.n_nodes.toLocaleString()} / ${(s.n_elements || 0).toLocaleString()}` : '—'],
     ...(hasU ? [
-      ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
+      header?.material?.E1
+        ? ['E1 / E2 / E3', [header.material.E1, header.material.E2, header.material.E3].map(v => fmt(v / 1e9)).join(' / ') + ' GPa']
+        : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : [['k', header?.material?.k ? `${fmt(header.material.k)} W/m·K` : '—']]),
+    ] : [['k', header?.material?.k
+      ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
+      : '—']]),
   ];
   return (
     <Box sx={{ display: 'grid', gridTemplateColumns: 'auto auto', columnGap: 1.5, rowGap: 0.25 }}>

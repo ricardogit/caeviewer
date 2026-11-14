@@ -35,7 +35,18 @@ PHYSICS_LABELS = {
 }
 
 
-def prepare_spec(graph_id: str, data: dict, adjust=None, full_kernel: bool = False):
+# material models only the plain kernel run supports (Newton / time stepping)
+NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell')
+MATERIAL_LABELS = {
+    'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
+    'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',
+    'viscoelastic_maxwell': 'viscoelástico (Maxwell generalizado, pasos de tiempo)',
+    'linear_elastic_orthotropic': 'elástico ortótropo',
+}
+
+
+def prepare_spec(graph_id: str, data: dict, adjust=None, full_kernel: bool = False,
+                 isotropic_only: bool = False):
     """Merge the graph's solver spec under the request body, validate tier and check tier
     limits (413) before anything is enqueued. ``adjust(data)`` runs before the size check
     (e.g. topology forces linear elements). Returns (spec, None) or (None, (response, code)).
@@ -73,9 +84,14 @@ def prepare_spec(graph_id: str, data: dict, adjust=None, full_kernel: bool = Fal
         return None, (jsonify({'error': 'Esta herramienta solo admite estudios estructurales; el estudio '
                                         'tiene condiciones térmicas (usa Simular).',
                                'kind': 'physics_unsupported', 'physics': data.get('physics')}), 422)
-    if not full_kernel and (data.get('material') or {}).get('type') == 'elastoplastic_vonmises':
+    if not full_kernel and (data.get('material') or {}).get('type') in NONLINEAR_MATERIALS:
         return None, (jsonify({'error': 'Esta herramienta solo admite material elástico lineal; el estudio '
-                                        'usa plasticidad (usa Simular).', 'kind': 'nonlinear_unsupported'}), 422)
+                                        'usa un material no lineal (usa Simular).',
+                               'kind': 'nonlinear_unsupported'}), 422)
+    if isotropic_only and (data.get('material') or {}).get('type', 'linear_elastic_isotropic') not in (
+            'linear_elastic_isotropic', 'thermoelastic'):
+        return None, (jsonify({'error': 'Esta herramienta (ROM / incertidumbre) parametriza E y ν: solo admite '
+                                        'material elástico isótropo.', 'kind': 'anisotropic_unsupported'}), 422)
     if adjust:
         adjust(data)
         adjust = None
@@ -833,9 +849,11 @@ def preflight(graph_id):
         spec = graph_to_solver_spec(graph_id)
         out['physics'] = sorted(spec.get('physics') or ['structural'])
         out['physics_label'] = PHYSICS_LABELS.get(tuple(out['physics']), ' + '.join(out['physics']))
-        if (spec.get('material') or {}).get('type') == 'elastoplastic_vonmises':
-            out['physics_label'] = out['physics_label'].replace('(elástico lineal)', '').strip() +                 ' · elastoplástico J2 (Newton-Raphson)'
-            out['nonlinear'] = True
+        mtype = (spec.get('material') or {}).get('type')
+        if mtype in MATERIAL_LABELS:
+            out['physics_label'] = (out['physics_label'].replace('(elástico lineal)', '').strip()
+                                    + ' · ' + MATERIAL_LABELS[mtype])
+            out['nonlinear'] = mtype in NONLINEAR_MATERIALS
         out['tier_declared'] = int(spec.get('tier', g.tier if g.tier is not None else 1))
         out['mesh_source'] = spec.get('mesh_source')
         size = estimate_problem_size(spec)
