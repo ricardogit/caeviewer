@@ -52,8 +52,10 @@ SEED_RULES = [
     (_D + '4340' + _DE, 'aisi_4340'), (_L + r'a36' + _DE, 'astm_a36'), (_L + r's235', 's235jr'),
     (_L + r's355', 's355jr'),
     (r'ti-?64' + _DE + '|' + _D + r'6al-?4v', 'ti_6al_4v'), (r'(grade|gr\.?)\s*2' + _DE, 'ti_cp_gr2'),
-    (_D + '718' + _DE, 'inconel_718'), (_L + r'c?11000' + _DE, 'cu_c11000'), (_L + r'c?36000' + _DE, 'cu_c36000'),
+    (_D + '718' + _DE, 'inconel_718'), (_L + r'c?11000' + _DE, 'cu_c11000'), (_L + r'c?360(00)?' + _DE, 'cu_c36000'),
     (_L + r'az31', 'mg_az31b_h24'),
+    (_L + r'(gr[ae]y (cast )?iron|cast iron \(gr[ae]y\)|ci-gr[ae]y|gjl|fundici[oó]n gris)', 'en_gjl_250'),
+    (_L + r'(ductile|nodular|gjs)', 'en_gjs_400_15'),
     (_L + 'peek' + _LE, 'peek'), (_L + 'petg' + _LE, 'petg'), (_L + 'pla' + _LE, 'pla'), (_L + 'abs' + _LE, 'abs'),
     (_L + r'(pom|acetal|delrin)' + _LE, 'pom_h'), (_L + r'(pa6|pa 6|nylon 6)' + _DE, 'pa6_dry'),
     (_L + 'hdpe' + _LE, 'hdpe'), (_L + r'(polycarbonate|policarbonato)' + _LE, 'pc'),
@@ -148,7 +150,7 @@ def capp_entry(row: dict) -> dict:
     ref = f'CAPP {code}' + (f' ({std})' if std else '')
     if filled:
         ref += f' · {", ".join(filled)} del catálogo: {seed[1]}'
-    cat_raw = str(row.get('category') or '').strip()
+    cat_raw = str(row.get('category') or '').strip().replace('_', ' ')
     desc = str(row.get('description') or '').strip()
     note = ('Importado de CAPP (solo lectura: edítelo en CAPP y vuelva a importar).'
             + (f' Completado con valores típicos de «{seed[1]}»: {", ".join(filled)}.' if filled else ''))

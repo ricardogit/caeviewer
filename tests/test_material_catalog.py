@@ -160,6 +160,13 @@ def test_capp_entry_units_and_fill():
     assert match_seed(CAPP_ROWS[1]) == 'astm_a36'                          # by the declared standard
     assert match_seed({'code': '4140', 'standard_number': 'A36'}) == 'aisi_4140'   # code before standard
     assert capp_entry(CAPP_ROWS[2])['errors']                               # no E/ν, no catalog match
+    # rows as in the production CAPP
+    assert match_seed({'code': 'BR-C360', 'name': 'Brass C360 (Free-cutting)'}) == 'cu_c36000'
+    assert match_seed({'code': 'CI-GREY', 'name': 'Cast Iron (Grey)'}) == 'en_gjl_250'
+    assert match_seed({'code': 'TI-6-4', 'name': 'Titanium Ti-6Al-4V'}) == 'ti_6al_4v'
+    assert match_seed({'code': 'SS316', 'name': 'Stainless Steel 316'}) == 'aisi_316l'
+    assert capp_entry({'code': 'CI-GREY', 'name': 'Cast Iron (Grey)', 'category': 'cast_iron',
+                       'modulus_elasticity': 100})['category'] == 'Fundición'
     full = capp_entry({'code': 'Z', 'name': 'Z 6061', 'modulus_elasticity': 70, 'poissons_ratio': 0.32,
                        'thermal_expansion': 23})
     assert full['parameters']['E']['value'] == 70e9 and full['parameters']['nu']['value'] == 0.32
