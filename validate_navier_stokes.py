@@ -4,8 +4,8 @@
      with refinement (P2/P1: ~3 / ~2), Newton converges quadratically
   2. plane Poiseuille with inertia on: (v·∇)v = 0 for fully developed flow → exact like Stokes (1e-8)
   3. Stokes limit: ρ → 0 gives the Stokes solution
-  4. lid-driven cavity, Re = 100: centreline extrema vs the 1024² reference of Marchi, Suero & Araki (2009)
-     (u_min −0.21404, v_max 0.17957, v_min −0.25380); Ghia et al. (1982, 129² grid) shown for information
+  4. lid-driven cavity, Re = 100: centreline extrema vs the 1024² reference of Marchi, Suero & Araki (2009, Table 6:
+     u_min −0.2140417, v_max 0.1795728, v_min −0.253804); Ghia et al. (1982, 129² grid) shown for information
      (it differs ~1.5–3.5 % from the converged values)
 
 Usage: python validate_navier_stokes.py [--server http://127.0.0.1:8080]   (~1.5 min local)
@@ -17,7 +17,9 @@ from math import pi, sqrt, log
 
 import numpy as np
 
-MARCHI = {'umin': (-0.2140424, 0.4581), 'vmax': (0.1795728, 0.2370), 'vmin': (-0.2538030, 0.8104)}
+# Marchi, Suero & Araki, J. Braz. Soc. Mech. Sci. & Eng. 31(3) 2009, doi:10.1590/S1678-58782009000300004,
+# Table 6, Re = 100 (1024² grid; estimated discretisation error of the extrema ~1e-6, positions ±4.9e-4)
+MARCHI = {'umin': (-0.2140417, 0.45850), 'vmax': (0.179572814, 0.23682), 'vmin': (-0.253804, 0.81006)}
 GHIA = {'umin': (-0.21090, 0.4531), 'vmax': (0.17527, 0.2344), 'vmin': (-0.24533, 0.8047)}
 
 
