@@ -674,7 +674,14 @@ class FEMKernel:
 
             def prog(it, msg):
                 self._emit(socketio, run_id, min(30 + 3 * it, 90), msg, t_start)
-            v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog)
+            body = np.zeros(3)                       # uniform body force density for the SUPG residual
+            for ld in loads:
+                if 'gravity' in ld:
+                    body += float(ld.get('density', 0.0)) * np.asarray(ld['gravity'], float)
+                elif 'body_force' in ld:
+                    body += np.asarray(ld['body_force'], float)
+            v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog, stabilization=fm.stabilization,
+                                     body=body)
         else:
             self._emit(socketio, run_id, 30, f'Stokes: resolviendo velocidad + presión ({n_dof:,} incógnitas)',
                        t_start)
@@ -728,14 +735,15 @@ class FEMKernel:
             s['fluid']['navier_stokes'] = {k: ns[k] for k in ('iterations', 'picard_iterations', 'newton_iterations',
                                                               'continuation_steps', 'newton_residuals')}
             s['fluid']['navier_stokes']['element_reynolds_max'] = Re_h
+            s['fluid']['navier_stokes']['stabilization'] = fm.stabilization
             s['fluid']['navier_stokes']['curve'] = [{'it': i + 1, 'lambda': h['lambda'], 'mode': h['mode'],
                                                      'residual': h['residual']} for i, h in enumerate(ns['history'])]
             if Re > 2000:
                 warnings.append(f'Re ≈ {Re:.3g}: por encima de ~2000 el flujo suele ser turbulento o no estacionario; '
                                 'este modelo laminar estacionario no lo representa.')
-            if Re_h > 100:
+            if Re_h > 100 and not fm.stabilization:
                 warnings.append(f'Reynolds de elemento máx. ≈ {Re_h:.3g} (> 100): sin estabilización la solución puede '
-                                'oscilar entre nodos; refine la malla donde la velocidad es alta.')
+                                'oscilar entre nodos; active la estabilización SUPG o refine la malla donde la velocidad es alta.')
         elif Re > 1.0:
             warnings.append(f'Re ≈ {Re:.3g} > 1: el modelo de Stokes (flujo lento) desprecia la inercia; '
                             'el resultado no es fiable a este Reynolds. Active Navier-Stokes en el material.')

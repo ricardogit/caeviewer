@@ -4,7 +4,9 @@
  * only (Taylor-Hood P2-P1). ρ (above) is used for gravity, inertia and the Reynolds-number check.
  */
 import React from 'react';
-import { Box, Button, TextField, Typography, ToggleButton, ToggleButtonGroup } from '@mui/material';
+import {
+  Box, Button, FormControlLabel, Switch, TextField, Typography, ToggleButton, ToggleButtonGroup,
+} from '@mui/material';
 
 export const FLUID_PRESETS = [
   ['Agua 20 °C', { mu: 1.002e-3, rho: 998 }],
@@ -26,10 +28,22 @@ export default function FluidFields({ props, setProp }) {
       </ToggleButtonGroup>
       <Typography variant="caption" sx={{ color: '#888' }}>
         {(props.flow_model || 'stokes') === 'navier_stokes'
-          ? 'Incluye la inercia ρ(v·∇)v (Picard + Newton). Válido para flujo laminar estacionario (Re hasta ~10³); '
-            + 'sin estabilización: refine donde la velocidad sea alta.'
+          ? 'Incluye la inercia ρ(v·∇)v (Picard + Newton). Válido para flujo laminar estacionario (Re hasta ~10³).'
           : 'Flujo lento: desprecia la inercia. Si el resultado avisa Re > 1, cambie a Navier-Stokes.'}
       </Typography>
+      {props.flow_model === 'navier_stokes' && (
+        <>
+          <FormControlLabel
+            control={<Switch size="small" checked={props.stabilization === 'supg'}
+              onChange={(e) => setProp('stabilization', e.target.checked ? 'supg' : null)}
+              inputProps={{ 'aria-label': 'Estabilización SUPG' }} />}
+            label={<Typography variant="caption" sx={{ color: '#bbb' }}>Estabilización SUPG</Typography>} />
+          <Typography variant="caption" sx={{ color: '#777' }}>
+            Actívela si el resultado avisa Reynolds de elemento &gt; 100 (convección dominante, malla gruesa): evita
+            oscilaciones y ayuda a converger. En flujos bien resueltos resta algo de precisión; ahí es mejor sin ella.
+          </Typography>
+        </>
+      )}
       {(props.flow_model === 'navier_stokes') && !(props.rho > 0) && (
         <Typography variant="caption" sx={{ color: '#ef9a9a' }}>Navier-Stokes necesita la densidad ρ &gt; 0.</Typography>
       )}

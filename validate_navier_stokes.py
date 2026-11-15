@@ -7,6 +7,13 @@
   4. lid-driven cavity, Re = 100: centreline extrema vs the 1024² reference of Marchi, Suero & Araki (2009, Table 6:
      u_min −0.2140417, v_max 0.1795728, v_min −0.253804); Ghia et al. (1982, 129² grid) shown for information
      (it differs ~1.5–3.5 % from the converged values)
+  5. SUPG stabilisation (opt-in): Jacobian vs finite differences, consistency (Poiseuille stays exact), and the cavity
+     at Re = 1000 on n = 20 (element Re ≈ 80) vs Marchi et al. Table 6 (u_min −0.3885721, v_max 0.3769471,
+     v_min −0.527056): SUPG within 0.5 % and closer than plain Galerkin. Measured (both, % vs Marchi): n = 12
+     Galerkin +2…+6, SUPG −1.4…−5.5; n = 20 Galerkin 0.4–0.8, SUPG 0.04–0.18; n = 28 Galerkin 1.4–1.6, SUPG
+     0.4–0.55; n = 8 neither is usable (14–35 %). Convergence with n is not monotone for either (corner nodes of the
+     lid are at rest, the effective lid shortens by ~h). On well-resolved flows SUPG costs accuracy: Kovasznay
+     Re 40 velocity order 3.16 → 2.37 — use it only when the element Reynolds number is high.
 
 Usage: python validate_navier_stokes.py [--server http://127.0.0.1:8080]   (~1.5 min local)
 """
@@ -21,6 +28,8 @@ import numpy as np
 # Table 6, Re = 100 (1024² grid; estimated discretisation error of the extrema ~1e-6, positions ±4.9e-4)
 MARCHI = {'umin': (-0.2140417, 0.45850), 'vmax': (0.179572814, 0.23682), 'vmin': (-0.253804, 0.81006)}
 GHIA = {'umin': (-0.21090, 0.4531), 'vmax': (0.17527, 0.2344), 'vmin': (-0.24533, 0.8047)}
+# same Table 6, Re = 1000
+MARCHI_1000 = {'umin': (-0.3885721, 0.17139), 'vmax': (0.3769471, 0.15771), 'vmin': (-0.527056, 0.90967)}
 
 
 def slab(L, W, n, H=None):
@@ -28,9 +37,10 @@ def slab(L, W, n, H=None):
     return FEMMesh.generate_cantilever(L, W, H or L / n, n, order=2)
 
 
-def kernel(m, bcs, loads, mu, rho, inertia=True):
+def kernel(m, bcs, loads, mu, rho, inertia=True, supg=False):
     from app.design.services.fem.kernel import FEMKernel
-    mat = {'type': 'newtonian_fluid', 'mu': mu, 'rho': rho, **({'inertia': True} if inertia else {})}
+    mat = {'type': 'newtonian_fluid', 'mu': mu, 'rho': rho, **({'inertia': True} if inertia else {}),
+           **({'stabilization': 'supg'} if supg else {})}
     return FEMKernel()._solve(None, {'tier': 1, 'material': mat, 'bcs': bcs, 'loads': loads}, None, mesh=m)
 
 
@@ -61,13 +71,13 @@ def kovasznay(n, Re=40.0):
     return ev, ep, info['navier_stokes'], info['n_dof']
 
 
-def cavity(n, Re=100.0):
+def cavity(n, Re=100.0, supg=False):
     from app.design.services.validation.sensors import MeshProbe
     m = slab(1.0, 1.0, n)
     bcs = ([{'face_set': 'y1', 'dofs': [0, 1, 2], 'values': [1.0, 0, 0]}]          # lid u = 1
            + [{'face_set': f, 'dofs': [0, 1, 2]} for f in ('fixed', 'tip', 'y0')]  # walls (corners at rest)
            + [{'face_set': f, 'dofs': [2]} for f in ('z0', 'z1')])
-    r = kernel(m, bcs, [], 1.0 / Re, 1.0)
+    r = kernel(m, bcs, [], 1.0 / Re, 1.0, supg=supg)
     v = r['velocity']
     probe = MeshProbe(m.nodes, m.elements)
     s = np.linspace(0, 1, 1601)
@@ -135,6 +145,51 @@ def local(check):
               f'{lbl} = {val:.5f} en {pos:.3f}: ref. 1024² {ref:.5f} en {rpos:.3f} ({100 * err:.2f} %); '
               f'Ghia {g:.5f} ({100 * abs(val / g - 1):.1f} %)')
 
+    supg_checks(check)
+
+
+def supg_checks(check):
+    from app.design.services.fem import stokes as st
+    from app.design.services.fem.mesh import FEMMesh
+    print('── 5. Estabilización SUPG ──────────────────────────────────────────────')
+    m = FEMMesh.generate_cantilever(1.0, 1.0, 0.25, 3, order=2)
+    corners, _ = st.pressure_index(m)
+    rng = np.random.default_rng(3)
+    v, ph = rng.normal(size=(m.n_nodes, 3)), rng.normal(size=len(corners))
+    dv, dp = rng.normal(size=(m.n_nodes, 3)), rng.normal(size=len(corners))
+    f = np.array([0.3, -1.0, 0.2])
+    _, Jvv, Jvp = st.supg(m, v, ph, 50.0, f, 'newton')
+    fd = (st.supg(m, v + 1e-6 * dv, ph + 1e-6 * dp, 50.0, f, 'residual')[0]
+          - st.supg(m, v - 1e-6 * dv, ph - 1e-6 * dp, 50.0, f, 'residual')[0]) / 2e-6
+    e = float(np.abs(Jvv @ dv.ravel() + Jvp @ dp - fd).max() / np.abs(fd).max())
+    check(e < 1e-8, f'jacobiano SUPG exacto, incluida ∂τ/∂v (error {e:.1e})')
+
+    L, W, H, dpr, mu, rho = 4e-3, 2e-3, 1e-3, 2.0, 1e-3, 1000.0
+    m = slab(L, W, 8, H)
+    walls = [{'face_set': 'z0', 'dofs': [0, 1, 2]}, {'face_set': 'z1', 'dofs': [0, 1, 2]},
+             {'face_set': 'y0', 'dofs': [1]}, {'face_set': 'y1', 'dofs': [1]},
+             {'face_set': 'fixed', 'dofs': [1, 2]}, {'face_set': 'tip', 'dofs': [1, 2]}]
+    r = kernel(m, walls, [{'face_set': 'fixed', 'pressure': dpr}], mu, rho, supg=True)
+    z = m.nodes[:, 2]
+    u_th = dpr / (2 * mu * L) * z * (H - z)
+    e = float(np.abs(r['velocity'][:, 0] - u_th).max() / u_th.max())
+    check(e < 1e-8, f'consistente: Poiseuille con SUPG exacto (error {e:.1e})')
+
+    errs = {}
+    for supg in (False, True):
+        t = time.perf_counter()
+        got, s = cavity(20, Re=1000.0, supg=supg)
+        ns = s['fluid']['navier_stokes']
+        errs[supg] = {k: abs(got[k][0] / MARCHI_1000[k][0] - 1) for k in got}
+        print(f'   Re = 1000, n = 20, {"SUPG    " if supg else "Galerkin"}: '
+              + ', '.join(f'{k} {got[k][0]:.5f} ({100 * (got[k][0] / MARCHI_1000[k][0] - 1):+.2f} %)' for k in got)
+              + f' · Re de elemento {ns["element_reynolds_max"]:.0f}, {ns["picard_iterations"]} Picard + '
+              f'{ns["newton_iterations"]} Newton ({time.perf_counter() - t:.0f} s)')
+    worst = max(errs[True].values())
+    check(worst < 5e-3, f'cavidad Re = 1000 con SUPG dentro del 0.5 % de Marchi et al. (máx. {100 * worst:.2f} %)')
+    check(all(errs[True][k] < errs[False][k] for k in errs[True]),
+          'SUPG más cercano a la referencia que Galerkin en los tres extremos')
+
 
 def server(check, S):
     import json
@@ -184,6 +239,23 @@ def server(check, S):
             check(fl.get('model') == 'navier_stokes' and abs(q / Q_th - 1) < 1e-8,
                   f'modelo {fl.get("model")}, caudal {q:.6e} m³/s (teoría {Q_th:.6e}), Re = {fl["reynolds"]:.0f}, '
                   f'{fl["navier_stokes"]["iterations"]} iteraciones')
+        props = {'model_type': 'newtonian_fluid', 'mu': mu, 'rho': 998, 'flow_model': 'navier_stokes',
+                 'stabilization': 'supg'}
+        requests.put(f'{G}/{gid}/nodes/{mat}', json={'properties': props})
+        r = requests.post(f'{Vs}/{gid}/run', json={})
+        rid = r.json().get('run_id')
+        t0, st = time.perf_counter(), {}
+        while rid and time.perf_counter() - t0 < 300:
+            st = requests.get(f'{Vs}/{rid}/status').json()
+            if st.get('status') in ('done', 'failed', 'cancelled'):
+                break
+            time.sleep(1)
+        res = requests.get(f'{Vs}/{rid}/results').json() if st.get('status') == 'done' else {}
+        fl = (res.get('summary') or {}).get('fluid') or {}
+        q = next((f['flow_m3_s'] for f in fl.get('flow_rates', []) if f['face_set'] == 'tip'), None)
+        check(st.get('status') == 'done' and (fl.get('navier_stokes') or {}).get('stabilization') == 'supg'
+              and q is not None and abs(q / Q_th - 1) < 1e-8,
+              f"con SUPG: {st.get('status')} {st.get('error') or ''}, caudal {q} (teoría {Q_th:.6e})")
     finally:
         requests.delete(f'{G}/{gid}', params={'cascade': 1})
 

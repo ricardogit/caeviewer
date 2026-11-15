@@ -42,6 +42,11 @@ class FluidMaterial:
             raise ValueError('Fluido newtoniano: la densidad no puede ser negativa.')
         if self.inertia and not self.rho > 0:
             raise ValueError('Navier-Stokes: la inercia necesita la densidad ρ > 0.')
+        self.stabilization = spec.get('stabilization') or None     # 'supg' (Navier–Stokes only)
+        if self.stabilization not in (None, 'supg'):
+            raise ValueError(f'Fluido: estabilización desconocida {self.stabilization!r} (supg).')
+        if self.stabilization and not self.inertia:
+            raise ValueError('La estabilización SUPG solo se aplica a Navier-Stokes (inercia activada).')
 
 
 def pressure_index(mesh):
@@ -216,9 +221,10 @@ def convection(mesh, v: np.ndarray, newton: bool = True):
 
 def solve_ns(mesh, mat: FluidMaterial, F: np.ndarray, dofs: np.ndarray, vals: np.ndarray, *,
              tol: float = 1e-9, max_iter: int = 30, picard_switch: float = 2e-2, max_picard: int = 8,
-             progress=None):
+             progress=None, stabilization: str | None = None, body=None):
     """Steady Navier–Stokes. Returns (v, p, info) like ``solve`` plus info['navier_stokes'] with the iteration
-    history. ``progress(iteration, message)`` is called once per iteration."""
+    history. ``progress(iteration, message)`` is called once per iteration. ``stabilization='supg'`` adds
+    ``supg`` (``body`` = uniform body force density [N/m³] for its residual, e.g. ρg)."""
     from scipy.sparse.linalg import splu
     A, B, corners, pidx = assemble(mesh, 1.0)            # μ-normalised: unknowns v and p/μ
     n3, n_p = 3 * mesh.n_nodes, len(corners)
@@ -234,9 +240,15 @@ def solve_ns(mesh, mat: FluidMaterial, F: np.ndarray, dofs: np.ndarray, vals: np
     zero_p = sp.csr_matrix((n_p, n_p))
     k_rho = mat.rho / mat.mu
 
+    stab = stabilization == 'supg'
+    fhat = None if body is None else np.asarray(body, float) / mat.mu
+
     def residual(x, lam):
         C, _ = convection(mesh, x[:n3].reshape(-1, 3), newton=False)
-        return S @ x + np.concatenate([(lam * k_rho) * (C @ x[:n3]), np.zeros(n_p)]) - f
+        r = S @ x + np.concatenate([(lam * k_rho) * (C @ x[:n3]), np.zeros(n_p)]) - f
+        if stab:
+            r[:n3] += supg(mesh, x[:n3].reshape(-1, 3), x[n3:], lam * k_rho, fhat, 'residual')[0]
+        return r
 
     x0 = np.zeros(nx)                                    # Stokes start
     x0[cdofs] = cvals
@@ -257,6 +269,10 @@ def solve_ns(mesh, mat: FluidMaterial, F: np.ndarray, dofs: np.ndarray, vals: np
                 C, J = convection(mesh, x[:n3].reshape(-1, 3), newton=newton)
                 Kc = (C + J) if newton else C
                 Kt = S + sp.bmat([[(lam * k_rho) * Kc, None], [None, zero_p]], format='csr')
+                if stab:
+                    _, Jvv, Jvp = supg(mesh, x[:n3].reshape(-1, 3), x[n3:], lam * k_rho, fhat,
+                                       'newton' if newton else 'picard')
+                    Kt = Kt + sp.bmat([[Jvv, Jvp], [None, zero_p]], format='csr')
                 d = np.zeros(nx)
                 d[free] = splu(Kt[free][:, free].tocsc()).solve(-r[free])
                 rn0, alpha = float(np.linalg.norm(r[free])), 1.0
@@ -311,6 +327,7 @@ def solve_ns(mesh, mat: FluidMaterial, F: np.ndarray, dofs: np.ndarray, vals: np
     return v, p, {'n_dof': int(nx), 'n_pressure': int(n_p), 'pressure_pinned': pin,
                   'residual': float(np.linalg.norm(r[free]) / ref), 'reaction': R,
                   'navier_stokes': {'converged': True, 'iterations': len(history), 'picard_iterations': n_pic,
+                                    'stabilization': 'supg' if stab else None,
                                     'newton_iterations': n_newt, 'continuation_steps': len(ramp),
                                     'history': history,
                                     'newton_residuals': [h['residual'] for h in final if h['mode'] == 'newton']}}
@@ -322,3 +339,85 @@ def element_reynolds_max(mesh, v: np.ndarray, mat: FluidMaterial) -> float:
     h = np.max([np.linalg.norm(X[:, i] - X[:, j], axis=1) for i in range(4) for j in range(i + 1, 4)], axis=0)
     vm = np.linalg.norm(v[mesh.elements], axis=2).max(axis=1)
     return float((mat.rho * vm * h / mat.mu).max())
+
+
+# ── SUPG stabilisation (Navier–Stokes, advection-dominated) ─────────────────
+
+def supg(mesh, v: np.ndarray, ph: np.ndarray, k: float, fhat=None, mode: str = 'newton'):
+    """Residual-based SUPG for Taylor-Hood P2-P1 in the μ-normalised form (unknowns v and p̂ = p/μ):
+
+        R_S = Σ_e ∫ τ (v·∇w) · r dV,   r = k (v·∇)v + ∇p̂ − Δv − f̂,   k = ρ/μ,
+        τ = ((2|v|/h̃)² + (12/(k h̃²))²)^(-1/2)   [s],   h̃ = h/2 (h = longest corner edge, P2)
+
+    Consistent (r = 0 for the exact solution); no PSPG (Taylor-Hood is inf-sup stable). Δv and ∇p̂ use the
+    straight (corner) geometry: exact on straight T10, an approximation on curved ones.
+    mode: 'residual' → R only; 'picard' → + Oseen-linearised operator (τ and the advecting velocity frozen);
+    'newton' → + exact Jacobian (including ∂τ/∂v). Returns (R (3N,), Jvv (3N×3N) | None, Jvp (3N×Np) | None)."""
+    n = mesh.n_nodes
+    corners, pidx = pressure_index(mesh)
+    Ns, geo = _geometry(mesh)
+    fhat = np.zeros(3) if fhat is None else np.asarray(fhat, float)
+    R = np.zeros(3 * n)
+    jac = mode in ('picard', 'newton')
+    rv, cv, vv, rp, cp, vp = [], [], [], [], [], []
+    eye = np.eye(3)
+    edges = tb.T10_EDGES
+    for a in range(0, mesh.n_elements, 4000):
+        el = mesh.elements[a:a + 4000]
+        m = len(el)
+        Xc = mesh.nodes[el[:, :4]]
+        _, gL = tb._jac(Xc, tb.dshape('T4', (0.25, 0.25, 0.25)))                 # ∇L_i (m,3,4), constant
+        lap = np.zeros((m, 10))
+        for i in range(4):
+            lap[:, i] = 4.0 * np.einsum('ma,ma->m', gL[:, :, i], gL[:, :, i])
+        for e_, (i, j) in enumerate(edges):
+            lap[:, 4 + e_] = 8.0 * np.einsum('ma,ma->m', gL[:, :, i], gL[:, :, j])
+        h = np.max([np.linalg.norm(Xc[:, i] - Xc[:, j], axis=1) for i in range(4) for j in range(i + 1, 4)], axis=0)
+        ht = 0.5 * h
+        ve = v[el]                                                                # (m,10,3)
+        gp = np.einsum('mci,mi->mc', gL, ph[pidx[el[:, :4]]])                     # ∇p̂ (m,3)
+        dv = np.einsum('mj,mjc->mc', lap, ve)                                     # Δv (m,3)
+        Re_ = np.zeros((m, 10, 3))
+        Jv = np.zeros((m, 10, 3, 10, 3)) if jac else None
+        Jp = np.zeros((m, 10, 3, 4)) if jac else None
+        for N, (wdet, dNall) in zip(Ns, geo):
+            w, dN = wdet[a:a + 4000], dNall[a:a + 4000]
+            vq = np.einsum('n,mnc->mc', N, ve)
+            G = np.einsum('mjc,mdj->mcd', ve, dN)                                 # ∂v_c/∂x_d
+            r = k * np.einsum('mcd,md->mc', G, vq) + gp - dv - fhat[None, :]
+            adv = np.einsum('md,mdj->mj', vq, dN)                                 # v·∇N_j
+            tau = 1.0 / np.sqrt((2 * np.linalg.norm(vq, axis=1) / ht) ** 2 + (12.0 / (k * ht ** 2)) ** 2)
+            wt = w * tau
+            Re_ += wt[:, None, None] * adv[:, :, None] * r[:, None, :]
+            if not jac:
+                continue
+            Jp += wt[:, None, None, None] * adv[:, :, None, None] * gL[:, None, :, :]
+            # δr_c/δv_jd (frozen advection part) = δ_cd (k adv_j − lap_j)
+            base = k * adv - lap
+            Jv += (wt[:, None, None, None, None] * adv[:, :, None, None, None]
+                   * eye[None, None, :, None, :] * base[:, None, None, :, None])
+            if mode == 'newton':
+                # + τ adv_i k N_j G_cd   (δ of the convected gradient's velocity factor)
+                Jv += (wt * k)[:, None, None, None, None] * adv[:, :, None, None, None] \
+                    * N[None, None, None, :, None] * G[:, None, :, None, :]
+                # + τ N_j ∂_d N_i r_c    (δ of the streamline test function)
+                Jv += wt[:, None, None, None, None] * dN.transpose(0, 2, 1)[:, :, None, None, :] \
+                    * r[:, None, :, None, None] * N[None, None, None, :, None]
+                # + ∂τ/∂v_jd adv_i r_c,  ∂τ/∂v_jd = −4 τ³ vq_d N_j / h̃²
+                dtau = (-4.0 * w * tau ** 3 / ht ** 2)[:, None, None] * vq[:, None, :] * N[None, :, None]   # (m,j,d)
+                Jv += adv[:, :, None, None, None] * r[:, None, :, None, None] * dtau[:, None, None, :, :]
+        dofs = tb.element_dofs(el)                                                # (m,30)
+        np.add.at(R, dofs, Re_.reshape(m, 30))
+        if jac:
+            rv.append(np.repeat(dofs, 30, axis=1).ravel())
+            cv.append(np.tile(dofs, (1, 30)).ravel())
+            vv.append(Jv.reshape(m, 30, 30).ravel())
+            pc = pidx[el[:, :4]]
+            rp.append(np.repeat(dofs, 4, axis=1).ravel())
+            cp.append(np.tile(pc, (1, 30)).ravel())
+            vp.append(Jp.reshape(m, 30, 4).ravel())
+    if not jac:
+        return R, None, None
+    Jvv = sp.csr_matrix((np.concatenate(vv), (np.concatenate(rv), np.concatenate(cv))), shape=(3 * n, 3 * n))
+    Jvp = sp.csr_matrix((np.concatenate(vp), (np.concatenate(rp), np.concatenate(cp))), shape=(3 * n, len(corners)))
+    return R, Jvv, Jvp

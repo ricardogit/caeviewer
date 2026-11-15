@@ -80,3 +80,44 @@ def test_stokes_hash_unchanged_and_inertia_hashed():
     ns = {**base, 'material': {**base['material'], 'inertia': True}}
     assert 'inertia' not in canonical_inputs(base)['material']
     assert canonical_inputs(ns) != canonical_inputs(base)
+
+
+# ── SUPG stabilisation ───────────────────────────────────────────────────────
+
+def test_supg_jacobian_matches_finite_differences():
+    m = FEMMesh.generate_cantilever(1.0, 1.0, 0.25, 3, order=2)
+    corners, _ = st.pressure_index(m)
+    rng = np.random.default_rng(3)
+    v, ph = rng.normal(size=(m.n_nodes, 3)), rng.normal(size=len(corners))
+    dv, dp = rng.normal(size=(m.n_nodes, 3)), rng.normal(size=len(corners))
+    f = np.array([0.3, -1.0, 0.2])
+    _, Jvv, Jvp = st.supg(m, v, ph, 50.0, f, 'newton')
+    e = 1e-6
+    fd = (st.supg(m, v + e * dv, ph + e * dp, 50.0, f, 'residual')[0]
+          - st.supg(m, v - e * dv, ph - e * dp, 50.0, f, 'residual')[0]) / (2 * e)
+    assert np.abs(Jvv @ dv.ravel() + Jvp @ dp - fd).max() < 1e-8 * np.abs(fd).max()
+    _, P, Pp = st.supg(m, v, ph, 50.0, None, 'picard')                # Oseen operator reproduces the residual
+    R = st.supg(m, v, ph, 50.0, None, 'residual')[0]
+    assert np.abs(P @ v.ravel() + Pp @ ph - R).max() < 1e-12 * np.abs(R).max()
+
+
+def test_supg_is_consistent_poiseuille_exact(channel):
+    m, dp, mu, L, H = channel, 2.0, 1e-3, 4e-3, 1e-3
+    r = _run(m, {'type': 'newtonian_fluid', 'mu': mu, 'rho': 1000.0, 'inertia': True, 'stabilization': 'supg'},
+             WALLS, [{'face_set': 'fixed', 'pressure': dp}])
+    z = m.nodes[:, 2]
+    u = dp / (2 * mu * L) * z * (H - z)
+    assert np.abs(r['velocity'][:, 0] - u).max() < 1e-8 * u.max()
+    assert r['summary']['fluid']['navier_stokes']['stabilization'] == 'supg'
+
+
+def test_supg_option_validation_and_hash():
+    from app.design.services.traceability.hasher import canonical_inputs
+    with pytest.raises(ValueError, match='SUPG'):
+        st.FluidMaterial({'mu': 1e-3, 'rho': 1000, 'stabilization': 'supg'})          # Stokes
+    with pytest.raises(ValueError, match='desconocida'):
+        st.FluidMaterial({'mu': 1e-3, 'rho': 1000, 'inertia': True, 'stabilization': 'gls'})
+    base = {'material': {'type': 'newtonian_fluid', 'mu': 1e-3, 'rho': 998.0, 'inertia': True}, 'physics': ['fluid'],
+            'bcs': [], 'loads': []}
+    stab = {**base, 'material': {**base['material'], 'stabilization': 'supg'}}
+    assert canonical_inputs(stab) != canonical_inputs(base)

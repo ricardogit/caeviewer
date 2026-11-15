@@ -337,12 +337,21 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   'navier_stokes'`, needs ρ > 0; absent → Stokes, hashes unchanged). Galerkin convection ∫w·ρ(v·∇)v (degree-5 rule,
   geometry cached on the mesh), Stokes start → Picard (Oseen) until the step < 2 % (max 8) → Newton (C + J, exact
   Jacobian, checked vs finite differences) with backtracking; on failure ρ is ramped (2, 4, 8, 16 steps), then
-  ValueError. No SUPG/PSPG: warning when element Re ρ|v|h/μ > 100, and when Re > 2000 (turbulent, not modelled).
+  ValueError. Warning when element Re ρ|v|h/μ > 100 without SUPG, and when Re > 2000 (turbulent, not modelled).
   Summary `fluid.model` stokes|navier_stokes, `fluid.navier_stokes` {iterations, picard/newton, continuation_steps,
   newton_residuals, element_reynolds_max, curve}. UI toggle in `FluidFields.jsx`. Hito `python validate_navier_stokes.py
   [--server …]` (~1 min): Kovasznay Re 40 (velocity order 3.16, pressure 2.11, Newton quadratic), Poiseuille with
   inertia exact, Stokes limit, lid-driven cavity Re 100 within 0.21 % of the 1024² reference (Ghia 129²: 1.4–3.4 %).
   Tests `tests/test_navier_stokes.py`. Still steady and laminar only (no turbulence, no transient).
+- **SUPG** (`stokes.supg`, opt-in: material `stabilization: 'supg'`, graph MATERIAL `stabilization` with
+  `flow_model: 'navier_stokes'`, UI switch in `FluidFields.jsx`; absent → unchanged results and hashes; on Stokes →
+  ValueError). Residual-based ∫τ(v·∇w)·r, r = ρ(v·∇)v + ∇p − μΔv − f (body force = gravity / body_force loads),
+  τ = ((2|v|/h̃)² + (12ν/h̃²)²)^(-1/2), h̃ = h/2; Δv and ∇p from the straight corner geometry (exact on straight T10).
+  No PSPG (Taylor-Hood is inf-sup stable). Exact Jacobian incl. ∂τ/∂v (checked vs finite differences), Picard uses
+  the frozen Oseen form. Summary `fluid.navier_stokes.stabilization`. Hito case 5 of `validate_navier_stokes.py`:
+  Poiseuille stays exact; cavity Re 1000, n = 20: SUPG 0.04–0.18 % vs Marchi Table 6 (Galerkin 0.4–0.8 %); n = 28
+  0.4–0.55 % vs 1.4–1.6 %; n ≤ 12 neither is accurate. Costs accuracy on well-resolved flows (Kovasznay Re 40
+  velocity order 3.16 → 2.37): recommend it only for high element Re.
 - `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
   potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
   the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes); coils (MMF

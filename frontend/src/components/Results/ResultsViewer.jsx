@@ -76,7 +76,8 @@ export function SummaryRows({ header }) {
       ...(s.fluid.navier_stokes ? [
         ['Iteraciones', `${s.fluid.navier_stokes.picard_iterations} Picard + ${s.fluid.navier_stokes.newton_iterations} Newton`
           + (s.fluid.navier_stokes.continuation_steps > 1 ? ` · ${s.fluid.navier_stokes.continuation_steps} pasos de Re` : '')],
-        ['Re de elemento máx.', `${fmt(s.fluid.navier_stokes.element_reynolds_max)}${s.fluid.navier_stokes.element_reynolds_max > 100 ? ' ⚠ > 100' : ''}`],
+        ['Re de elemento máx.', `${fmt(s.fluid.navier_stokes.element_reynolds_max)}${s.fluid.navier_stokes.stabilization
+          ? ' · SUPG' : (s.fluid.navier_stokes.element_reynolds_max > 100 ? ' ⚠ > 100' : '')}`],
       ] : []),
       ['|v| máx.', `${fmt(s.fluid.max_velocity_m_s * 1e3)} mm/s`],
       ['Presión', `${fmt(s.fluid.min_pressure_pa)} … ${fmt(s.fluid.max_pressure_pa)} Pa`],

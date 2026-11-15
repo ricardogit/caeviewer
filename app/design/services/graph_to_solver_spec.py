@@ -107,6 +107,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 if not spec['material']['rho'] > 0:
                     raise GraphSpecError(f'"{mat_node.label}": Navier-Stokes necesita la densidad ρ > 0.')
                 spec['material']['inertia'] = True
+                if props.get('stabilization') == 'supg':     # opt-in: unstabilised studies keep their hash
+                    spec['material']['stabilization'] = 'supg'
         elif spec['material']['type'] == 'linear_magnetic':
             mu_r = props.get('mu_r')
             if mu_r in (None, '') or float(mu_r) <= 0:
