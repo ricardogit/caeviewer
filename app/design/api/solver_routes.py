@@ -35,7 +35,7 @@ PHYSICS_LABELS = {
     ('piezoelectric',): 'Piezoeléctrico 3D (desplazamiento + potencial eléctrico)',
     ('piezoelectric', 'thermal'): 'Termo-piezoeléctrico 3D (térmico → desplazamiento + potencial, piroeléctrico)',
     ('fluid',): 'Fluido newtoniano 3D (Stokes o Navier-Stokes laminar estacionario)',
-    ('magnetic',): 'Magnetostática 3D (potencial escalar, sin corrientes)',
+    ('magnetic',): 'Magnetostática 3D (potencial escalar; bobinas N·I, saturación B-H)',
 }
 
 

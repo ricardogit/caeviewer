@@ -88,15 +88,23 @@ export function SummaryRows({ header }) {
         ? (s.fluid.reynolds > 2000 ? ' ⚠ > 2000' : '') : (s.fluid.reynolds > 1 ? ' ⚠ > 1' : '')}`],
     ] : []),
     ...(s.magnetic ? [
-      ['Modelo', `Magnético · μr = ${fmt(s.magnetic.mu_r)}${(s.magnetic.Br_T || []).some(b => b)
+      ['Modelo', `Magnético · μr${s.magnetic.saturation ? ' inicial' : ''} = ${fmt(s.magnetic.mu_r)}${(s.magnetic.Br_T || []).some(b => b)
         ? ` · Br = [${s.magnetic.Br_T.map(fmt).join(', ')}] T` : ''}`],
+      ...(s.magnetic.saturation ? [['Saturación', `${s.magnetic.saturation.model === 'tanh'
+        ? `Js = ${fmt(s.magnetic.saturation.Js)} T` : `tabla B-H (${(s.magnetic.saturation.points || []).length} puntos)`}`
+        + ` · μr mín. ${fmt(s.magnetic.saturation.min_mu_r)} · Newton ${s.magnetic.saturation.newton_iterations} it`]] : []),
       ['|B| máx.', `${fmt(s.magnetic.max_B_T)} T`],
       ['|H| máx.', `${fmt(s.magnetic.max_H_A_m / 1e3)} kA/m`],
       ['Potencial ψ', `${fmt(s.magnetic.min_potential_A)} … ${fmt(s.magnetic.max_potential_A)} A`],
       ...(s.magnetic.poles || []).map((p, i) => [`Polo ${p.label || i + 1}`,
         `ψ = ${fmt(p.potential_A)} A · Φ = ${fmt(p.flux_in_Wb * 1e6)} µWb (${p.flux_in_Wb >= 0 ? 'entra' : 'sale'})`]),
       ...(s.magnetic.permeance_H != null ? [['Permeancia (L para 1 vuelta)', `${fmt(s.magnetic.permeance_H * 1e6)} µH`]] : []),
-      ['Energía del campo', `${fmt(s.magnetic.field_energy_J * 1e3)} mJ`],
+      ['Energía del campo', `${fmt(s.magnetic.field_energy_J * 1e3)} mJ`
+        + (s.magnetic.coenergy_J != null ? ` · coenergía ${fmt(s.magnetic.coenergy_J * 1e3)} mJ` : '')],
+      ...(s.magnetic.coils || []).flatMap((c, i) => [
+        [`Bobina ${c.label || i + 1}`, `${fmt(c.turns)} vueltas × ${fmt(c.current_A)} A · λ = ${fmt(c.flux_linkage_Wb * 1e3)} mWb`],
+        ['Inductancia', `secante ${fmt(c.L_secant_H * 1e3)} mH · incremental ${fmt(c.L_incremental_H * 1e3)} mH`],
+      ]),
     ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],

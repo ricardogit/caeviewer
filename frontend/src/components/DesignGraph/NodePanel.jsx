@@ -19,7 +19,7 @@ import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields from './PiezoFields';
 import FluidFields from './FluidFields';
-import MagneticFields from './MagneticFields';
+import MagneticFields, { CoilFields } from './MagneticFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -33,7 +33,7 @@ export const MATERIAL_TYPES = [
   ['piezoelectric', 'Piezoeléctrico (6mm, u + φ)', true],
   ['thermopiezoelectric', 'Termo-piezoeléctrico (α, piroeléctrico p3)', true],
   ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
-  ['linear_magnetic', 'Magnético lineal (μr, imán Br)', true],
+  ['linear_magnetic', 'Magnético (μr, imán Br, saturación B-H)', true],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -44,6 +44,7 @@ const BC_TYPES = [
   ['voltage', 'Potencial eléctrico / electrodo (piezo)'],
   ['velocity', 'Velocidad impuesta / entrada (fluido)'],
   ['magnetic_potential', 'Potencial magnético / polo (magnético)'],
+  ['coil', 'Bobina N·I (magnético)'],
 ];
 const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
 const LOAD_TYPES = [
@@ -381,6 +382,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </>
               );
             })()}
+            {props.bc_type === 'coil' && <CoilFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />}
             {props.bc_type === 'velocity' && (
               <>
                 <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -412,7 +414,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 )}
               </>
             )}
-            {props.bc_type !== 'symmetry' && props.bc_type !== 'velocity' && !SCALAR_BC[props.bc_type] && (
+            {!['symmetry', 'velocity', 'coil'].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
               <Box>
                 <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
                   Desplazamientos restringidos:
@@ -449,7 +451,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </Box>
               </Box>
             )}
-            {!SCALAR_BC[props.bc_type] && props.bc_type !== 'velocity' && (
+            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil'].includes(props.bc_type) && (
               <TextField
                 label="Desplazamiento prescrito [m]"
                 size="small" fullWidth type="number"

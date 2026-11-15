@@ -7,7 +7,7 @@ import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields, { PZT5H } from './PiezoFields';
 import FluidFields from './FluidFields';
-import MagneticFields from './MagneticFields';
+import MagneticFields, { CoilFields, parseBH } from './MagneticFields';
 import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
 
@@ -51,6 +51,22 @@ describe('material model fields (item 8)', () => {
     fireEvent.click(screen.getByText('PZT-5H'));
     expect(setProp).toHaveBeenCalledWith('e33', PZT5H.e33);
     expect(setProp).toHaveBeenCalledTimes(Object.keys(PZT5H).length);
+  });
+
+  it('magnetic saturation: B-H table parsing, Js field and coil MMF', () => {
+    expect(parseBH('100 0.25\n300;0.9\nmal\n1000, 1.4')).toEqual([[100, 0.25], [300, 0.9], [1000, 1.4]]);
+    const setProp = vi.fn();
+    const { rerender } = render(<MagneticFields props={{ mu_r: 2000, saturation: 'tanh' }} setProp={setProp} />);
+    expect(screen.getByLabelText('μr inicial')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Polarización de saturación Js [T]'), { target: { value: '2' } });
+    expect(setProp).toHaveBeenCalledWith('Js', 2);
+    rerender(<MagneticFields props={{ saturation: 'table' }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Curva B-H'), { target: { value: '100 0.25\n300 0.9' } });
+    expect(setProp).toHaveBeenCalledWith('bh_points', [[100, 0.25], [300, 0.9]]);
+    expect(screen.getByText(/2 puntos/)).toBeTruthy();
+    cleanup();
+    render(<CoilFields props={{ turns: 200, current: 1.5 }} setProp={setProp} showFaceSet />);
+    expect(screen.getByText(/N·I = 300.0 A·vuelta/)).toBeTruthy();
   });
 
   it('thermo-piezo: asks for p3, α and k and edits p3', () => {

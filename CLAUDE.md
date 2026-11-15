@@ -345,8 +345,8 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   Tests `tests/test_navier_stokes.py`. Still steady and laminar only (no turbulence, no transient).
 - `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
   potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
-  the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes), no coils /
-  currents, no saturation. BC `{'magnetic_potential': ψ, face_set}` = equipotential pole face against ideal iron
+  the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes); coils (MMF
+  across a core cut) and saturation below. BC `{'magnetic_potential': ψ, face_set}` = equipotential pole face against ideal iron
   (B normal); the ψ difference between two faces is the MMF (a coil's N·I enters as the jump across a cut, e.g. the
   toroid hito); load `{'magnetic_flux': Bn [T], face_set}` (positive enters); free faces are flux walls (Bn = 0).
   No potential BC → node 0 pinned (imposed fluxes must balance, else ValueError). Mechanical/thermal conditions →
@@ -360,6 +360,22 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   [--server …]`: bar circuit (B, permeance μA/L, energy), magnet short / open circuit (tilted Br), imposed flux,
   harmonic quadratic ψ — all exact (1e-13); quarter toroidal core permeance μt·ln(b/a)/(π/2) to 1e-6, order 3.7.
   Tests `tests/test_magnetic.py`.
+- **Saturation and coils** (`magnetic.py`): material `bh_curve` = `{'model': 'tanh', 'mu_r', 'Js'}` (B = μ₀H +
+  Js·tanh(μ₀(μr−1)H/Js)) or `{'model': 'table', 'points': [[H, B]…]}` (PCHIP through (0,0), slope μ₀ after the last
+  point; H, B strictly increasing, B/H ≥ μ₀); saturation + Br → error. `solve_nonlinear`: Newton on
+  Fint = ∫∇Nᵀ(−B)/μ₀ with the exact tangent (b/h)I + (b′ − b/h)ĥĥᵀ (checked vs finite differences), backtracking,
+  linear start at μr initial or tangent predictor from the previous sweep point, excitation sub-steps on failure.
+  Coil = BC `{'magnetic_potential': N·I, 'coil': {turns, current, steps}, face_set}` relative to the other pole
+  faces (MMF across the core cut; needs a reference BC). Any coil or curve → `FEMKernel._solve_magnetic_sweep`:
+  coil potentials swept in `steps` (default 10 with saturation, else 1); summary `magnetic.coils` / `curve`
+  (current, λ = NΦ, L secant, L incremental = N²·`differential_permeance` (tangent solve, exact), max B, energy,
+  co-energy), `saturation` {model, mu_r_initial, min_mu_r, newton_iterations}; extra field `mur`; material_model
+  `saturable_magnetic`. Linear studies without coils keep the old path (hashes unchanged). Graph: MATERIAL
+  `saturation` none|tanh|table + `Js` / `bh_points`; BC `bc_type: 'coil'` (turns, current, current_steps, default face
+  `tip`). UI `MagneticFields.jsx` (saturation selector, B-H table, saturable presets — typical values, not datasheets)
+  and `CoilFields`. Hito cases 7–10 of `validate_magnetic.py`: saturating bar with coil exact (λ, both inductances,
+  λI = W + W′, 1e-12), saturated quarter toroid vs ∫b(H(r)) dr 1e-6, order 3.1–3.3, Newton quadratic (3 it). Still one
+  material region: no air gaps or coils in air.
 - `ThermoPiezoelectric` (`constitutive.py`, `fem/piezo.py`): piezo + one-way thermal coupling, σ = Cᴱ(ε − αΔT) − eᵀE,
   D = eε + κˢE + pΔT with p = Rᵀ[0, 0, p3] (pyroelectric, poling axis). Keys = piezo + `alpha` (scalar or [α1..α3]
   along the material axes), `p3` [C/(m²·K)], `T_ref`, `k` (scalar or list). Spec physics ['thermal', 'piezoelectric']:

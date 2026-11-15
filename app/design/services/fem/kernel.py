@@ -766,6 +766,8 @@ class FEMKernel:
                              f'hay {other} condiciones mecánicas/térmicas.')
         if not bcs and not loads and not np.any(mm.Br):
             raise ValueError('Magnético: sin imán (Br), potencial ni flujo impuesto el campo es nulo.')
+        if mm.curve is not None or any(mg.is_coil(b) for b in bcs):
+            return self._solve_magnetic_sweep(mesh, mesh_meta, mm, bcs, loads, tier, socketio, run_id, t_start)
         self._emit(socketio, run_id, 30, f'magnetostática: resolviendo ψ ({mesh.n_nodes:,} incógnitas)', t_start)
         disp = FEMSolverDispatcher()
         info_lin: dict = {}
@@ -814,6 +816,99 @@ class FEMKernel:
         return {
             'magnetic_potential': psi,
             'extra_fields': {'Bmag': Bm, 'Bx': B[:, 0], 'By': B[:, 1], 'Bz': B[:, 2], 'Hmag': Hm / 1e3, 'psi': psi},
+            'solve_info': {'method': s['solver_method'], 'converged': s['converged'], 'final_residual': resid},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    def _solve_magnetic_sweep(self, mesh, mesh_meta, mm, bcs, loads, tier, socketio, run_id, t_start) -> dict:
+        """Coil excitation and / or saturation: the coil potentials (ψ = N·I on the coil's faces, relative to
+        the other pole faces) are swept from I/steps to I; saturating materials are solved by Newton from the
+        previous point. Reports the magnetisation curve λ(I) = N·Φ with secant and incremental inductance."""
+        from app.design.services.fem import magnetic as mg
+        coils = [i for i, b in enumerate(bcs) if mg.is_coil(b)]
+        curve = mm.curve
+        steps = max([int(bcs[i]['coil'].get('steps') or 0) for i in coils] + [0]) or (10 if curve and coils else 1)
+        disp = FEMSolverDispatcher()
+        info_lin: dict = {}
+
+        def lin(Kf, r):
+            x, inf = disp.solve_linear(Kf, r, tier=tier, tol=1e-12)
+            info_lin.update(inf)
+            return x
+
+        rows, psi, info, newton_its = [], None, {}, 0
+        for k in range(1, steps + 1):
+            lam = k / steps
+            bk = [({**b, 'magnetic_potential': lam * float(b['magnetic_potential'])} if i in coils else b)
+                  for i, b in enumerate(bcs)]
+            if curve is not None:
+                psi, info = mg.solve_nonlinear(mesh, curve, bk, loads, psi0=psi, linear_solve=lin)
+                newton_its += info['newton_iterations']
+                H, B = mg.fields_nonlinear(mesh, psi, curve)
+            else:
+                psi, info = mg.solve(mesh, mm, bk, loads, linear_solve=lin)
+                info['energy_J'] = mg.energy(mesh, psi, mm)
+                info['coenergy_J'] = info['energy_J']
+                H, B = mg.fields(mesh, psi, mm)
+            row = {'factor': lam, 'max_B_T': float(np.linalg.norm(B, axis=1).max()),
+                   'energy_J': info['energy_J'], 'coenergy_J': info['coenergy_J'], 'coils': []}
+            for i in coils:
+                c = bcs[i]['coil']
+                N, I = float(c['turns']), lam * float(c['current'])
+                phi = info['flux_in_Wb'][i]
+                dP = mg.differential_permeance(mesh, psi, bk, i, curve=curve, mat=mm, linear_solve=lin)
+                row['coils'].append({'current_A': I, 'mmf_A': N * I, 'flux_Wb': phi, 'flux_linkage_Wb': N * phi,
+                                     'L_secant_H': N * phi / I if I else None, 'L_incremental_H': N * N * dP})
+            rows.append(row)
+            self._emit(socketio, run_id, 30 + int(60 * k / steps),
+                       f'magnetostática: paso {k}/{steps}, |B| máx {row["max_B_T"]:.3g} T'
+                       + (f', Newton {info["newton_iterations"]} it' if curve is not None else ''), t_start)
+        Bm, Hm = np.linalg.norm(B, axis=1), np.linalg.norm(H, axis=1)
+        last = rows[-1]
+        poles = [{'label': b.get('label'), 'potential_A': float(b['magnetic_potential']),
+                  'face_set': b.get('face_set') if isinstance(b.get('face_set'), str)
+                  else f"{len(b.get('face_set') or [])} caras", 'flux_in_Wb': f,
+                  **({'coil': True} if i in coils else {})} for i, (b, f) in enumerate(zip(bcs, info['flux_in_Wb']))]
+        mag = {'mu_r': mm.mu_r if curve is None else curve.mu_r_initial, 'Br_T': mm.Br.tolist(),
+               'max_B_T': float(Bm.max()), 'max_H_A_m': float(Hm.max()),
+               'min_potential_A': float(psi.min()), 'max_potential_A': float(psi.max()), 'poles': poles,
+               'flux_loads': info['loads'], 'field_energy_J': last['energy_J'], 'coenergy_J': last['coenergy_J'],
+               'potential_pinned': info['pinned'], 'sweep_steps': steps,
+               'coils': [{'label': bcs[i].get('label'), 'turns': float(bcs[i]['coil']['turns']),
+                          **last['coils'][j]} for j, i in enumerate(coils)],
+               'curve': [{'factor': r['factor'], 'max_B_T': r['max_B_T'], 'energy_J': r['energy_J'],
+                          'coenergy_J': r['coenergy_J'], **(r['coils'][0] if r['coils'] else {})} for r in rows]}
+        if curve is not None:
+            mur = curve.ratio(Hm) / mg.MU0
+            mag['saturation'] = {**curve.spec, 'mu_r_initial': curve.mu_r_initial, 'newton_iterations': newton_its,
+                                 'min_mu_r': float(mur.min()), 'residuals': info['residuals']}
+        resid = float(info['residual'])
+        extra = [{'key': 'Bmag', 'label': '|B| densidad de flujo', 'unit': 'T'},
+                 {'key': 'Bx', 'label': 'Bx', 'unit': 'T'}, {'key': 'By', 'label': 'By', 'unit': 'T'},
+                 {'key': 'Bz', 'label': 'Bz', 'unit': 'T'},
+                 {'key': 'Hmag', 'label': '|H| intensidad de campo', 'unit': 'kA/m'},
+                 {'key': 'psi', 'label': 'Potencial magnético ψ', 'unit': 'A'}]
+        fields = {'Bmag': Bm, 'Bx': B[:, 0], 'By': B[:, 1], 'Bz': B[:, 2], 'Hmag': Hm / 1e3, 'psi': psi}
+        if curve is not None:
+            extra.append({'key': 'mur', 'label': 'μr efectiva (B/μ₀H)', 'unit': ''})
+            fields['mur'] = mur
+        s = {
+            'physics': ['magnetic'],
+            'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': mesh.n_nodes,
+            'element_type': mesh.element_type, 'tier': tier, 'converged': bool(resid < 1e-6),
+            'n_iterations': newton_its or steps, 'final_residual': resid,
+            'solver_method': info_lin.get('method', 'direct'),
+            'wall_time_s': round(time.perf_counter() - t_start, 3), 'loads': info['loads'],
+            'material_model': 'linear_magnetic' if curve is None else 'saturable_magnetic', 'magnetic': mag,
+            'extra_fields': extra,
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
+            'result_hash': array_hash(psi),
+        }
+        if mesh_meta:
+            s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'magnetic_potential': psi, 'extra_fields': fields,
             'solve_info': {'method': s['solver_method'], 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,

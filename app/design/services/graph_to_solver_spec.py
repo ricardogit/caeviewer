@@ -115,6 +115,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['material'] = {'type': 'linear_magnetic', 'mu_r': float(mu_r),
                                 'Br': [float(props.get(k) or 0) for k in ('Br_x', 'Br_y', 'Br_z')],
                                 'rho': spec['material']['rho']}
+            _magnetic_saturation(spec, mat_node)
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
@@ -204,6 +205,30 @@ def graph_to_solver_spec(graph_id: str) -> dict:
 PIEZO_TYPES = ('piezoelectric', 'thermopiezoelectric')
 
 
+def _magnetic_saturation(spec: dict, node) -> None:
+    """MATERIAL ``saturation``: none (linear μr) | tanh (μr = initial, ``Js`` saturation polarisation [T]) |
+    table (``bh_points`` [[H A/m, B T], …]). Absent / none → linear (hashes unchanged)."""
+    from app.design.services.fem.magnetic import BHCurve
+    p = node.properties or {}
+    mode = p.get('saturation') or 'none'
+    if mode == 'none':
+        return
+    if mode == 'tanh':
+        curve = {'model': 'tanh', 'mu_r': spec['material']['mu_r'], 'Js': p.get('Js')}
+    elif mode == 'table':
+        curve = {'model': 'table', 'points': p.get('bh_points') or []}
+    else:
+        raise GraphSpecError(f'"{node.label}": saturación desconocida {mode!r} (none | tanh | table).')
+    try:
+        c = BHCurve(curve)
+    except (TypeError, ValueError) as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    if any(spec['material']['Br']):
+        raise GraphSpecError(f'"{node.label}": saturación e imán permanente (Br) a la vez no están soportados.')
+    spec['material']['bh_curve'] = c.spec
+    spec['material']['mu_r'] = c.mu_r_initial
+
+
 def _finalize_physics(spec: dict) -> None:
     """Physics of the special material models (piezo, thermo-piezo, magnetic, fluid) and the checks that the
     conditions match the material."""
@@ -229,6 +254,9 @@ def _finalize_physics(spec: dict) -> None:
         if n_mech:
             raise GraphSpecError('El material magnético solo admite BC de potencial magnético y cargas de flujo '
                                  f'magnético ({n_mech} condiciones mecánicas o térmicas en el estudio).')
+        if any('coil' in b for b in spec['bcs']) and all('coil' in b for b in spec['bcs']):
+            raise GraphSpecError('La bobina necesita una cara de referencia: añada una BC «Potencial magnético» '
+                                 '(ψ = 0) en la otra cara del corte del núcleo.')
         spec['physics'] = ['magnetic']
     elif spec['material'].get('type') == 'newtonian_fluid':
         if 'thermal' in spec['physics']:
@@ -477,6 +505,21 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
             raise GraphSpecError(f'"{node.label}": falta la temperatura impuesta (°C).')
         entry = {'temperature': float(t), 'label': node.label}
         _target(entry, faces, props, 'fixed')
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'coil':                         # coil MMF: ψ = N·I on its pole faces (vs the reference poles)
+        try:
+            turns, current = float(props.get('turns')), float(props.get('current'))
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{node.label}": la bobina necesita número de vueltas N y corriente I (A).')
+        if turns <= 0:
+            raise GraphSpecError(f'"{node.label}": el número de vueltas debe ser > 0.')
+        coil = {'turns': turns, 'current': current}
+        if props.get('current_steps') not in (None, ''):
+            coil['steps'] = max(1, min(int(props['current_steps']), 50))
+        entry = {'magnetic_potential': turns * current, 'coil': coil, 'label': node.label}
+        _target(entry, faces, props, 'tip', face=True)
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
