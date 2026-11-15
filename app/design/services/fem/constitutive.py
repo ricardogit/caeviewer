@@ -325,7 +325,23 @@ class Piezoelectric:
     @classmethod
     def from_dict(cls, d: dict) -> 'Piezoelectric':
         return cls(d)
-class ThermoPiezoelectric(_Stub): pass
+
+
+class ThermoPiezoelectric(Piezoelectric):
+    """Piezoelectric + one-way thermal coupling (thermal strain α ΔT, pyroelectric p ΔT along the poling axis):
+    ``fem.piezo``. Needs ``alpha`` (scalar or [α1, α2, α3] along the material axes) and ``p3`` [C/(m²·K)]."""
+
+    def __init__(self, spec: dict):
+        super().__init__(spec)
+        if spec.get('alpha') in (None, '') or spec.get('p3') in (None, ''):
+            raise ValueError('Material termo-piezoeléctrico: faltan el coeficiente de dilatación α y/o el '
+                             'coeficiente piroeléctrico p3.')
+        self.alpha = thermal_expansion(spec)
+        self.p3 = float(spec['p3'])
+        self.T_ref = float(spec.get('T_ref') if spec.get('T_ref') not in (None, '') else 20.0)
+        self.p_global = self.pm.R.T @ np.array([0.0, 0.0, self.p3])   # poling axis 3 → global
+
+
 class NewtonianFluid:
     """Incompressible Newtonian fluid for steady Stokes flow (``fem.stokes``): viscosity mu [Pa·s], rho.
     get_D_matrix() = μ·diag(2,2,2,1,1,1) (viscous stress per strain rate, engineering shear)."""

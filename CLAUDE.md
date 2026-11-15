@@ -16,7 +16,7 @@ CAE Viewer is a full-stack engineering platform with three integrated modes:
   (`register_step_file`).
 - **CAE mode**: Upload FEA mesh files (VTK, Abaqus .inp, Nastran .bdf, GMSH .msh, LS-DYNA .k/.zip, Exodus, XDMF, MED), visualize with field coloring, animate time steps, section-cut, and quality metrics.
 
-**Roadmap:** `PLAN_CAE_NUEVA_GENERACION.md` is the master plan (phases FASE 0-9; "nothing happens outside
+**Roadmap:** `PLAN_CAE_NUEVA_GENERACION.md` is the master plan (phases FASE 0-10, FASE 10 = own environmental module: pollutant transport, shallow water, turbulence, GIS data; "nothing happens outside
 the DesignGraph"). The Engineering Hub work (job queue, versioned geometry, catalog) is numbered H0-H1d to
 avoid clashing; it is infrastructure for that plan. The own FEM kernel comes before external solver adapters.
 
@@ -360,7 +360,16 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   [--server …]`: bar circuit (B, permeance μA/L, energy), magnet short / open circuit (tilted Br), imposed flux,
   harmonic quadratic ψ — all exact (1e-13); quarter toroidal core permeance μt·ln(b/a)/(π/2) to 1e-6, order 3.7.
   Tests `tests/test_magnetic.py`.
-- Stub still: `ThermoPiezoelectric` (not listed in the MATERIAL selector).
+- `ThermoPiezoelectric` (`constitutive.py`, `fem/piezo.py`): piezo + one-way thermal coupling, σ = Cᴱ(ε − αΔT) − eᵀE,
+  D = eε + κˢE + pΔT with p = Rᵀ[0, 0, p3] (pyroelectric, poling axis). Keys = piezo + `alpha` (scalar or [α1..α3]
+  along the material axes), `p3` [C/(m²·K)], `T_ref`, `k` (scalar or list). Spec physics ['thermal', 'piezoelectric']:
+  steady conduction first, then the u + φ system with ∫BᵀCᴱαΔT on u and `pz.pyro_vector` (∫∇Nᵀ pΔT) on the φ rows;
+  extra field T, summary `thermal` + `piezo.p3_C_m2K`. Plain piezo + thermal → ValueError / 422 (use thermo-piezo).
+  Graph: MATERIAL `model_type: 'thermopiezoelectric'` (`_piezo_material` + `_set_physics` thermal keys); without
+  thermal conditions it becomes plain piezoelectric (ΔT = 0). `_finalize_physics(spec)` holds the special-material
+  physics checks (testable without DB). UI: `PiezoFields thermal` (p3), α/k in «Propiedades térmicas». Hito
+  `python validate_thermopiezo.py [--server …]`: clamped σ = −CᴱαΔT and charges ∓p3ΔTA, open-circuit voltage
+  (7×7 homogeneous system), linear T → quadratic φ, ΔT = 0 = piezo — all exact (1e-15). Tests `tests/test_thermopiezo.py`.
 
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,

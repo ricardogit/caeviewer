@@ -2,6 +2,8 @@
  * PiezoFields — piezoelectric MATERIAL node (model_type = piezoelectric), hexagonal 6mm class with the
  * poling direction = material axis 3. Stress-charge form: σ = cᴱε − eᵀE, D = eε + εˢE.
  * c [Pa] (constant field), e [C/m²], relative permittivities at constant strain. "PZT-5H" fills a datasheet set.
+ * thermal (model_type = thermopiezoelectric): + pyroelectric p3 [C/(m²·K)] along the poling axis; α, k and T_ref
+ * come from the node's "Propiedades térmicas" (α may also be α1..α3 along the material axes).
  */
 import React from 'react';
 import { Box, Button, TextField, Typography } from '@mui/material';
@@ -19,7 +21,7 @@ const ROWS = [
 ];
 const DEFAULT_AXES = { axis_1: [1, 0, 0], axis_2: [0, 1, 0] };
 
-export default function PiezoFields({ props, setProp }) {
+export default function PiezoFields({ props, setProp, thermal = false }) {
   const num = (k, lbl) => (
     <TextField key={k} label={lbl} size="small" type="number" sx={{ flex: 1 }}
       value={props[k] ?? ''}
@@ -45,7 +47,8 @@ export default function PiezoFields({ props, setProp }) {
       </Box>
     );
   };
-  const missing = PIEZO_KEYS.filter(k => props[k] == null || props[k] === '');
+  const missing = [...PIEZO_KEYS, ...(thermal ? ['p3', 'alpha', 'k'] : [])]
+    .filter(k => props[k] == null || props[k] === '');
   return (
     <Box data-testid="piezo-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1,
       border: '1px solid #4a3b1a', borderRadius: 1, p: 1 }}>
@@ -62,6 +65,11 @@ export default function PiezoFields({ props, setProp }) {
       {ROWS.map((row, i) => (
         <Box key={i} sx={{ display: 'flex', gap: 0.5 }}>{row.map(([k, lbl]) => num(k, lbl))}</Box>
       ))}
+      {thermal && (
+        <Box sx={{ display: 'flex', gap: 0.5 }}>
+          {num('p3', 'p3 piroeléctrico [C/m²·K]')}
+        </Box>
+      )}
       <Typography variant="caption" sx={{ color: '#888' }}>
         Ejes del material en el sistema global/CAD (eje 3 = 1 × 2 = dirección de polarización)
       </Typography>
@@ -69,7 +77,10 @@ export default function PiezoFields({ props, setProp }) {
       {axis('axis_2', 'Eje 2')}
       <Typography variant="caption" sx={{ color: '#888' }}>
         Electrodos: CC «Potencial eléctrico» en caras (V). Carga libre: CARGA «Carga eléctrica superficial».
-        Sin acoplamiento térmico.
+        {thermal
+          ? ' Temperatura: CC «Temperatura impuesta» y cargas térmicas; α, k y T ref en «Propiedades térmicas» '
+            + '(acoplamiento en un sentido: térmico → dilatación α ΔT + carga piroeléctrica p3 ΔT).'
+          : ' Sin acoplamiento térmico (use «Termo-piezoeléctrico»).'}
       </Typography>
     </Box>
   );

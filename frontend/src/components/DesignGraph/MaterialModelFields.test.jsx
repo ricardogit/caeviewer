@@ -53,6 +53,14 @@ describe('material model fields (item 8)', () => {
     expect(setProp).toHaveBeenCalledTimes(Object.keys(PZT5H).length);
   });
 
+  it('thermo-piezo: asks for p3, α and k and edits p3', () => {
+    const setProp = vi.fn();
+    render(<PiezoFields props={{ ...PZT5H }} setProp={setProp} thermal />);
+    expect(screen.getByText('Faltan: p3, alpha, k')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('p3 piroeléctrico [C/m²·K]'), { target: { value: '-0.0003' } });
+    expect(setProp).toHaveBeenCalledWith('p3', -0.0003);
+  });
+
   it('results: extra fields (x_<key>) come from the pack header', () => {
     const pack = { nNodes: 2, header: { fields: ['u', 'vm'], extra_fields: [{ key: 'phi', label: 'Potencial eléctrico', unit: 'V' }] },
       u: { data: new Float32Array(6) }, x_phi: { data: new Float32Array([0, 100]) } };

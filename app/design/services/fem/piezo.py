@@ -12,6 +12,13 @@ material axes (IEEE: c11 c12 c13 c33 c44 c66, e31 e33 e15, ε11ˢ ε33ˢ relativ
 ``axis_1``/``axis_2`` (poling = axis 3 = 1 × 2). Electrodes are prescribed potentials (``voltage`` on a
 face/node set); a face with no electric condition has D·n = 0 (a floating electrode is not modelled as an
 equipotential). The charge on each electrode is the reaction of its potential equations.
+
+Thermo-piezoelectricity (material ``thermopiezoelectric``, one-way: the steady temperature field T is solved first):
+
+    σ = Cᴱ (ε − α ΔT) − eᵀ E,      D = e ε + κˢ E + p ΔT,      ΔT = T − T_ref
+
+α = thermal expansion (scalar or α1..α3 along the material axes), p = pyroelectric coefficient at constant strain
+along the poling axis (``p3`` [C/(m²·K)]). Extra loads: ∫Bᵀ Cᴱ α ΔT dV on u and −∫∇Nᵀ p ΔT dV on φ.
 """
 from __future__ import annotations
 
@@ -142,8 +149,26 @@ def voltage_dirichlet(mesh, bcs: list):
     return dofs, np.array([presc[d] for d in dofs], float), groups
 
 
-def postprocess(mesh, mat: PiezoMaterial, u: np.ndarray, phi: np.ndarray):
-    """Gauss-point stress σ = Cε + eᵀ∇φ, field E = −∇φ and D = eε − κ∇φ → nodal (Gauss extrapolation)."""
+def pyro_vector(mesh, p_global: np.ndarray, T: np.ndarray, T_ref: float) -> np.ndarray:
+    """P = ∫ ∇Nᵀ p ΔT dV (N,) — enters the φ equations as −P (pyroelectric displacement p ΔT)."""
+    et = mesh.element_type
+    pts, w = gauss_points(et)
+    P = np.zeros(mesh.n_nodes)
+    for a in range(0, mesh.n_elements, 20_000):
+        el = mesh.elements[a:a + 20_000]
+        X = mesh.nodes[el]
+        Pe = np.zeros(el.shape)
+        for pt, wg in zip(pts, w):
+            det, dN = tb._jac(X, tb.dshape(et, pt))
+            dT = T[el] @ tb.shape(et, pt) - T_ref
+            Pe += (wg * det * dT)[:, None] * np.einsum('man,a->mn', dN, p_global)
+        np.add.at(P, el, Pe)
+    return P
+
+
+def postprocess(mesh, mat: PiezoMaterial, u: np.ndarray, phi: np.ndarray, thermal=None):
+    """Gauss-point stress σ = C(ε − ε_th) + eᵀ∇φ, field E = −∇φ and D = eε − κ∇φ + pΔT → nodal (Gauss
+    extrapolation). ``thermal`` = (T, alpha, T_ref, p_global) for thermo-piezoelectricity."""
     et = mesh.element_type
     pts, _ = gauss_points(et)
     X = mesh.nodes[mesh.elements]
@@ -154,9 +179,16 @@ def postprocess(mesh, mat: PiezoMaterial, u: np.ndarray, phi: np.ndarray):
         _, dN = tb._jac(X, tb.dshape(et, p))
         eps = np.einsum('mij,mj->mi', tb._B(dN), ue)
         grad = np.einsum('man,mn->ma', dN, pe)
-        sig.append(eps @ mat.C.T + grad @ mat.e)               # eᵀ∇φ (Voigt 6)
+        sg = eps @ mat.C.T + grad @ mat.e                      # eᵀ∇φ (Voigt 6)
+        Dg = eps @ mat.e.T - grad @ mat.kappa.T
+        if thermal is not None:
+            from app.design.services.fem.thermal import thermal_strain_at
+            T, alpha, T_ref, p_g = thermal
+            sg = sg - thermal_strain_at(mesh.elements, T, alpha, T_ref, p) @ mat.C.T
+            Dg = Dg + (T[mesh.elements] @ tb.shape(et, p) - T_ref)[:, None] * p_g[None, :]
+        sig.append(sg)
         Ef.append(-grad)
-        Df.append(eps @ mat.e.T - grad @ mat.kappa.T)
+        Df.append(Dg)
     sig, Ef, Df = (np.stack(a, axis=1) for a in (sig, Ef, Df))   # (m,g,·)
     n = mesh.n_nodes
     return {'sigma_gp': sig, 'E_gp': Ef, 'D_gp': Df,

@@ -33,6 +33,7 @@ PHYSICS_LABELS = {
     ('thermal',): 'Térmico estacionario 3D (conducción)',
     ('structural', 'thermal'): 'Termo-mecánico 3D (térmico → estructural)',
     ('piezoelectric',): 'Piezoeléctrico 3D (desplazamiento + potencial eléctrico)',
+    ('piezoelectric', 'thermal'): 'Termo-piezoeléctrico 3D (térmico → desplazamiento + potencial, piroeléctrico)',
     ('fluid',): 'Fluido newtoniano 3D (Stokes o Navier-Stokes laminar estacionario)',
     ('magnetic',): 'Magnetostática 3D (potencial escalar, sin corrientes)',
 }
@@ -40,7 +41,7 @@ PHYSICS_LABELS = {
 
 # material models only the plain kernel run supports (Newton / time stepping)
 NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
-                       'piezoelectric', 'newtonian_fluid', 'linear_magnetic')   # (piezo / fluid: linear, plain kernel run only)
+                       'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid', 'linear_magnetic')   # (piezo / fluid: linear, plain kernel run only)
 MATERIAL_LABELS = {
     'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
     'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',

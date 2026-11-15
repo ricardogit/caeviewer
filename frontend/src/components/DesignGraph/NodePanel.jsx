@@ -31,6 +31,7 @@ export const MATERIAL_TYPES = [
   ['hyperelastic_neohookean', 'Hiperelástico Neo-Hookean', true],
   ['viscoelastic_maxwell', 'Viscoelástico Maxwell (Prony)', true],
   ['piezoelectric', 'Piezoeléctrico (6mm, u + φ)', true],
+  ['thermopiezoelectric', 'Termo-piezoeléctrico (α, piroeléctrico p3)', true],
   ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
   ['linear_magnetic', 'Magnético lineal (μr, imán Br)', true],
 ];
@@ -274,7 +275,8 @@ export default function NodePanel({ node, graphId, onClose }) {
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
               ['yield_strength', 'Límite elástico σy [Pa]', '']]
-              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'newtonian_fluid', 'linear_magnetic']
+              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid',
+                'linear_magnetic']
                 .includes(props.model_type) || k === 'rho')
               .filter(([k]) => !['hyperelastic_neohookean', 'viscoelastic_maxwell'].includes(props.model_type)
                 || k !== 'yield_strength')
@@ -307,7 +309,9 @@ export default function NodePanel({ node, graphId, onClose }) {
             {props.model_type === 'linear_elastic_orthotropic' && <OrthotropicFields props={props} setProp={setProp} />}
             {props.model_type === 'hyperelastic_neohookean' && <HyperelasticFields props={props} setProp={setProp} />}
             {props.model_type === 'viscoelastic_maxwell' && <ViscoelasticFields props={props} setProp={setProp} />}
-            {props.model_type === 'piezoelectric' && <PiezoFields props={props} setProp={setProp} />}
+            {['piezoelectric', 'thermopiezoelectric'].includes(props.model_type) && (
+              <PiezoFields props={props} setProp={setProp} thermal={props.model_type === 'thermopiezoelectric'} />
+            )}
             {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
             {props.model_type === 'linear_magnetic' && <MagneticFields props={props} setProp={setProp} />}
             <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>

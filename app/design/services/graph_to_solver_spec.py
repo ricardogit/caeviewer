@@ -91,7 +91,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['n_load_steps'] = int(props.get('load_steps') or 10)
         elif spec['material']['type'] == 'viscoelastic_maxwell':
             _viscoelastic_material(spec, mat_node)
-        elif spec['material']['type'] == 'piezoelectric':
+        elif spec['material']['type'] in ('piezoelectric', 'thermopiezoelectric'):
             _piezo_material(spec, mat_node)
         elif spec['material']['type'] == 'newtonian_fluid':
             mu = props.get('mu')
@@ -197,10 +197,29 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['loads'].append(load_entry)
 
     _set_physics(spec, material_nodes[0] if material_nodes else None)
+    _finalize_physics(spec)
+    return spec
+
+
+PIEZO_TYPES = ('piezoelectric', 'thermopiezoelectric')
+
+
+def _finalize_physics(spec: dict) -> None:
+    """Physics of the special material models (piezo, thermo-piezo, magnetic, fluid) and the checks that the
+    conditions match the material."""
     if spec['material'].get('type') == 'piezoelectric':
         if 'thermal' in spec['physics']:
-            raise GraphSpecError('El material piezoeléctrico no admite condiciones térmicas todavía.')
+            raise GraphSpecError('Hay condiciones térmicas con un material piezoeléctrico: elija el modelo '
+                                 '«Termo-piezoeléctrico» (α y coeficiente piroeléctrico p3).')
         spec['physics'] = ['piezoelectric']
+    elif spec['material'].get('type') == 'thermopiezoelectric':
+        if 'thermal' in spec['physics']:
+            spec['physics'] = ['thermal', 'piezoelectric']
+        else:                                     # no temperature field: ΔT = 0 → plain piezoelectric
+            spec['material'] = {k: v for k, v in spec['material'].items()
+                                if k not in ('p3', 'alpha', 'k', 'T_ref')}
+            spec['material']['type'] = 'piezoelectric'
+            spec['physics'] = ['piezoelectric']
     if spec['material'].get('type') != 'linear_magnetic' and (
             any('magnetic_potential' in b for b in spec['bcs']) or any('magnetic_flux' in ld for ld in spec['loads'])):
         raise GraphSpecError('Hay condiciones magnéticas pero el material no es magnético (μr, Br).')
@@ -217,9 +236,9 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         if any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
             raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material es un fluido.')
         spec['physics'] = ['fluid']               # T10 required: the kernel raises a clear error for T4
-    elif any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
+    elif spec['material'].get('type') not in PIEZO_TYPES and (
+            any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads'])):
         raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material no es piezoeléctrico.')
-    return spec
 
 
 ORTHO_KEYS = ('E1', 'E2', 'E3', 'G12', 'G13', 'G23', 'nu12', 'nu13', 'nu23')
@@ -267,11 +286,16 @@ def _piezo_material(spec: dict, node) -> None:
     missing = [k for k in KEYS if p.get(k) in (None, '')]
     if missing:
         raise GraphSpecError(f'"{node.label}": material piezoeléctrico sin {", ".join(missing)}.')
-    m = {'type': 'piezoelectric', **{k: float(p[k]) for k in KEYS}, 'rho': spec['material']['rho']}
+    m = {'type': spec['material']['type'], **{k: float(p[k]) for k in KEYS}, 'rho': spec['material']['rho']}
     for key in ('axis_1', 'axis_2'):
         a = _axis(p, key)
         if a is not None:
             m[key] = a
+    if m['type'] == 'thermopiezoelectric':        # pyroelectric p3 [C/(m²·K)]; α, k, T_ref in _set_physics
+        if p.get('p3') in (None, ''):
+            raise GraphSpecError(f'"{node.label}": el material termo-piezoeléctrico necesita el coeficiente '
+                                 'piroeléctrico p3 (C/m²·K).')
+        m['p3'] = float(p['p3'])
     try:
         PiezoMaterial(m)
     except ValueError as e:
@@ -368,7 +392,7 @@ def _set_physics(spec: dict, mat_node) -> None:
     spec['physics'] = ['structural', 'thermal'] if structural else ['thermal']
     props = (mat_node.properties or {}) if mat_node is not None else {}
     label = mat_node.label if mat_node is not None else 'MATERIAL'
-    ortho = spec['material'].get('type') == 'linear_elastic_orthotropic'
+    ortho = spec['material'].get('type') in ('linear_elastic_orthotropic', 'thermopiezoelectric')
     if ortho and not structural:                 # thermal only: elastic constants are not needed
         for key in ('axis_1', 'axis_2'):
             a = _axis(props, key)

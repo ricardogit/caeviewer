@@ -25,7 +25,7 @@ from app.design.services.fem.assembler import (assemble_K, assemble_F, apply_bcs
                                                reduce_system, resolve_free_faces)
 from app.design.services.fem.constitutive import (build_material, ElastoplasticVonMises, conductivity,
                                                   thermal_expansion, HyperelasticNeoHookean,
-                                                  ViscoelasticMaxwell, Piezoelectric,
+                                                  ViscoelasticMaxwell, Piezoelectric, ThermoPiezoelectric,
                                                   NewtonianFluid, LinearMagnetic)
 from app.design.services.fem.mesh import FEMMesh
 from app.design.services.fem.solver import (FEMSolverDispatcher, check_tier_limits, TierLimitExceeded,
@@ -224,6 +224,9 @@ class FEMKernel:
 
         # 3b. Thermal field (FASE 2 multiphysics): steady conduction, then one-way coupling
         T = thermal = None
+        if 'thermal' in physics and mat_spec.get('type') == 'piezoelectric':
+            raise ValueError('Para acoplar temperatura con piezoelectricidad usa el material '
+                             'termo-piezoeléctrico (α y coeficiente piroeléctrico p3).')
         if 'thermal' in physics:
             T, thermal = self._solve_thermal(mesh, mat_spec, [b for b in all_bcs if th.is_thermal_bc(b)],
                                              [ld for ld in all_loads if th.is_thermal_load(ld)], tier,
@@ -231,7 +234,7 @@ class FEMKernel:
             self._emit(socketio, run_id, 20 if 'structural' in physics else 90,
                        f"thermal solved: T {thermal['min_temperature']:.4g} .. "
                        f"{thermal['max_temperature']:.4g}", t_start)
-            if 'structural' not in physics:
+            if 'structural' not in physics and 'piezoelectric' not in physics:
                 return self._thermal_only_results(mesh, mesh_meta, T, thermal, tier, t_start)
 
         material = build_material(mat_spec)
@@ -246,11 +249,15 @@ class FEMKernel:
                                  'térmico todavía: quita las condiciones térmicas o usa un material elástico.')
             return self._solve_hyperelastic(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs,
                                             all_loads, tier, socketio, run_id, t_start)
-        if isinstance(material, Piezoelectric):                   # coupled u + φ
-            if T is not None:
-                raise ValueError('El material piezoeléctrico no admite el acoplamiento térmico todavía.')
+        if isinstance(material, Piezoelectric):                   # coupled u + φ (+ one-way thermal)
+            if T is not None and not isinstance(material, ThermoPiezoelectric):
+                raise ValueError('Para acoplar temperatura con piezoelectricidad usa el material '
+                                 'termo-piezoeléctrico (α y coeficiente piroeléctrico p3).')
+            if isinstance(material, ThermoPiezoelectric) and T is None:
+                raise ValueError('Material termo-piezoeléctrico sin campo de temperatura: agrega condiciones '
+                                 'térmicas (temperatura impuesta, flujo, convección o fuente).')
             return self._solve_piezo(mesh, mesh_meta, material, mat_spec, solver_spec, all_bcs, all_loads,
-                                     tier, socketio, run_id, t_start)
+                                     tier, socketio, run_id, t_start, T=T, thermal=thermal)
         if isinstance(material, NewtonianFluid):                  # steady Stokes flow (velocity + pressure)
             if T is not None:
                 raise ValueError('El fluido newtoniano no admite condiciones térmicas todavía.')
@@ -540,7 +547,7 @@ class FEMKernel:
     PIEZO_MAX_DOF = 400_000           # sparse direct solve of the indefinite coupled system
 
     def _solve_piezo(self, mesh, mesh_meta, material, mat_spec, spec, all_bcs, all_loads,
-                     tier, socketio, run_id, t_start) -> dict:
+                     tier, socketio, run_id, t_start, T=None, thermal=None) -> dict:
         import scipy.sparse as sp
         from scipy.sparse.linalg import spsolve
         from app.design.services.fem import piezo as pz
@@ -550,8 +557,8 @@ class FEMKernel:
         if n_dof > self.PIEZO_MAX_DOF:
             raise ValueError(f'Piezoeléctrico: {n_dof:,} incógnitas (u + φ) superan el límite del solver directo '
                              f'({self.PIEZO_MAX_DOF:,}); usa una malla más gruesa.')
-        mech_bcs = [b for b in all_bcs if 'voltage' not in b]
-        mech_loads = [ld for ld in all_loads if 'surface_charge' not in ld]
+        mech_bcs = [b for b in all_bcs if 'voltage' not in b and not th.is_thermal_bc(b)]
+        mech_loads = [ld for ld in all_loads if 'surface_charge' not in ld and not th.is_thermal_load(ld)]
         rho = float(mat_spec.get('rho', 0.0) or 0.0)
         mech_loads = [({**ld, 'density': ld.get('density', rho)} if 'gravity' in ld else ld) for ld in mech_loads]
         load_info: list = []
@@ -565,6 +572,11 @@ class FEMKernel:
             raise ValueError('Piezoeléctrico: define al menos un electrodo con potencial impuesto (p. ej. 0 V).')
         self._emit(socketio, run_id, 20, f'ensamblando u + φ ({n_dof:,} incógnitas)', t_start)
         K, Kuu, Kuf, Kff = pz.assemble(mesh, pm)
+        tp = None
+        if T is not None:                       # thermo-piezo: thermal strain load and pyroelectric charge
+            F = F + th.thermal_load(mesh, pm.C, T, material.alpha, material.T_ref)
+            Q = Q + pz.pyro_vector(mesh, material.p_global, T, material.T_ref)
+            tp = (T, material.alpha, material.T_ref, material.p_global)
         rhs = np.concatenate([F, -Q])
         dofs = np.concatenate([udofs, 3 * n + vnodes])
         vals = np.concatenate([uvals, vvals])
@@ -589,7 +601,7 @@ class FEMKernel:
         electrodes = [{'label': bc.get('label'), 'voltage_V': float(bc['voltage']),
                        'charge_C': float(-R[3 * n + nodes].sum()), 'n_nodes': int(len(nodes))}
                       for bc, nodes in groups]
-        post = pz.postprocess(mesh, pm, u, phi)
+        post = pz.postprocess(mesh, pm, u, phi, thermal=tp)
         el_vm = tb.von_mises_v(post['sigma_gp'].mean(axis=1))
         node_vm = tb.von_mises_v(post['sigma_nodal'])
         Emag = np.linalg.norm(post['E_nodal'], axis=1)
@@ -597,7 +609,7 @@ class FEMKernel:
         dmag = np.linalg.norm(disp, axis=1)
         d = pm.d_matrix()
         s = {
-            'physics': ['piezoelectric'],
+            'physics': ['thermal', 'piezoelectric'] if T is not None else ['piezoelectric'],
             'max_displacement_m': float(dmag.max()), 'max_displacement_mm': round(float(dmag.max()) * 1000, 6),
             'max_von_mises_pa': float(el_vm.max()), 'max_von_mises_mpa': round(float(el_vm.max()) / 1e6, 4),
             'max_von_mises_nodal_mpa': round(float(node_vm.max()) / 1e6, 4),
@@ -613,17 +625,23 @@ class FEMKernel:
                       'd_pC_N': {'d31': d[2, 0] * 1e12, 'd33': d[2, 2] * 1e12, 'd15': d[0, 5] * 1e12}
                       if np.allclose(pm.R, np.eye(3)) else None},
             'extra_fields': [{'key': 'phi', 'label': 'Potencial eléctrico', 'unit': 'V'},
-                             {'key': 'Emag', 'label': '|E| campo eléctrico', 'unit': 'kV/mm'}],
+                             {'key': 'Emag', 'label': '|E| campo eléctrico', 'unit': 'kV/mm'}]
+            + ([{'key': 'T', 'label': 'Temperatura', 'unit': '°C'}] if T is not None else []),
             'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
             'result_hash': array_hash(x),
         }
+        if T is not None:
+            s['thermal'] = {k: v for k, v in thermal.items() if k != 'heat_flux_nodal'}
+            s['max_temperature'], s['min_temperature'] = float(T.max()), float(T.min())
+            s['material_model'] = 'thermopiezoelectric'
+            s['piezo']['p3_C_m2K'] = material.p3
         if mesh_meta:
             s['mesh'] = {k: v for k, v in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return {
             'displacement': disp.tolist(), 'displacement_magnitude': dmag.tolist(),
             'von_mises_elemental': el_vm.tolist(), 'von_mises_nodal': node_vm.tolist(),
             'sigma_elemental': post['sigma_gp'].mean(axis=1).tolist(), 'potential': phi,
-            'extra_fields': {'phi': phi, 'Emag': Emag / 1e6},
+            'extra_fields': {'phi': phi, 'Emag': Emag / 1e6, **({'T': T} if T is not None else {})},
             'solve_info': {'method': 'direct_coupled', 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
