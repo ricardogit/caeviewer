@@ -33,7 +33,7 @@ PHYSICS_LABELS = {
     ('thermal',): 'Térmico estacionario 3D (conducción)',
     ('structural', 'thermal'): 'Termo-mecánico 3D (térmico → estructural)',
     ('piezoelectric',): 'Piezoeléctrico 3D (desplazamiento + potencial eléctrico)',
-    ('fluid',): 'Fluido newtoniano 3D (Stokes, flujo lento)',
+    ('fluid',): 'Fluido newtoniano 3D (Stokes o Navier-Stokes laminar estacionario)',
     ('magnetic',): 'Magnetostática 3D (potencial escalar, sin corrientes)',
 }
 

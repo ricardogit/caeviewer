@@ -82,6 +82,21 @@ describe('material model fields (item 8)', () => {
     expect(screen.queryByText('k')).toBeNull();
   });
 
+  it('fluid: Navier-Stokes toggle, ρ check and iteration summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, flow_model: 'navier_stokes' }} setProp={setProp} />);
+    expect(screen.getByText(/necesita la densidad/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Stokes (Re ≪ 1)'));
+    expect(setProp).toHaveBeenCalledWith('flow_model', 'stokes');
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'navier_stokes', mu: 1e-3,
+      max_velocity_m_s: 0.1, min_pressure_pa: 0, max_pressure_pa: 5, mass_balance_error: 1e-12, reynolds: 150,
+      flow_rates: [], navier_stokes: { picard_iterations: 4, newton_iterations: 3, continuation_steps: 1,
+        element_reynolds_max: 12 } } } }} />);
+    expect(screen.getByText(/Navier-Stokes laminar · μ/)).toBeTruthy();
+    expect(screen.getByText('4 Picard + 3 Newton')).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();                 // Re 150 is fine for Navier-Stokes
+  });
+
   it('magnetic: NdFeB preset sets μr and Br; summary shows poles and permeance', () => {
     const setProp = vi.fn();
     render(<MagneticFields props={{}} setProp={setProp} />);

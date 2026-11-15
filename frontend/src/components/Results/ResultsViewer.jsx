@@ -72,14 +72,20 @@ export function SummaryRows({ header }) {
         `${fmt(el.voltage_V)} V · Q = ${fmt(el.charge_C * 1e9)} nC`]),
     ] : []),
     ...(s.fluid ? [
-      ['Modelo', `Stokes · μ = ${fmt(s.fluid.mu)} Pa·s`],
+      ['Modelo', `${s.fluid.model === 'navier_stokes' ? 'Navier-Stokes laminar' : 'Stokes'} · μ = ${fmt(s.fluid.mu)} Pa·s`],
+      ...(s.fluid.navier_stokes ? [
+        ['Iteraciones', `${s.fluid.navier_stokes.picard_iterations} Picard + ${s.fluid.navier_stokes.newton_iterations} Newton`
+          + (s.fluid.navier_stokes.continuation_steps > 1 ? ` · ${s.fluid.navier_stokes.continuation_steps} pasos de Re` : '')],
+        ['Re de elemento máx.', `${fmt(s.fluid.navier_stokes.element_reynolds_max)}${s.fluid.navier_stokes.element_reynolds_max > 100 ? ' ⚠ > 100' : ''}`],
+      ] : []),
       ['|v| máx.', `${fmt(s.fluid.max_velocity_m_s * 1e3)} mm/s`],
       ['Presión', `${fmt(s.fluid.min_pressure_pa)} … ${fmt(s.fluid.max_pressure_pa)} Pa`],
       ...(s.fluid.flow_rates || []).filter(f => Math.abs(f.flow_m3_s) > 1e-6 * Math.max(
         ...(s.fluid.flow_rates || []).map(g => Math.abs(g.flow_m3_s)))).map(f => [
         `Caudal ${f.label || f.face_set}`, `${fmt(f.flow_m3_s * 6e7)} mL/min (${f.flow_m3_s > 0 ? 'sale' : 'entra'})`]),
       ['Balance de masa', `${fmt(100 * s.fluid.mass_balance_error)} %`],
-      ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.reynolds > 1 ? ' ⚠ > 1' : ''}`],
+      ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.model === 'navier_stokes'
+        ? (s.fluid.reynolds > 2000 ? ' ⚠ > 2000' : '') : (s.fluid.reynolds > 1 ? ' ⚠ > 1' : '')}`],
     ] : []),
     ...(s.magnetic ? [
       ['Modelo', `Magnético · μr = ${fmt(s.magnetic.mu_r)}${(s.magnetic.Br_T || []).some(b => b)

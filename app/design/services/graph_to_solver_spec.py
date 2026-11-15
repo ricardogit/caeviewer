@@ -99,6 +99,14 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 raise GraphSpecError(f'"{mat_node.label}": el fluido necesita la viscosidad dinámica μ > 0 (Pa·s).')
             spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
                                 'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
+            flow_model = props.get('flow_model') or 'stokes'
+            if flow_model not in ('stokes', 'navier_stokes'):
+                raise GraphSpecError(f'"{mat_node.label}": modelo de flujo desconocido «{flow_model}» '
+                                     '(stokes | navier_stokes).')
+            if flow_model == 'navier_stokes':        # only when on: Stokes studies keep their hash
+                if not spec['material']['rho'] > 0:
+                    raise GraphSpecError(f'"{mat_node.label}": Navier-Stokes necesita la densidad ρ > 0.')
+                spec['material']['inertia'] = True
         elif spec['material']['type'] == 'linear_magnetic':
             mu_r = props.get('mu_r')
             if mu_r in (None, '') or float(mu_r) <= 0:
@@ -205,7 +213,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         spec['physics'] = ['magnetic']
     elif spec['material'].get('type') == 'newtonian_fluid':
         if 'thermal' in spec['physics']:
-            raise GraphSpecError('El fluido newtoniano (Stokes) no admite condiciones térmicas todavía.')
+            raise GraphSpecError('El fluido newtoniano no admite condiciones térmicas todavía.')
         if any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
             raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material es un fluido.')
         spec['physics'] = ['fluid']               # T10 required: the kernel raises a clear error for T4

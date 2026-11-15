@@ -640,7 +640,7 @@ class FEMKernel:
         n = mesh.n_nodes
         n_dof = 3 * n + len(np.unique(mesh.elements[:, :4]))
         if mesh.element_type != 'T10':
-            raise ValueError('Fluido (Stokes): hace falta malla cuadrática T10 (elementos Taylor-Hood P2-P1).')
+            raise ValueError('Fluido: hace falta malla cuadrática T10 (elementos Taylor-Hood P2-P1).')
         if n_dof > self.FLUID_MAX_DOF:
             raise ValueError(f'Fluido: {n_dof:,} incógnitas (velocidad + presión) superan el límite del solver '
                              f'directo ({self.FLUID_MAX_DOF:,}); usa una malla más gruesa.')
@@ -650,8 +650,17 @@ class FEMKernel:
         dofs, vals = dirichlet(mesh, all_bcs) if all_bcs else (np.zeros(0, np.int64), np.zeros(0))
         if not len(dofs):
             raise ValueError('Fluido: faltan condiciones de velocidad (paredes sin deslizamiento, entrada …).')
-        self._emit(socketio, run_id, 30, f'Stokes: resolviendo velocidad + presión ({n_dof:,} incógnitas)', t_start)
-        v, p, info = st.solve(mesh, fm, F, dofs, vals)
+        if fm.inertia:
+            self._emit(socketio, run_id, 30, f'Navier-Stokes: Stokes inicial + Picard/Newton ({n_dof:,} incógnitas)',
+                       t_start)
+
+            def prog(it, msg):
+                self._emit(socketio, run_id, min(30 + 3 * it, 90), msg, t_start)
+            v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog)
+        else:
+            self._emit(socketio, run_id, 30, f'Stokes: resolviendo velocidad + presión ({n_dof:,} incógnitas)',
+                       t_start)
+            v, p, info = st.solve(mesh, fm, F, dofs, vals)
         vmag = np.linalg.norm(v, axis=1)
         flows, seen = [], set()
         for e in all_bcs + all_loads:
@@ -674,8 +683,10 @@ class FEMKernel:
         s = {
             'physics': ['fluid'],
             'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': info['n_dof'], 'element_type': mesh.element_type,
-            'tier': tier, 'converged': bool(resid < 1e-8), 'n_iterations': 1, 'final_residual': resid,
-            'solver_method': 'direct_saddle_point', 'wall_time_s': round(time.perf_counter() - t_start, 3),
+            'tier': tier, 'converged': bool(resid < 1e-8), 'final_residual': resid,
+            'n_iterations': info['navier_stokes']['iterations'] if fm.inertia else 1,
+            'solver_method': 'newton_picard_saddle_point' if fm.inertia else 'direct_saddle_point',
+            'wall_time_s': round(time.perf_counter() - t_start, 3),
             'loads': load_info, 'n_constrained_dofs': int(len(dofs)), 'material_model': 'newtonian_fluid',
             'fluid': {'mu': fm.mu, 'rho': fm.rho, 'max_velocity_m_s': float(vmag.max()),
                       'min_pressure_pa': float(p.min()), 'max_pressure_pa': float(p.max()),
@@ -691,9 +702,27 @@ class FEMKernel:
             'mesh_hash': mesh_hash(mesh.nodes, mesh.elements),
             'result_hash': array_hash(np.concatenate([v.ravel(), p])),
         }
-        if Re > 1.0:
-            s['warnings'] = [f'Re ≈ {Re:.3g} > 1: el modelo de Stokes (flujo lento) desprecia la inercia; '
-                             'el resultado no es fiable a este Reynolds.']
+        s['fluid']['model'] = 'navier_stokes' if fm.inertia else 'stokes'
+        warnings = []
+        if fm.inertia:
+            ns = info['navier_stokes']
+            Re_h = st.element_reynolds_max(mesh, v, fm)
+            s['fluid']['navier_stokes'] = {k: ns[k] for k in ('iterations', 'picard_iterations', 'newton_iterations',
+                                                              'continuation_steps', 'newton_residuals')}
+            s['fluid']['navier_stokes']['element_reynolds_max'] = Re_h
+            s['fluid']['navier_stokes']['curve'] = [{'it': i + 1, 'lambda': h['lambda'], 'mode': h['mode'],
+                                                     'residual': h['residual']} for i, h in enumerate(ns['history'])]
+            if Re > 2000:
+                warnings.append(f'Re ≈ {Re:.3g}: por encima de ~2000 el flujo suele ser turbulento o no estacionario; '
+                                'este modelo laminar estacionario no lo representa.')
+            if Re_h > 100:
+                warnings.append(f'Reynolds de elemento máx. ≈ {Re_h:.3g} (> 100): sin estabilización la solución puede '
+                                'oscilar entre nodos; refine la malla donde la velocidad es alta.')
+        elif Re > 1.0:
+            warnings.append(f'Re ≈ {Re:.3g} > 1: el modelo de Stokes (flujo lento) desprecia la inercia; '
+                            'el resultado no es fiable a este Reynolds. Active Navier-Stokes en el material.')
+        if warnings:
+            s['warnings'] = warnings
         if mesh_meta:
             s['mesh'] = {k: val for k, val in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return {

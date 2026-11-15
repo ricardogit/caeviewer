@@ -1,6 +1,6 @@
-"""Steady incompressible Stokes flow (creeping flow, Re ≪ 1) of a Newtonian fluid.
+"""Steady incompressible flow of a Newtonian fluid: Stokes (creeping, Re ≪ 1) or Navier–Stokes (laminar).
 
-    −μ∇²v + ∇p = ρb,   ∇·v = 0
+    ρ(v·∇)v − μ∇²v + ∇p = ρb,   ∇·v = 0          (the convective term only with ``inertia``)
 
 Taylor–Hood P2–P1 on T10 meshes (inf-sup stable): velocity at every node (3 DOF), pressure at the corner
 nodes only (linear). Laplacian form μ∫∇w:∇v dV, so the natural condition on a face without velocity BCs is
@@ -11,6 +11,12 @@ all three = 0, slip wall = normal component = 0, inlet = velocity profile value)
 the face pressure (positive pushes into the fluid), ``gravity`` uses ρ. The system
 [[A, Bᵀ], [B, 0]] is solved directly; when every boundary node has its normal velocity prescribed
 (enclosed flow) the pressure is only defined up to a constant and one corner pressure is pinned to 0.
+
+Navier–Stokes (``solve_ns``, material ``inertia: true``): Galerkin convection ∫w·ρ(v·∇)v dV (14-point degree-5
+rule: exact for P2·P2·∇P2 on straight elements), started from the Stokes solution; Picard (Oseen) steps until the
+update is small, then Newton (adds ∫w·ρ(v·∇v_k) dV) with a backtracking line search. If that fails, ρ is ramped
+(continuation in Reynolds number). No stabilisation (SUPG/PSPG): the element Reynolds number ρ|v|h/μ should stay
+moderate (the kernel warns), and the flow must be laminar and steady.
 """
 from __future__ import annotations
 
@@ -24,6 +30,7 @@ KEYS = ('mu',)
 
 class FluidMaterial:
     def __init__(self, spec: dict):
+        self.inertia = bool(spec.get('inertia'))       # Navier–Stokes (convective term) instead of Stokes
         mu = spec.get('mu')
         if mu in (None, ''):
             raise ValueError('Fluido newtoniano: falta la viscosidad dinámica μ [Pa·s].')
@@ -33,6 +40,8 @@ class FluidMaterial:
             raise ValueError('Fluido newtoniano: la viscosidad μ debe ser > 0.')
         if self.rho < 0:
             raise ValueError('Fluido newtoniano: la densidad no puede ser negativa.')
+        if self.inertia and not self.rho > 0:
+            raise ValueError('Navier-Stokes: la inercia necesita la densidad ρ > 0.')
 
 
 def pressure_index(mesh):
@@ -141,3 +150,175 @@ def velocity_gradient_max(mesh, v: np.ndarray) -> float:
         G = np.einsum('man,mnc->mca', dN, ve)
         g = max(g, float(np.sqrt((G ** 2).sum(axis=(1, 2))).max()))
     return g
+
+
+# ── Navier–Stokes ─────────────────────────────────────────────────────────────
+
+def _rule5():
+    from app.design.services.fem.error_estimator import QUAD_PTS, QUAD_W
+    return QUAD_PTS, QUAD_W
+
+
+def _geometry(mesh):
+    """Shape functions and (weight·det J, physical ∇N) at the degree-5 points, cached on the mesh (the
+    geometry does not change between Navier–Stokes iterations)."""
+    key = (id(mesh.nodes), id(mesh.elements), mesh.n_elements)
+    cache = getattr(mesh, '_ns_geometry', None)
+    if cache is not None and cache[0] == key:
+        return cache[1], cache[2]
+    pts, wts = _rule5()
+    X = mesh.nodes[mesh.elements]
+    Ns, geo = [], []
+    for p, wg in zip(pts, wts):
+        det, dN = tb._jac(X, tb.dshape('T10', p))
+        Ns.append(tb.shape('T10', p))
+        geo.append((wg * det, dN))
+    mesh._ns_geometry = (key, Ns, geo)
+    return Ns, geo
+
+
+def convection(mesh, v: np.ndarray, newton: bool = True):
+    """Convection operators at the velocity field v (N,3), per unit density, as 3N×3N CSR:
+    C(v) u = ∫ w·(v·∇)u dV  (Picard / Oseen);  J(v) u = ∫ w·(u·∇)v dV  (Newton term; None if newton=False).
+    C(v) v is the convective force."""
+    n = mesh.n_nodes
+    Ns, geo = _geometry(mesh)
+    rc, cc, vc, vj = [], [], [], []
+    eye = np.eye(3)
+    for a in range(0, mesh.n_elements, 5000):
+        el = mesh.elements[a:a + 5000]
+        ve = v[el]                                        # (m,10,3)
+        m = len(el)
+        Ce = np.zeros((m, 10, 10))
+        Je = np.zeros((m, 10, 3, 10, 3)) if newton else None
+        for N, (wdet, dNall) in zip(Ns, geo):
+            w, dN = wdet[a:a + 5000], dNall[a:a + 5000]  # weight·det (m,), physical dN (m,3,10)
+            vq = np.einsum('n,mnc->mc', N, ve)            # velocity at the point
+            adv = np.einsum('mc,mcj->mj', vq, dN)         # v·∇N_j
+            Ce += w[:, None, None] * N[None, :, None] * adv[:, None, :]
+            if newton:
+                G = np.einsum('mnc,mdn->mcd', ve, dN)     # ∂v_c/∂x_d
+                NN = np.outer(N, N)
+                Je += w[:, None, None, None, None] * NN[None, :, None, :, None] * G[:, None, :, None, :]
+        dofs = tb.element_dofs(el)                       # (m,30), dof 3j+c
+        Cb = np.einsum('mij,cd->micjd', Ce, eye).reshape(m, 30, 30)
+        rc.append(np.repeat(dofs, 30, axis=1).ravel())
+        cc.append(np.tile(dofs, (1, 30)).ravel())
+        vc.append(Cb.ravel())
+        if newton:
+            vj.append(Je.reshape(m, 30, 30).ravel())
+    shape = (3 * n, 3 * n)
+    rows, cols = np.concatenate(rc), np.concatenate(cc)
+    C = sp.csr_matrix((np.concatenate(vc), (rows, cols)), shape=shape)
+    J = sp.csr_matrix((np.concatenate(vj), (rows, cols)), shape=shape) if newton else None
+    return C, J
+
+
+def solve_ns(mesh, mat: FluidMaterial, F: np.ndarray, dofs: np.ndarray, vals: np.ndarray, *,
+             tol: float = 1e-9, max_iter: int = 30, picard_switch: float = 2e-2, max_picard: int = 8,
+             progress=None):
+    """Steady Navier–Stokes. Returns (v, p, info) like ``solve`` plus info['navier_stokes'] with the iteration
+    history. ``progress(iteration, message)`` is called once per iteration."""
+    from scipy.sparse.linalg import splu
+    A, B, corners, pidx = assemble(mesh, 1.0)            # μ-normalised: unknowns v and p/μ
+    n3, n_p = 3 * mesh.n_nodes, len(corners)
+    nx = n3 + n_p
+    pin = is_enclosed(mesh, dofs)
+    cdofs = np.concatenate([dofs, [n3]]) if pin else dofs
+    cvals = np.concatenate([vals, [0.0]]) if pin else vals
+    mask = np.ones(nx, bool)
+    mask[cdofs] = False
+    free = np.flatnonzero(mask)
+    f = np.concatenate([F / mat.mu, np.zeros(n_p)])
+    S = sp.bmat([[A, B.T], [B, None]], format='csr')     # Stokes operator
+    zero_p = sp.csr_matrix((n_p, n_p))
+    k_rho = mat.rho / mat.mu
+
+    def residual(x, lam):
+        C, _ = convection(mesh, x[:n3].reshape(-1, 3), newton=False)
+        return S @ x + np.concatenate([(lam * k_rho) * (C @ x[:n3]), np.zeros(n_p)]) - f
+
+    x0 = np.zeros(nx)                                    # Stokes start
+    x0[cdofs] = cvals
+    x0[free] = splu(S[free][:, free].tocsc()).solve((f - S @ x0)[free])
+    # force scale: viscous + pressure force of the Stokes solution (and the applied loads)
+    ref = max(float(np.linalg.norm(f[free])), float(np.linalg.norm((S @ x0 - f)[:n3])),
+              float(np.linalg.norm((A @ x0[:n3]))), 1e-30)
+
+    def run(lams):
+        x = x0.copy()
+        hist, n_pic, n_newt = [], 0, 0
+        for lam in lams:
+            r = residual(x, lam)
+            r0 = float(np.linalg.norm(r[free]))
+            mode, it, conv = 'picard', 0, False
+            while it < max_iter:
+                newton = mode == 'newton'
+                C, J = convection(mesh, x[:n3].reshape(-1, 3), newton=newton)
+                Kc = (C + J) if newton else C
+                Kt = S + sp.bmat([[(lam * k_rho) * Kc, None], [None, zero_p]], format='csr')
+                d = np.zeros(nx)
+                d[free] = splu(Kt[free][:, free].tocsc()).solve(-r[free])
+                rn0, alpha = float(np.linalg.norm(r[free])), 1.0
+                for _ in range(6):                       # backtracking line search on the residual norm
+                    xt = x + alpha * d
+                    rt = residual(xt, lam)
+                    if float(np.linalg.norm(rt[free])) < (1 - 1e-4 * alpha) * rn0 or rn0 < tol * ref:
+                        break
+                    alpha *= 0.5
+                x, r = xt, rt
+                it += 1
+                n_pic += not newton
+                n_newt += newton
+                rn = float(np.linalg.norm(r[free])) / ref
+                step = float(np.abs(alpha * d[:n3]).max() / max(np.abs(x[:n3]).max(), 1e-30))
+                hist.append({'lambda': lam, 'mode': mode, 'residual': rn, 'step': step, 'alpha': alpha})
+                if progress:
+                    progress(len(hist), f'Navier-Stokes ({mode}) ρ×{lam:g}: residuo {rn:.2e}')
+                if not np.isfinite(rn) or rn * ref > 1e6 * max(r0, ref):
+                    return None, hist, n_pic, n_newt
+                if rn < tol and step < max(1e3 * tol, 1e-8):
+                    conv = True
+                    break
+                if mode == 'picard' and (step < picard_switch or it >= max_picard):
+                    mode = 'newton'
+            if not conv:
+                return None, hist, n_pic, n_newt
+        return x, hist, n_pic, n_newt
+
+    ramp, history, cont = [1.0], [], 0
+    while True:
+        x, hist, n_pic, n_newt = run(ramp)
+        history += hist
+        if x is not None:
+            break
+        cont += 1
+        if cont > 4:                                     # 1 → 2 → 4 → 8 → 16 ρ steps
+            raise ValueError('Navier-Stokes no converge (ni con continuación en Reynolds hasta 16 pasos): el flujo '
+                             'puede ser inestable o turbulento a este Reynolds, o la malla demasiado gruesa '
+                             '(Reynolds de elemento alto). Refine la malla o reduzca la velocidad.')
+        ramp = [i / 2 ** cont for i in range(1, 2 ** cont + 1)]
+    v = x[:n3].reshape(-1, 3)
+    pc = x[n3:] * mat.mu
+    p = np.zeros(mesh.n_nodes)
+    p[corners] = pc
+    el = mesh.elements
+    for k, (i, j) in enumerate(tb.T10_EDGES):
+        p[el[:, 4 + k]] = 0.5 * (pc[pidx[el[:, i]]] + pc[pidx[el[:, j]]])
+    r = residual(x, 1.0)
+    R = r[:n3] * mat.mu                                  # = force on the fluid at prescribed-velocity DOFs
+    final = [h for h in history if h['lambda'] == 1.0]
+    return v, p, {'n_dof': int(nx), 'n_pressure': int(n_p), 'pressure_pinned': pin,
+                  'residual': float(np.linalg.norm(r[free]) / ref), 'reaction': R,
+                  'navier_stokes': {'converged': True, 'iterations': len(history), 'picard_iterations': n_pic,
+                                    'newton_iterations': n_newt, 'continuation_steps': len(ramp),
+                                    'history': history,
+                                    'newton_residuals': [h['residual'] for h in final if h['mode'] == 'newton']}}
+
+
+def element_reynolds_max(mesh, v: np.ndarray, mat: FluidMaterial) -> float:
+    """max over elements of ρ|v|h/μ (h = longest corner edge, |v| = max nodal speed in the element)."""
+    X = mesh.nodes[mesh.elements[:, :4]]
+    h = np.max([np.linalg.norm(X[:, i] - X[:, j], axis=1) for i in range(4) for j in range(i + 1, 4)], axis=0)
+    vm = np.linalg.norm(v[mesh.elements], axis=2).max(axis=1)
+    return float((mat.rho * vm * h / mat.mu).max())

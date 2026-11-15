@@ -332,7 +332,17 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   uncertainty / adaptive → 422. UI `DesignGraph/FluidFields.jsx` (presets). Hito `python validate_fluid.py
   [--server …]`: plane Poiseuille (profile, Q, linear p, wall force Δp·A), Couette (wall shear μU/H·A) and
   hydrostatics in a closed box exact (1e-10); square duct vs Fourier series −0.125 % at h = a/3, order 3.9; mass
-  balance 1e-12. Tests `tests/test_fluid.py`. Not Navier-Stokes: no convection term, no turbulence, steady only.
+  balance 1e-12. Tests `tests/test_fluid.py`.
+- **Steady laminar Navier–Stokes** (`stokes.solve_ns`): material `inertia: true` (graph MATERIAL `flow_model:
+  'navier_stokes'`, needs ρ > 0; absent → Stokes, hashes unchanged). Galerkin convection ∫w·ρ(v·∇)v (degree-5 rule,
+  geometry cached on the mesh), Stokes start → Picard (Oseen) until the step < 2 % (max 8) → Newton (C + J, exact
+  Jacobian, checked vs finite differences) with backtracking; on failure ρ is ramped (2, 4, 8, 16 steps), then
+  ValueError. No SUPG/PSPG: warning when element Re ρ|v|h/μ > 100, and when Re > 2000 (turbulent, not modelled).
+  Summary `fluid.model` stokes|navier_stokes, `fluid.navier_stokes` {iterations, picard/newton, continuation_steps,
+  newton_residuals, element_reynolds_max, curve}. UI toggle in `FluidFields.jsx`. Hito `python validate_navier_stokes.py
+  [--server …]` (~1 min): Kovasznay Re 40 (velocity order 3.16, pressure 2.11, Newton quadratic), Poiseuille with
+  inertia exact, Stokes limit, lid-driven cavity Re 100 within 0.21 % of the 1024² reference (Ghia 129²: 1.4–3.4 %).
+  Tests `tests/test_navier_stokes.py`. Still steady and laminar only (no turbulence, no transient).
 - `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
   potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
   the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes), no coils /
