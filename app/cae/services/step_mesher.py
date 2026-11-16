@@ -195,7 +195,34 @@ def mesh_step_file(
             )
 
             # ── Generate mesh ──────────────────────────────────────────────
-            gmsh.model.mesh.generate(3)
+            # A surface mesh that touches itself (thin walls, tangent faces) makes the Delaunay-based 3-D
+            # algorithms stop with "PLC Error: a segment and a facet intersect"; Frontal often still
+            # works. For tetra meshes the other algorithms are tried before giving up.
+            algorithm_used = algorithm
+            if mesh_type == "tetra":
+                order = [algorithm.lower()] + [a for a in ("hxt", "delaunay", "frontal")
+                                               if a != algorithm.lower()]
+                errors = []
+                for algo in order:
+                    gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algo, ALGORITHMS_3D["hxt"]))
+                    try:
+                        gmsh.model.mesh.generate(3)
+                        _types, tags, _nodes = gmsh.model.mesh.getElements(3)
+                        if not sum(len(t) for t in tags):
+                            raise RuntimeError("no volume elements")
+                        algorithm_used = algo
+                        break
+                    except Exception as exc:  # noqa: BLE001 — Gmsh raises plain Exception
+                        errors.append(f"{algo}: {exc}")
+                        logger.warning(f"GMSH: 3-D algorithm {algo} failed ({exc}); trying the next one")
+                        gmsh.model.mesh.clear()
+                else:
+                    raise RuntimeError("3-D meshing failed with every algorithm (" + "; ".join(errors)
+                                       + "). The STEP surface probably intersects itself.")
+                if algorithm_used != algorithm.lower():
+                    logger.info(f"GMSH: meshed with {algorithm_used} after {algorithm} failed")
+            else:
+                gmsh.model.mesh.generate(3)
 
             # ── Post-generation optimisation ───────────────────────────────
             if optimize:
@@ -274,4 +301,5 @@ def mesh_step_file(
         "bounding_box":   bbox,
         "mesh_size_used": mesh_size,
         "elapsed_s":      round(elapsed, 2),
+        "algorithm_used": algorithm_used,
     }
