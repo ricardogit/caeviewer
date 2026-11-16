@@ -144,107 +144,105 @@ def mesh_step_file(
         logger.warning(f"Unknown mesh_type '{mesh_type}', falling back to 'tetra'")
         mesh_type = "tetra"
 
+    # A surface mesh that touches itself (thin walls, tangent faces) makes the Delaunay-based 3-D algorithms stop
+    # with "PLC Error: a segment and a facet intersect"; Frontal often still works. For tetra meshes the other
+    # algorithms are tried before giving up — each in a fresh Gmsh session: after a failed 3-D pass even a
+    # reloaded model gives no volume elements with any algorithm.
+    if mesh_type == "tetra":
+        order = [algorithm.lower()] + [a for a in ("hxt", "delaunay", "frontal") if a != algorithm.lower()]
+    else:
+        order = [algorithm.lower()]
+    msh_path = output_vtu.replace(".vtu", "_tmp.msh")
+    errors = []
+    t0 = time.time()
+
     with _gmsh_lock:
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
         from app.gmsh_init import initialize as _gmsh_init
-        _gmsh_init(["", "-nopopup"])
-        gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.option.setNumber("General.Verbosity", 1)
-        gmsh.option.setNumber("General.NoPopup", 1)
+        for algorithm_used in order:
+            _gmsh_init(["", "-nopopup"])
+            gmsh.option.setNumber("General.Terminal", 0)
+            gmsh.option.setNumber("General.Verbosity", 1)
+            gmsh.option.setNumber("General.NoPopup", 1)
+            try:
+                logger.info(f"GMSH: opening {step_path}")
+                gmsh.open(step_path)
 
-        try:
-            t0 = time.time()
-            logger.info(f"GMSH: opening {step_path}")
-            gmsh.open(step_path)
+                # ── Bounding-box → auto mesh size ─────────────────────────────
+                xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+                diag = math.sqrt(
+                    (xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2
+                )
+                if diag == 0:
+                    raise ValueError(
+                        "Model has zero bounding-box diagonal — geometry may be empty."
+                    )
 
-            # ── Bounding-box → auto mesh size ─────────────────────────────
-            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
-            diag = math.sqrt(
-                (xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2
-            )
-            if diag == 0:
-                raise ValueError(
-                    "Model has zero bounding-box diagonal — geometry may be empty."
+                # refinement 1 → ~10 elements along diag, 5 → ~50
+                mesh_size = diag / (refinement * 10)
+
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size * 0.1)
+
+                # ── Mesh-type-specific options ─────────────────────────────────
+                if mesh_type == "tetra":
+                    gmsh.option.setNumber("Mesh.Algorithm3D",
+                                          ALGORITHMS_3D.get(algorithm_used, ALGORITHMS_3D["hxt"]))
+                    gmsh.option.setNumber("Mesh.RecombineAll", 0)
+                    gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 0)
+
+                else:  # "hexa" or "hybrid"
+                    _configure_hexa(gmsh, mesh_type)
+
+                gmsh.option.setNumber("Mesh.Optimize", 1 if optimize else 0)
+
+                # ── Caller-supplied Gmsh overrides (e.g. ElementOrder=2 for TET10) ──
+                for key, val in (gmsh_extra or {}).items():
+                    gmsh.option.setNumber(key, val)
+
+                logger.info(
+                    f"GMSH: meshing  diag={diag:.3f}  size={mesh_size:.4f}  "
+                    f"type={mesh_type}  algo={algorithm_used}"
                 )
 
-            # refinement 1 → ~10 elements along diag, 5 → ~50
-            mesh_size = diag / (refinement * 10)
-
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
-            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size * 0.1)
-
-            # ── Mesh-type-specific options ─────────────────────────────────
-            if mesh_type == "tetra":
-                algo_id = ALGORITHMS_3D.get(algorithm.lower(), ALGORITHMS_3D["hxt"])
-                gmsh.option.setNumber("Mesh.Algorithm3D", algo_id)
-                gmsh.option.setNumber("Mesh.RecombineAll", 0)
-                gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 0)
-
-            else:  # "hexa" or "hybrid"
-                _configure_hexa(gmsh, mesh_type)
-
-            gmsh.option.setNumber("Mesh.Optimize", 1 if optimize else 0)
-
-            # ── Caller-supplied Gmsh overrides (e.g. ElementOrder=2 for TET10) ──
-            for key, val in (gmsh_extra or {}).items():
-                gmsh.option.setNumber(key, val)
-
-            logger.info(
-                f"GMSH: meshing  diag={diag:.3f}  size={mesh_size:.4f}  "
-                f"type={mesh_type}  algo={algorithm}"
-            )
-
-            # ── Generate mesh ──────────────────────────────────────────────
-            # A surface mesh that touches itself (thin walls, tangent faces) makes the Delaunay-based 3-D
-            # algorithms stop with "PLC Error: a segment and a facet intersect"; Frontal often still
-            # works. For tetra meshes the other algorithms are tried before giving up.
-            algorithm_used = algorithm
-            if mesh_type == "tetra":
-                order = [algorithm.lower()] + [a for a in ("hxt", "delaunay", "frontal")
-                                               if a != algorithm.lower()]
-                errors = []
-                for algo in order:
-                    gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algo, ALGORITHMS_3D["hxt"]))
-                    try:
-                        gmsh.model.mesh.generate(3)
+                # ── Generate mesh ──────────────────────────────────────────────
+                try:
+                    gmsh.model.mesh.generate(3)
+                    if mesh_type == "tetra":
                         _types, tags, _nodes = gmsh.model.mesh.getElements(3)
                         if not sum(len(t) for t in tags):
                             raise RuntimeError("no volume elements")
-                        algorithm_used = algo
-                        break
-                    except Exception as exc:  # noqa: BLE001 — Gmsh raises plain Exception
-                        errors.append(f"{algo}: {exc}")
-                        logger.warning(f"GMSH: 3-D algorithm {algo} failed ({exc}); trying the next one")
-                        gmsh.model.mesh.clear()
-                else:
-                    raise RuntimeError("3-D meshing failed with every algorithm (" + "; ".join(errors)
-                                       + "). The STEP surface probably intersects itself.")
-                if algorithm_used != algorithm.lower():
-                    logger.info(f"GMSH: meshed with {algorithm_used} after {algorithm} failed")
-            else:
-                gmsh.model.mesh.generate(3)
+                except Exception as exc:  # noqa: BLE001 — Gmsh raises plain Exception
+                    if mesh_type != "tetra":
+                        raise
+                    errors.append(f"{algorithm_used}: {exc}")
+                    logger.warning(f"GMSH: 3-D algorithm {algorithm_used} failed ({exc})")
+                    continue
 
-            # ── Post-generation optimisation ───────────────────────────────
-            if optimize:
-                if mesh_type == "tetra":
-                    # Netgen improves tet quality (dihedral angles)
-                    gmsh.model.mesh.optimize("Netgen")
-                elif mesh_type in ("hexa", "hybrid"):
-                    # Untangle + HighOrder smoother work on hex/mixed meshes
-                    gmsh.model.mesh.optimize("Relocate3D")
-                    gmsh.model.mesh.optimize("UntangleMeshGeometry")
+                # ── Post-generation optimisation ───────────────────────────────
+                if optimize:
+                    if mesh_type == "tetra":
+                        # Netgen improves tet quality (dihedral angles)
+                        gmsh.model.mesh.optimize("Netgen")
+                    elif mesh_type in ("hexa", "hybrid"):
+                        # Untangle + HighOrder smoother work on hex/mixed meshes
+                        gmsh.model.mesh.optimize("Relocate3D")
+                        gmsh.model.mesh.optimize("UntangleMeshGeometry")
 
-            # ── Write intermediate .msh ────────────────────────────────────
-            # MSH2 uses contiguous 1-based node IDs; MSH4 can produce
-            # non-contiguous IDs that trip up meshio's cell remapping.
-            gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
-            msh_path = output_vtu.replace(".vtu", "_tmp.msh")
-            gmsh.write(msh_path)
-            elapsed = time.time() - t0
-            logger.info(f"GMSH: done in {elapsed:.1f}s → {msh_path}")
+                # ── Write intermediate .msh ────────────────────────────────────
+                # MSH2 uses contiguous 1-based node IDs; MSH4 can produce
+                # non-contiguous IDs that trip up meshio's cell remapping.
+                gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+                gmsh.write(msh_path)
+                elapsed = time.time() - t0
+                logger.info(f"GMSH: done in {elapsed:.1f}s ({algorithm_used}) → {msh_path}")
+                break
 
-        finally:
-            gmsh.finalize()
+            finally:
+                gmsh.finalize()
+        else:
+            raise RuntimeError("3-D meshing failed with every algorithm (" + "; ".join(errors)
+                               + "). The STEP surface probably intersects itself.")
 
     # ── Convert .msh → .vtu via meshio (outside the lock) ─────────────────
     mesh = meshio.read(msh_path)
