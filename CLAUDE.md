@@ -426,6 +426,40 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   no discontinuity capturing yet (undershoot reported + warning), fixed Δt only, no warm start from a previous run.
   Ogata–Banks reference must use erfcx (exp(vx/D) overflows; capping it drops a 1 % term). Tests `tests/test_transport.py`.
 
+- **Groundwater flow** (FASE 10.6, `fem/darcy.py`): confined Darcy S_s ∂h/∂t = ∇·(K∇h) + Q on T4/T10, head h [m].
+  Material `porous_medium` {K m/s scalar | [K1, K2, K3] along `axis_1`/`axis_2`, `K_zones` [{box [[x0,y0,z0],[x1,y1,z1]] m,
+  K}] (element centroid in box, last wins), `Ss` 1/m, `porosity` (pore velocity only), `initial_head`}. BC
+  `hydraulic_head` (+ history); loads `recharge` m/s (face), `well` {rate m³/s, + = extraction} on screen faces (spread
+  by area) or at a `point`, `leakage` {conductance 1/s, head} (river bed / aquitard, like convection); free faces
+  impermeable. `time` {t_end, n_steps, scheme bdf2 (variable-step, BE start) | cn | be, **dt_growth** (geometric
+  steps for pumping tests), n_output}; transient needs Ss > 0; steady needs a head BC or leakage. Water budget with the
+  scheme's own weights (variable BDF2: a δ_{n+1} − c δ_n = Δt q), balance scaled by gross fixed-head inflow (net ≈ 0
+  between two head faces) → 1e-13. Kernel `_solve_darcy` (physics ['darcy']): summary `darcy` {K, zones, heads, max
+  |q| / |v| m/d, wells (head, drawdown = area mean on the screen), probes, budget, storage_history}; fields `x_h`
+  (+ `x_s` drawdown, series in transient), `qmag`, `vmag`, `vx/vy/vz` **pore velocity in m/d**. `_run_velocity` reads
+  the vx unit from the run's `summary_json` (mm/s fluid, m/d Darcy) and the Darcy porosity. `FEMMesh.generate_grid
+  (xs, ys, zs, order, transform)`: structured Kuhn-split tets with any grading, faces x0..z1 in parameter space (log
+  radial sector for wells; T10 mids at mapped parameter midpoints follow the circle). Thiem needs angular resolution
+  too (n_θ 3 → error stalls at 0.3 %; 12 per 90° gives order 2).
+  **Aquifer transport**: transport material `porous` {porosity (empty → the Darcy run's), alpha_L, alpha_T} + species
+  `retardation` R ≥ 1: n_e R ∂c/∂t + n_e v·∇c − ∇·(n_e 𝔻∇c) + n_e R λc = S, Bear–Scheidegger 𝔻 = (D + α_T|v|)I + (α_L −
+  α_T)vvᵀ/|v| (Galerkin at quadrature points, SUPG residual 𝔻_e:∇∇N with the centroid tensor), τ with 𝔻_L = D + α_L|v|
+  and Rλ; decay / conversions on dissolved + sorbed mass, masses total. Without `porous` the old operators are used
+  (results unchanged). Graph: MATERIAL `model_type: 'porous_medium'` (`_porous_material`: K + `K_unit` m/s|cm/s|m/d,
+  `Kz_ratio`, `K_zones` mm, Ss, porosity, initial_head, transient + dt_growth, probes), BC `bc_type: 'hydraulic_head'`
+  (`head`), LOAD `well` (unit m³/s|L/s|m³/h|m³/d, `at_point` + x/y/z mm, default face `tip`), `recharge` (mm/d|mm/año|m/s,
+  default `z1`), `leakage` (`conductance` + 1/d|1/s, `head`); transport MATERIAL `porous`, `alpha_L`, `alpha_T`,
+  `porosity`, species `retardation`; `velocity_source: run` accepts Darcy runs. UI `DesignGraph/DarcyFields.jsx`
+  (aquifer presets, zones, piezometers) + `ProbeList` shared from TransportFields (+ tests). Hito `python
+  validate_darcy.py [--server …]` (~50 s): Thiem 0.078 % order 1.99; Theis (R 10 km, Δt 15 s → 6400 s) 0.11 % at
+  1/10/50 m, budget 7e-13; recharge→leakage and K zones in series exact; Ogata–Banks with R = 2 + α_L 0.06 %; 3-D
+  anisotropic pulse 0.50 % (320 steps; 80 steps give 1.1 %: time error of the scheme, identical to molecular D);
+  Darcy → transport coupling 0.04 %; server: Darcy run → transport run (porosity from the run) 0.023 %. Tests
+  `tests/test_darcy.py`. Not done: unconfined (water-table) aquifers, seawater intrusion, multiple materials.
+- **Performance caveat (Windows, OpenBLAS numpy):** batched tiny `np.linalg.solve` in `tet_batch._jac` is ~60× slower
+  with OpenBLAS threading on a loaded machine (0.54 s vs 0.009 s per 8000 elements); `OPENBLAS_NUM_THREADS=1` for the
+  worker / scripts (backend suite 82 s → 45 s). Not changed in code.
+
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,
   node/node_set forces; records applied resultant.

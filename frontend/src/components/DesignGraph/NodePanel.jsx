@@ -21,6 +21,7 @@ import PiezoFields from './PiezoFields';
 import FluidFields from './FluidFields';
 import MagneticFields, { CoilFields } from './MagneticFields';
 import TransportFields, { ConcentrationBCFields, SpeciesLoadFields, SPECIES_LOADS } from './TransportFields';
+import DarcyFields, { HeadBCFields, DarcyLoadFields, DARCY_LOADS } from './DarcyFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -36,6 +37,7 @@ export const MATERIAL_TYPES = [
   ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
   ['linear_magnetic', 'Magnético (μr, imán Br, saturación B-H)', true],
   ['scalar_transport', 'Transporte de contaminantes (advección–difusión–reacción)', true],
+  ['porous_medium', 'Medio poroso (Darcy, agua subterránea)', true],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -48,6 +50,7 @@ const BC_TYPES = [
   ['magnetic_potential', 'Potencial magnético / polo (magnético)'],
   ['coil', 'Bobina N·I (magnético)'],
   ['concentration', 'Concentración impuesta (transporte)'],
+  ['hydraulic_head', 'Carga hidráulica impuesta (Darcy)'],
 ];
 const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
 const LOAD_TYPES = [
@@ -58,6 +61,8 @@ const LOAD_TYPES = [
   ['magnetic_flux', 'Flujo magnético normal Bn (magnético)'],
   ['point_source', 'Vertido puntual (transporte)'], ['species_flux', 'Flujo de especie en caras (transporte)'],
   ['exchange', 'Intercambio con el exterior (transporte)'], ['species_source', 'Fuente de especie en volumen (transporte)'],
+  ['well', 'Pozo de bombeo / inyección (Darcy)'], ['recharge', 'Recarga por infiltración (Darcy)'],
+  ['leakage', 'Goteo río / acuitardo (Darcy)'],
   ['torque', 'Par (próximamente)'],
 ];
 const LOAD_UNITS = {
@@ -65,6 +70,7 @@ const LOAD_UNITS = {
   heat_flux: ['W/m²', 'kW/m²'], convection: ['W/m²·K'], heat_source: ['W/m³', 'kW/m³', 'MW/m³'],
   surface_charge: ['C/m²', 'mC/m²', 'µC/m²'], magnetic_flux: ['T', 'mT'],
   point_source: [''], species_flux: [''], exchange: [''], species_source: [''],
+  well: [''], recharge: [''], leakage: [''],
 };
 const THERMAL_LOADS = ['heat_flux', 'convection', 'heat_source'];
 // face-based scalar loads of the field physics (same panel as the thermal ones)
@@ -283,7 +289,7 @@ export default function NodePanel({ node, graphId, onClose }) {
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
               ['yield_strength', 'Límite elástico σy [Pa]', '']]
-              .filter(() => props.model_type !== 'scalar_transport')
+              .filter(() => !['scalar_transport', 'porous_medium'].includes(props.model_type))
               .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid',
                 'linear_magnetic']
                 .includes(props.model_type) || k === 'rho')
@@ -324,10 +330,11 @@ export default function NodePanel({ node, graphId, onClose }) {
             {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
             {props.model_type === 'linear_magnetic' && <MagneticFields props={props} setProp={setProp} />}
             {props.model_type === 'scalar_transport' && <TransportFields props={props} setProp={setProp} />}
-            {props.model_type !== 'scalar_transport' && (
+            {props.model_type === 'porous_medium' && <DarcyFields props={props} setProp={setProp} />}
+            {!['scalar_transport', 'porous_medium'].includes(props.model_type) && (
               <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
             )}
-            {props.model_type !== 'scalar_transport' && THERMAL_MATERIAL.map(([k, lbl, ph]) => (
+            {!['scalar_transport', 'porous_medium'].includes(props.model_type) && THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}
                 value={props[k] ?? ''}
                 onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
@@ -397,6 +404,9 @@ export default function NodePanel({ node, graphId, onClose }) {
             {props.bc_type === 'concentration' && (
               <ConcentrationBCFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
             )}
+            {props.bc_type === 'hydraulic_head' && (
+              <HeadBCFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+            )}
             {props.bc_type === 'velocity' && (
               <>
                 <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -428,7 +438,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 )}
               </>
             )}
-            {!['symmetry', 'velocity', 'coil', 'concentration'].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
+            {!['symmetry', 'velocity', 'coil', 'concentration', 'hydraulic_head'].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
               <Box>
                 <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
                   Desplazamientos restringidos:
@@ -465,7 +475,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </Box>
               </Box>
             )}
-            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil', 'concentration'].includes(props.bc_type) && (
+            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil', 'concentration', 'hydraulic_head'].includes(props.bc_type) && (
               <TextField
                 label="Desplazamiento prescrito [m]"
                 size="small" fullWidth type="number"
@@ -476,7 +486,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 InputLabelProps={{ style: { color: '#888' } }}
               />
             )}
-            {!studyGeometryId && props.bc_type !== 'concentration' && (
+            {!studyGeometryId && !['concentration', 'hydraulic_head'].includes(props.bc_type) && (
               <TextField
                 label="Conjunto de nodos (malla CAE / viga de prueba)"
                 size="small" fullWidth
@@ -518,6 +528,17 @@ export default function NodePanel({ node, graphId, onClose }) {
               </Select>
             </FormControl>
           );
+          if (DARCY_LOADS.includes(lt)) {
+            return (
+              <>
+                {typeSelect}
+                {!(lt === 'well' && props.at_point) && (
+                  <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)} />
+                )}
+                <DarcyLoadFields lt={lt} props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+              </>
+            );
+          }
           if (SPECIES_LOADS.includes(lt)) {
             return (
               <>

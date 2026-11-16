@@ -297,6 +297,43 @@ class FEMMesh:
         return cls(nodes_, elements_, face_sets=faces_, mids_known=True)
 
     @classmethod
+    def generate_grid(cls, xs, ys, zs, order: int = 2, transform=None) -> FEMMesh:
+        """Structured tet mesh of the box xs × ys × zs (coordinate arrays, any grading): every hex cell split into
+        the 6 Kuhn tets around its main diagonal (conforming). ``transform(P) → X`` maps the parameter points
+        (k,3) to physical space (e.g. a graded radial sector for well problems); T10 mid nodes are placed at the
+        mapped parameter mid-points, so curved boundaries are followed. Face sets ``x0 x1 y0 y1 z0 z1`` = the six
+        parameter faces (with a sector map: x0 = inner radius, x1 = outer, y0/y1 = the two radial planes)."""
+        from app.design.services.fem import tet_batch as tb
+        xs, ys, zs = (np.asarray(a, float) for a in (xs, ys, zs))
+        nx, ny, nz = len(xs), len(ys), len(zs)
+        if min(nx, ny, nz) < 2 or any(np.any(np.diff(a) <= 0) for a in (xs, ys, zs)):
+            raise ValueError('generate_grid: coordenadas estrictamente crecientes, al menos 2 por eje.')
+        P = np.stack(np.meshgrid(xs, ys, zs, indexing='ij'), axis=-1).reshape(-1, 3)
+        idx = np.arange(nx * ny * nz).reshape(nx, ny, nz)
+        c = [idx[:-1, :-1, :-1], idx[1:, :-1, :-1], idx[1:, 1:, :-1], idx[:-1, 1:, :-1],
+             idx[:-1, :-1, 1:], idx[1:, :-1, 1:], idx[1:, 1:, 1:], idx[:-1, 1:, 1:]]
+        c = [a.ravel() for a in c]
+        kuhn = [(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)]
+        el = np.concatenate([np.column_stack([c[a], c[b], c[d], c[e]]) for a, b, d, e in kuhn])
+        if order == 2:
+            pairs = np.sort(el[:, tb.T10_EDGES].reshape(-1, 2), axis=1)
+            uniq, inv = np.unique(pairs, axis=0, return_inverse=True)
+            mids = len(P) + inv.reshape(len(el), 6)
+            P = np.vstack([P, 0.5 * (P[uniq[:, 0]] + P[uniq[:, 1]])])
+            el = np.hstack([el, mids])
+        X = P if transform is None else np.asarray(transform(P), float)
+        el = tb.canonicalize(X, el, reorder_mids=False)
+        bf = tb.boundary_faces(el)
+        Pc = P[bf[:, :3]]
+        faces = {}
+        for ax, (lo, hi) in enumerate(((xs[0], xs[-1]), (ys[0], ys[-1]), (zs[0], zs[-1]))):
+            tol = 1e-9 * max(1.0, abs(hi - lo))
+            for name, val in (('01'[0], lo), ('01'[1], hi)):
+                on = np.all(np.abs(Pc[:, :, ax] - val) < tol, axis=1)
+                faces['xyz'[ax] + name] = bf[on]
+        return cls(X, el, face_sets=faces, canonical=True)
+
+    @classmethod
     def _generate_fallback_cantilever(cls,
                                       length: float = 0.050,
                                       width: float = 0.010,

@@ -127,7 +127,24 @@ export function SummaryRows({ header }) {
         + `[${s.transport.streeter_phelps.min_DO_point_m.map((v) => fmt(v * 1e3)).join(', ')}] mm`]] : []),
       ...(s.transport.probes || []).map((p) => [`Punto ${p.label}`, `máx. ${p.max.map(fmt).join(' / ')} `
         + `(t = ${p.t_max.map(fmt).join(' / ')} s)${p.inside ? '' : ' ⚠ fuera'}`]),
+      ...(s.transport.porous ? [['Medio poroso', `n_e ${fmt(s.transport.porous.porosity)} · α_L ${fmt(s.transport.porous.alpha_L)} m`
+        + ` · α_T ${fmt(s.transport.porous.alpha_T)} m`]] : []),
       ['Balance de masa', fmt(s.transport.mass_balance_error)],
+    ] : []),
+    ...(s.darcy ? [
+      ['Modelo', `Darcy · ${s.darcy.steady ? 'estacionario'
+        : `${s.darcy.time?.scheme?.toUpperCase()} · ${s.darcy.time?.n_steps} pasos (Δt ${fmt(s.darcy.time?.dt_first)} → `
+          + `${fmt(s.darcy.time?.dt_last)} s)`}`],
+      ['K', Array.isArray(s.darcy.K) ? 'tensor (anisótropo)' : `${fmt(s.darcy.K)} m/s`
+        + (s.darcy.zones?.length ? ` + ${s.darcy.zones.length} zona(s)` : '')],
+      ['Carga h', `${fmt(s.darcy.min_head_m)} … ${fmt(s.darcy.max_head_m)} m`],
+      ...(s.darcy.max_drawdown_m != null ? [['Descenso máx.', `${fmt(s.darcy.max_drawdown_m)} m`]] : []),
+      ['|q| máx. / |v| poro máx.', `${fmt(s.darcy.max_darcy_flux_m_d)} / ${fmt(s.darcy.max_pore_velocity_m_d)} m/d`],
+      ...(s.darcy.wells || []).map((w, i) => [`Pozo ${w.label || i + 1}`, `${fmt(w.rate_m3_s)} m³/s · h ${fmt(w.head_m)} m`
+        + (w.drawdown_m != null ? ` · descenso ${fmt(w.drawdown_m)} m` : '')]),
+      ...(s.darcy.probes || []).map((p) => [`Piezómetro ${p.label}`, `h ${fmt(p.head_m)} m (mín. ${fmt(p.min_head_m)})`
+        + (p.inside ? '' : ' ⚠ fuera')]),
+      ['Balance de agua', fmt(s.darcy.balance_error)],
     ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
@@ -143,7 +160,7 @@ export function SummaryRows({ header }) {
           ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
           : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : (s.fluid || s.magnetic || s.transport) ? [] : [['k', header?.material?.k
+    ] : (s.fluid || s.magnetic || s.transport || s.darcy) ? [] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
       : '—']]),
   ];

@@ -37,13 +37,14 @@ PHYSICS_LABELS = {
     ('fluid',): 'Fluido newtoniano 3D (Stokes o Navier-Stokes laminar estacionario)',
     ('magnetic',): 'Magnetostática 3D (potencial escalar; bobinas N·I, saturación B-H)',
     ('transport',): 'Transporte de contaminantes 3D (advección–difusión–reacción, SUPG)',
+    ('darcy',): 'Flujo subterráneo 3D (Darcy, acuífero confinado)',
 }
 
 
 # material models only the plain kernel run supports (Newton / time stepping)
 NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
                        'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid', 'linear_magnetic',
-                       'scalar_transport')   # (piezo / fluid: linear, plain kernel run only)
+                       'scalar_transport', 'porous_medium')   # (piezo / fluid: linear, plain kernel run only)
 MATERIAL_LABELS = {
     'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
     'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',

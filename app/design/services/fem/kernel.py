@@ -37,6 +37,17 @@ from app.design.services.traceability.hasher import mesh_hash, array_hash
 logger = logging.getLogger(__name__)
 
 
+def _final_step(f, key: str) -> int:
+    """Last stored step of an HDF5 result field (transient series keep ``final_step``)."""
+    g = f[f'fields/x_{key}']
+    return int(g.attrs.get('final_step', 0))
+
+
+def tr_locate(mesh: FEMMesh, point) -> dict:
+    from app.design.services.fem.transport import locate
+    return locate(mesh, [point])[0]
+
+
 class FEMKernel:
     """Orchestrates the full FEM pipeline from spec dict to results."""
 
@@ -226,6 +237,10 @@ class FEMKernel:
         if 'transport' in physics:
             return self._solve_transport(mesh, mesh_meta, mat_spec, solver_spec, all_bcs, all_loads, tier,
                                          socketio, run_id, t_start)
+        # 3a'. Groundwater flow (FASE 10.6): Darcy, hydraulic head
+        if 'darcy' in physics:
+            return self._solve_darcy(mesh, mesh_meta, mat_spec, solver_spec, all_bcs, all_loads, tier,
+                                     socketio, run_id, t_start)
 
         # 3b. Thermal field (FASE 2 multiphysics): steady conduction, then one-way coupling
         T = thermal = None
@@ -769,7 +784,9 @@ class FEMKernel:
 
     @staticmethod
     def _run_velocity(run_id: str, mesh: FEMMesh) -> tuple[np.ndarray, dict]:
-        """Nodal velocity [m/s] of a finished fluid run on the same mesh (HDF5 fields x_vx/x_vy/x_vz, mm/s)."""
+        """Nodal velocity [m/s] of a finished fluid or Darcy run on the same mesh (HDF5 fields x_vx/x_vy/x_vz in the
+        unit their summary declares: mm/s for fluid runs, m/d pore velocity for Darcy runs)."""
+        import json as _json
         import h5py
         from flask import current_app
         data_dir = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
@@ -780,16 +797,24 @@ class FEMKernel:
             if 'fields/x_vx/step_0' not in f:
                 raise ValueError(f'Transporte: el run {run_id} no es un run de fluido (sin campo de velocidad).')
             X = f['nodes'][:]
-            v = np.column_stack([f[f'fields/x_{k}/step_0'][:] for k in ('vx', 'vy', 'vz')]) * 1e-3
+            summ = _json.loads(f.attrs.get('summary_json', '{}'))
+            unit = next((m.get('unit') for m in summ.get('extra_fields') or [] if m.get('key') == 'vx'), 'mm/s')
+            scale = {'mm/s': 1e-3, 'm/s': 1.0, 'm/d': 1.0 / 86_400.0}.get(unit)
+            if scale is None:
+                raise ValueError(f'Transporte: unidad de velocidad {unit!r} del run {run_id} no reconocida.')
+            v = np.column_stack([f[f'fields/x_{k}/step_{_final_step(f, k)}'][:] for k in ('vx', 'vy', 'vz')]) * scale
         if X.shape != mesh.nodes.shape or not np.allclose(X, mesh.nodes, rtol=0, atol=1e-9 * max(1.0, np.abs(X).max())):
             raise ValueError('Transporte: la malla del run de fluido no coincide con la de este estudio (misma '
                              'geometría, tamaño y orden de malla).')
-        return v, {'source': 'run', 'run_id': str(run_id), 'max_velocity_m_s': float(np.linalg.norm(v, axis=1).max())}
+        info = {'source': 'run', 'run_id': str(run_id), 'max_velocity_m_s': float(np.linalg.norm(v, axis=1).max())}
+        if summ.get('darcy'):
+            info['run_physics'] = 'darcy'
+            info['porosity'] = summ['darcy'].get('porosity')
+        return v, info
 
     def _solve_transport(self, mesh, mesh_meta, mat_spec, spec, all_bcs, all_loads, tier,
                          socketio, run_id, t_start) -> dict:
         from app.design.services.fem import transport as tr
-        model = tr.TransportModel(mat_spec)
         bcs = [b for b in all_bcs if tr.is_transport_bc(b)]
         loads = [ld for ld in all_loads if tr.is_transport_load(ld)]
         other = len(all_bcs) - len(bcs) + len(all_loads) - len(loads)
@@ -798,12 +823,23 @@ class FEMKernel:
                              f'especie (cargas); hay {other} condiciones mecánicas, térmicas u otras.')
         vel = mat_spec.get('velocity')
         v_field = None
+        warnings = []
         if isinstance(vel, dict) and vel.get('run_id'):
             v_field, vinfo = self._run_velocity(vel['run_id'], mesh)
+            por = mat_spec.get('porous')
+            if vinfo.get('run_physics') == 'darcy':
+                if por is not None and not por.get('porosity'):        # porosity of the Darcy run (v = q / n_e)
+                    mat_spec = {**mat_spec, 'porous': {**por, 'porosity': vinfo.get('porosity')}}
+                elif por is None:
+                    warnings.append('La velocidad viene de un run de Darcy pero el material de transporte no es un '
+                                    'medio poroso: sin dispersión mecánica ni porosidad (masa por volumen de agua).')
         elif spec.get('velocity_field') is not None:                       # inline nodal field (tests / scripts)
             v_field = np.asarray(spec['velocity_field'], float)
             vinfo = {'source': 'field', 'max_velocity_m_s': float(np.linalg.norm(v_field, axis=1).max())}
         else:
+            vinfo = None
+        model = tr.TransportModel(mat_spec)
+        if vinfo is None:
             vinfo = {'source': 'uniform', 'velocity_m_s': (model.velocity if model.velocity is not None
                                                            else np.zeros(3)).tolist()}
         time_spec = spec.get('time') or None
@@ -826,7 +862,7 @@ class FEMKernel:
             c = x[sl]
             key = f'c{s}'
             d = {'name': spc['name'], 'unit': spc['unit'], 'mass_unit': tr.mass_unit(spc['unit']), 'D': spc['D'],
-                 'decay': spc['decay'], 'max_c': float(c.max()), 'min_c': float(c.min()),
+                 'decay': spc['decay'], 'retardation': spc['retardation'], 'max_c': float(c.max()), 'min_c': float(c.min()),
                  'max_c_any_time': float(xmax[sl].max()), 'min_c_any_time': float(X_all[:, sl].min())}
             if info['steady']:
                 d['rates'] = {k: info['rates'][k][s] for k in info['rates']}
@@ -851,7 +887,8 @@ class FEMKernel:
                  'stabilization': model.stabilization, 'peclet_max': tr.peclet_max(prob),
                  'mass_balance_error': info['mass_balance_error'], 'solver': info['solver'],
                  'reaction_matrix': model.R.tolist()}
-        warnings = []
+        if model.porous:
+            trans['porous'] = model.porous
         if not info['steady']:
             ts = info['time']
             trans['time'] = {k: ts[k] for k in ('t_end', 'n_steps', 'dt', 'scheme', 'theta', 'n_output')}
@@ -914,6 +951,117 @@ class FEMKernel:
                 series['fields']['DO'] = model.streeter_phelps['do_sat'] - X_all[:, n:2 * n]
         return {
             'concentration': x, 'extra_fields': extra, 'time_series': series,
+            'solve_info': {'method': info['solver'], 'converged': s['converged'], 'final_residual': resid},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
+    # ── Groundwater flow (FASE 10.6, Darcy) ─────────────────────────────────
+
+    def _solve_darcy(self, mesh, mesh_meta, mat_spec, spec, all_bcs, all_loads, tier,
+                     socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import darcy as dc
+        bcs = [b for b in all_bcs if dc.is_darcy_bc(b)]
+        loads = [ld for ld in all_loads if dc.is_darcy_load(ld)]
+        other = len(all_bcs) - len(bcs) + len(all_loads) - len(loads)
+        if other:
+            raise ValueError('Flujo subterráneo: solo admite carga hidráulica impuesta (BC) y recarga / pozos / goteo '
+                             f'(cargas); hay {other} condiciones de otro tipo.')
+        med = dc.PorousMedium(mat_spec)
+        time_spec = spec.get('time') or None
+        n = mesh.n_nodes
+        self._emit(socketio, run_id, 10, f'flujo subterráneo: {n:,} incógnitas'
+                   + (f", {int(time_spec['n_steps'])} pasos" if time_spec else ' (estacionario)'), t_start)
+
+        def prog(k, total, t):
+            self._emit(socketio, run_id, 10 + int(80 * k / total), f'Darcy: paso {k}/{total} (t = {t:.4g} s)', t_start)
+        snaps, info = dc.solve(mesh, med, bcs, loads, time=time_spec, probes=spec.get('probes'), progress=prog)
+        prob = info.pop('problem')
+        t_final, h = snaps[-1]
+        _, q = dc.darcy_flux(mesh, prob.Ke, h)
+        v = q / med.porosity
+        qn, vn = np.linalg.norm(q, axis=1), np.linalg.norm(v, axis=1)
+        d = {'steady': info['steady'], 'Ss': med.Ss, 'porosity': med.porosity,
+             'K': (float(med.K[0, 0]) if np.allclose(med.K, med.K[0, 0] * np.eye(3)) else med.K.tolist()),
+             'zones': [{'label': lab, 'n_elements': int((prob.zone == i).sum())}
+                       for i, (_, _, lab) in enumerate(med.zones)],
+             'min_head_m': float(h.min()), 'max_head_m': float(h.max()),
+             'max_darcy_flux_m_d': float(qn.max() * dc.DAY), 'max_pore_velocity_m_d': float(vn.max() * dc.DAY),
+             'balance_error': info['balance_error'], 'solver': info['solver']}
+        if info['steady']:
+            d['rates_m3_s'] = info['rates']
+        else:
+            ts = info['time']
+            d['time'] = ts
+            d['budget_m3'] = info['budget']
+            d['storage_history'] = info['storage_history']
+            d['times'] = [float(t) for t, _ in snaps]
+        wells = []
+        h0 = info.get('initial')
+        for meta, ld in zip(prob.info, loads):
+            if meta['kind'] != 'well':
+                continue
+            w = {'label': meta.get('label'), 'rate_m3_s': meta['rate_m3_s']}
+            if 'point' in meta:
+                lc = tr_locate(mesh, meta['point'])
+                w['head_m'] = float(tb.shape(mesh.element_type, lc['nat']) @ h[mesh.elements[lc['element']]])
+                if h0 is not None:
+                    w['drawdown_m'] = float(tb.shape(mesh.element_type, lc['nat'])
+                                            @ (h0 - h)[mesh.elements[lc['element']]])
+            else:
+                from app.design.services.fem.assembler import _face_tris
+                tris = _face_tris(mesh, ld['face_set'])
+                NdA, _, area = tb.surface_integrals(mesh.nodes, tris)
+                w['head_m'] = float(np.sum(NdA * h[tris]) / area.sum())          # area-mean head on the screen
+                if h0 is not None:
+                    w['drawdown_m'] = float(np.sum(NdA * (h0 - h)[tris]) / area.sum())
+            wells.append(w)
+        if wells:
+            d['wells'] = wells
+        warnings = []
+        if info['curves']:
+            locs = info['probe_locations']
+            stride = max(1, len(info['curves']) // 500)
+            d['probes'] = []
+            for i, (p, lc) in enumerate(zip(spec.get('probes') or [], locs)):
+                cur = [[row[0], row[1 + i]] for row in info['curves']]
+                d['probes'].append({'label': p.get('label') or f'P{i + 1}', 'point': list(map(float, p['point'])),
+                                    'inside': lc['inside'], 'head_m': cur[-1][1],
+                                    'min_head_m': float(min(c[1] for c in cur)),
+                                    'curve': cur[::stride] + ([cur[-1]] if (len(cur) - 1) % stride else [])})
+        fields = [{'key': 'h', 'label': 'Carga hidráulica', 'unit': 'm', 'series': not info['steady']},
+                  {'key': 'qmag', 'label': 'Flujo de Darcy |q|', 'unit': 'm/d'},
+                  {'key': 'vmag', 'label': 'Velocidad de poro |v|', 'unit': 'm/d'},
+                  {'key': 'vx', 'label': 'v x (poro)', 'unit': 'm/d'}, {'key': 'vy', 'label': 'v y (poro)', 'unit': 'm/d'},
+                  {'key': 'vz', 'label': 'v z (poro)', 'unit': 'm/d'}]
+        extra = {'h': h, 'qmag': qn * dc.DAY, 'vmag': vn * dc.DAY, 'vx': v[:, 0] * dc.DAY, 'vy': v[:, 1] * dc.DAY,
+                 'vz': v[:, 2] * dc.DAY}
+        series = None
+        if not info['steady']:
+            H = np.stack([sn[1] for sn in snaps])
+            extra['s'] = h0 - h
+            fields.insert(1, {'key': 's', 'label': 'Descenso', 'unit': 'm', 'series': True})
+            series = {'times': d['times'], 'fields': {'h': H, 's': h0[None] - H}}
+            d['max_drawdown_m'] = float((h0 - h).max())
+        if med.Ss > 0 and info['steady']:
+            warnings.append('S_s solo interviene en el transitorio: el estudio es estacionario (sin «tiempo»).')
+        resid = info['balance_error']
+        s = {
+            'physics': ['darcy'],
+            'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': n, 'element_type': mesh.element_type,
+            'tier': tier, 'converged': bool(resid < 1e-6),
+            'n_iterations': info['time']['n_steps'] if not info['steady'] else 1,
+            'final_residual': resid, 'solver_method': info['solver'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3), 'loads': prob.info,
+            'material_model': 'porous_medium', 'darcy': d, 'extra_fields': fields,
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements), 'result_hash': array_hash(h),
+        }
+        if warnings:
+            s['warnings'] = warnings
+        if mesh_meta:
+            s['mesh'] = {k: val for k, val in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        return {
+            'head': h, 'extra_fields': extra, 'time_series': series,
             'solve_info': {'method': info['solver'], 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,

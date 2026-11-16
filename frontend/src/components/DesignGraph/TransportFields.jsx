@@ -3,6 +3,8 @@
  * dissolved species (D, first-order decay or T90, unit, threshold, initial value or Gaussian pulse), reaction
  * model (none | Streeter–Phelps BOD → oxygen deficit), velocity (uniform or the field of a finished fluid run on
  * the same mesh), SUPG, steady or transient (BDF2 / Crank–Nicolson / implicit Euler) and control points.
+ * Porous medium (FASE 10.6): porosity, dispersivities α_L / α_T and per-species retardation R; the velocity may be
+ * the pore velocity of a finished Darcy run (its porosity is used when left empty).
  * ConcentrationBCFields — BC «Concentración impuesta»; SpeciesLoadFields — species loads (flux, exchange,
  * volumetric source, point discharge). Both pick the species from the study's transport MATERIAL.
  */
@@ -46,7 +48,7 @@ export function useTransportSpecies() {
   return (mat?.data?.properties?.species || [DEFAULT_SPECIES]).map((s, i) => s.name || `Especie ${i + 1}`);
 }
 
-function SpeciesRow({ sp, i, onChange, onRemove, canRemove }) {
+function SpeciesRow({ sp, i, onChange, onRemove, canRemove, porous }) {
   const set = (k, v) => onChange({ ...sp, [k]: v });
   const [pulse, setPulse] = useState(sp.pulse_sigma_mm != null);
   return (
@@ -67,6 +69,7 @@ function SpeciesRow({ sp, i, onChange, onRemove, canRemove }) {
       <Box sx={{ display: 'flex', gap: 0.5 }}>
         {n(sp, set, 'D', 'Difusividad D [m²/s]')}
         {n(sp, set, 'threshold', 'Umbral')}
+        {porous && n(sp, set, 'retardation', 'Retardo R', 1)}
       </Box>
       <Box sx={{ display: 'flex', gap: 0.5 }}>
         {n(sp, set, 'decay', sp.decay_unit === 'T90_h' ? 'T90 [h]' : 'Decaimiento λ')}
@@ -106,12 +109,19 @@ function SpeciesRow({ sp, i, onChange, onRemove, canRemove }) {
   );
 }
 
+const FLOW_PHYSICS = ['fluid', 'darcy'];
+
 function FluidRunPicker({ value, onChange }) {
   const [runs, setRuns] = useState([]);
   useEffect(() => {
     let alive = true;
     axios.get('/api/design/solver/runs', { params: { limit: 200 } })
-      .then((r) => { if (alive) setRuns((r.data.runs || []).filter((x) => x.status === 'done' && (x.physics || []).includes('fluid'))); })
+      .then((r) => {
+        if (alive) {
+          setRuns((r.data.runs || []).filter((x) => x.status === 'done'
+            && (x.physics || []).some((ph) => FLOW_PHYSICS.includes(ph))));
+        }
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -120,17 +130,18 @@ function FluidRunPicker({ value, onChange }) {
       <Select size="small" fullWidth displayEmpty value={runs.some((r) => r.run_id === value) ? value : ''}
         onChange={(e) => onChange(e.target.value)} sx={{ color: '#fff' }}
         inputProps={{ 'aria-label': 'Run de fluido' }}>
-        <MenuItem value=""><em>{runs.length ? 'Elija un run de fluido…' : 'No hay runs de fluido terminados'}</em></MenuItem>
+        <MenuItem value=""><em>{runs.length ? 'Elija un run de fluido o de Darcy…' : 'No hay runs de fluido ni de Darcy terminados'}</em></MenuItem>
         {runs.map((r) => (
           <MenuItem key={r.run_id} value={r.run_id}>
-            {`${(r.created_at || '').slice(0, 16).replace('T', ' ')} · ${r.n_nodes ?? '?'} nodos · ${r.run_id.slice(0, 8)}`}
+            {`${(r.physics || []).includes('darcy') ? 'Darcy' : 'Fluido'} · ${(r.created_at || '').slice(0, 16).replace('T', ' ')} · ${r.n_nodes ?? '?'} nodos · ${r.run_id.slice(0, 8)}`}
           </MenuItem>
         ))}
       </Select>
       <TextField label="o ID del run" size="small" fullWidth value={value || ''}
         onChange={(e) => onChange(e.target.value || null)} inputProps={txt} InputLabelProps={lbl} />
       <Typography variant="caption" sx={{ color: '#777' }}>
-        La malla debe ser la misma (misma geometría, tamaño y orden de malla que el estudio de fluido).
+        La malla debe ser la misma (misma geometría, tamaño y orden de malla que el estudio de flujo). De un run de
+        Darcy se toma la velocidad de poro q/n_e.
       </Typography>
     </>
   );
@@ -141,7 +152,6 @@ export default function TransportFields({ props, setProp }) {
   const sp = props.reaction_model === 'streeter_phelps';
   const setSpecies = (list) => setProp('species', list);
   const src = props.velocity_source || 'uniform';
-  const probes = props.probes || [];
   return (
     <Box data-testid="transport-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1,
       border: '1px solid #1f4a2a', borderRadius: 1, p: 1 }}>
@@ -184,7 +194,7 @@ export default function TransportFields({ props, setProp }) {
 
       <Typography variant="caption" sx={{ color: '#ccc' }}>Especies</Typography>
       {species.map((s, i) => (
-        <SpeciesRow key={i} sp={s} i={i} canRemove={!sp && species.length > 1}
+        <SpeciesRow key={i} sp={s} i={i} canRemove={!sp && species.length > 1} porous={!!props.porous}
           onChange={(v) => setSpecies(species.map((x, j) => (j === i ? v : x)))}
           onRemove={() => setSpecies(species.filter((_, j) => j !== i))} />
       ))}
@@ -205,7 +215,7 @@ export default function TransportFields({ props, setProp }) {
       <ToggleButtonGroup size="small" exclusive value={src} aria-label="Origen de la velocidad"
         onChange={(_, v) => { if (v) setProp('velocity_source', v); }}>
         <ToggleButton value="uniform" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>Uniforme</ToggleButton>
-        <ToggleButton value="run" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>De un run de fluido</ToggleButton>
+        <ToggleButton value="run" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>De un run (fluido / Darcy)</ToggleButton>
       </ToggleButtonGroup>
       {src === 'uniform' ? (
         <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -215,6 +225,23 @@ export default function TransportFields({ props, setProp }) {
         </Box>
       ) : (
         <FluidRunPicker value={props.velocity_run_id} onChange={(v) => setProp('velocity_run_id', v)} />
+      )}
+      <FormControlLabel
+        control={<Switch size="small" checked={!!props.porous} onChange={(e) => setProp('porous', e.target.checked)}
+          inputProps={{ 'aria-label': 'Medio poroso' }} />}
+        label={<Typography variant="caption" sx={{ color: '#bbb' }}>Medio poroso (acuífero)</Typography>} />
+      {props.porous && (
+        <>
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            {n(props, setProp, 'porosity', 'Porosidad n_e')}
+            {n(props, setProp, 'alpha_L', 'α_L [m]')}
+            {n(props, setProp, 'alpha_T', 'α_T [m]')}
+          </Box>
+          <Typography variant="caption" sx={{ color: '#777' }}>
+            Dispersión 𝔻 = (D + α_T|v|) I + (α_L − α_T) v vᵀ/|v| con v = velocidad de poro; α_T ≈ α_L/10. Porosidad vacía
+            = la del run de Darcy. Masas totales (disuelta + adsorbida, R = 1 + ρ_b K_d / n_e).
+          </Typography>
+        </>
       )}
       <FormControlLabel
         control={<Switch size="small" checked={props.stabilization !== 'none'}
@@ -254,7 +281,17 @@ export default function TransportFields({ props, setProp }) {
         </>
       )}
 
-      <Typography variant="caption" sx={{ color: '#ccc' }}>Puntos de control (curvas de llegada)</Typography>
+      <ProbeList props={props} setProp={setProp} title="Puntos de control (curvas de llegada)" />
+    </Box>
+  );
+}
+
+/** Control points [{label, x, y, z mm}] in ``props.probes`` (time curves in the results summary). */
+export function ProbeList({ props, setProp, title }) {
+  const probes = props.probes || [];
+  return (
+    <>
+      <Typography variant="caption" sx={{ color: '#ccc' }}>{title}</Typography>
       {probes.map((p, i) => (
         <Box key={i} sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
           <TextField size="small" sx={{ flex: 1.3 }} label="Nombre" value={p.label ?? ''}
@@ -275,7 +312,7 @@ export default function TransportFields({ props, setProp }) {
         onClick={() => setProp('probes', [...probes, { label: `P${probes.length + 1}`, x: 0, y: 0, z: 0 }])}>
         Punto
       </Button>
-    </Box>
+    </>
   );
 }
 

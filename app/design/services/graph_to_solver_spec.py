@@ -111,6 +111,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                     spec['material']['stabilization'] = 'supg'
         elif spec['material']['type'] == 'scalar_transport':
             _transport_material(spec, mat_node)
+        elif spec['material']['type'] == 'porous_medium':
+            _porous_material(spec, mat_node)
         elif spec['material']['type'] == 'linear_magnetic':
             mu_r = props.get('mu_r')
             if mu_r in (None, '') or float(mu_r) <= 0:
@@ -236,6 +238,10 @@ def _magnetic_saturation(spec: dict, node) -> None:
 RATE_UNITS = {'1/s': 1.0, '1/h': 1 / 3600.0, '1/d': 1 / 86400.0}
 TIME_UNITS = {'s': 1.0, 'min': 60.0, 'h': 3600.0, 'd': 86400.0}
 TRANSPORT_LOAD_TYPES = ('species_flux', 'exchange', 'species_source', 'point_source')
+DARCY_LOAD_TYPES = ('recharge', 'well', 'leakage')
+K_UNITS = {'m/s': 1.0, 'cm/s': 1e-2, 'm/d': 1 / 86400.0}
+RECHARGE_UNITS = {'m/s': 1.0, 'mm/d': 1e-3 / 86400.0, 'mm/año': 1e-3 / (365.25 * 86400.0)}
+WELL_UNITS = {'m³/s': 1.0, 'L/s': 1e-3, 'm³/h': 1 / 3600.0, 'm³/d': 1 / 86400.0}
 
 
 def _num(props: dict, key: str, label: str, what: str, default=None, positive=False, nonneg=False) -> float:
@@ -306,6 +312,10 @@ def _transport_material(spec: dict, node) -> None:
              'decay': _decay_rate(sp_, lab), 'unit': sp_.get('unit') or 'mg/L'}
         if sp_.get('threshold') not in (None, ''):
             d['threshold'] = _num(sp_, 'threshold', lab, 'el umbral')
+        if p.get('porous') and sp_.get('retardation') not in (None, '', 1, '1'):
+            d['retardation'] = _num(sp_, 'retardation', lab, 'el factor de retardo R', positive=True)
+            if d['retardation'] < 1:
+                raise GraphSpecError(f'"{lab}": el factor de retardo R debe ser ≥ 1.')
         species.append(d)
         if sp_.get('pulse_sigma_mm') not in (None, ''):
             c = sp_.get('pulse_center_mm') or [0, 0, 0]
@@ -340,19 +350,39 @@ def _transport_material(spec: dict, node) -> None:
         raise GraphSpecError(f'"{label}": origen de velocidad desconocido «{src}» (uniform | run).')
     if p.get('stabilization') == 'none':
         m['stabilization'] = 'none'
+    if p.get('porous'):                               # aquifer: dispersion α_L, α_T [m], porosity (or the Darcy run's)
+        por = {'alpha_L': _num(p, 'alpha_L', label, 'la dispersividad longitudinal α_L (m)', default=0.0, nonneg=True),
+               'alpha_T': _num(p, 'alpha_T', label, 'la dispersividad transversal α_T (m)', default=0.0, nonneg=True)}
+        if p.get('porosity') not in (None, ''):
+            por['porosity'] = _num(p, 'porosity', label, 'la porosidad eficaz', positive=True)
+        elif src != 'run':
+            raise GraphSpecError(f'"{label}": indique la porosidad eficaz (o tome la velocidad de un run de Darcy).')
+        m['porous'] = por
     if any(ic.get('value') or 'gaussian' in ic for ic in initial):
         m['initial'] = initial
     spec['material'] = m
+    # popped in _finalize_physics (BC/LOAD series → s)
+    spec['transport_time_scale'] = _transient_settings(spec, p, label)
+    _probes(spec, p, label)
+
+
+def _transient_settings(spec: dict, p: dict, label: str, growth: bool = False) -> float:
+    """``time_unit`` scale; with ``transient`` writes spec['time'] (t_end, n_steps, scheme, n_output, dt_growth)."""
     t_scale = TIME_UNITS.get(p.get('time_unit') or 's')
     if t_scale is None:
         raise GraphSpecError(f'"{label}": unidad de tiempo «{p.get("time_unit")}» no reconocida (s, min, h, d).')
-    spec['transport_time_scale'] = t_scale              # popped in _finalize_physics (BC/LOAD series → s)
     if p.get('transient'):
         spec['time'] = {'t_end': _num(p, 't_end', label, 'el tiempo final', positive=True) * t_scale,
                         'n_steps': int(_num(p, 'time_steps', label, 'el número de pasos', default=50, positive=True)),
                         'scheme': p.get('scheme') or 'bdf2'}
         if p.get('n_output') not in (None, ''):
             spec['time']['n_output'] = int(_num(p, 'n_output', label, 'las salidas', positive=True))
+        if growth and p.get('dt_growth') not in (None, '', 1, '1'):
+            spec['time']['dt_growth'] = _num(p, 'dt_growth', label, 'la razón de crecimiento del paso', positive=True)
+    return t_scale
+
+
+def _probes(spec: dict, p: dict, label: str) -> None:
     probes = []
     for i, pr in enumerate(p.get('probes') or []):
         try:
@@ -362,6 +392,43 @@ def _transport_material(spec: dict, node) -> None:
             raise GraphSpecError(f'"{label}": punto de control {i + 1} con coordenadas inválidas (mm).')
     if probes:
         spec['probes'] = probes
+
+
+def _porous_material(spec: dict, node) -> None:
+    """MATERIAL ``porous_medium`` (FASE 10.6, Darcy): ``K`` + ``K_unit`` (m/s | cm/s | m/d), optional vertical
+    anisotropy ``Kz_ratio`` (Kz / Kh), ``K_zones`` [{label, x0, y0, z0, x1, y1, z1 (mm), K}] (same unit), ``Ss``
+    [1/m], ``porosity`` (effective), ``initial_head`` [m], ``transient`` + t_end / time_steps / scheme / dt_growth /
+    n_output in ``time_unit``, ``probes`` [{label, x, y, z mm}]."""
+    p = node.properties or {}
+    label = node.label
+    f = K_UNITS.get(p.get('K_unit') or 'm/s')
+    if f is None:
+        raise GraphSpecError(f'"{label}": unidad de K «{p.get("K_unit")}» no reconocida (m/s, cm/s, m/d).')
+    K = _num(p, 'K', label, 'la conductividad hidráulica K', positive=True) * f
+    ratio = _num(p, 'Kz_ratio', label, 'la anisotropía Kz/Kh', default=1.0, positive=True)
+    m = {'type': 'porous_medium', 'K': K if ratio == 1.0 else [K, K, K * ratio],
+         'Ss': _num(p, 'Ss', label, 'el almacenamiento específico S_s', default=0.0, nonneg=True),
+         'porosity': _num(p, 'porosity', label, 'la porosidad eficaz', default=0.3, positive=True),
+         'initial_head': _num(p, 'initial_head', label, 'la carga inicial', default=0.0)}
+    if m['porosity'] > 1:
+        raise GraphSpecError(f'"{label}": la porosidad eficaz debe estar en (0, 1].')
+    zones = []
+    for i, z in enumerate(p.get('K_zones') or []):
+        lab = f'{label} · zona {i + 1}'
+        lo = [_num(z, k, lab, k + ' (mm)') / 1000.0 for k in ('x0', 'y0', 'z0')]
+        hi = [_num(z, k, lab, k + ' (mm)') / 1000.0 for k in ('x1', 'y1', 'z1')]
+        if any(b < a for a, b in zip(lo, hi)):
+            raise GraphSpecError(f'"{lab}": la caja necesita x0 ≤ x1, y0 ≤ y1, z0 ≤ z1.')
+        Kz = _num(z, 'K', lab, 'K de la zona', positive=True) * f
+        zones.append({'label': z.get('label') or f'zona {i + 1}', 'box': [lo, hi],
+                      'K': Kz if ratio == 1.0 else [Kz, Kz, Kz * ratio]})
+    if zones:
+        m['K_zones'] = zones
+    if p.get('transient') and not m['Ss'] > 0:
+        raise GraphSpecError(f'"{label}": el transitorio necesita el almacenamiento específico S_s > 0 (1/m).')
+    spec['material'] = m
+    spec['transport_time_scale'] = _transient_settings(spec, p, label, growth=True)
+    _probes(spec, p, label)
 
 
 def _finalize_physics(spec: dict) -> None:
@@ -397,6 +464,21 @@ def _finalize_physics(spec: dict) -> None:
                 e['history'] = [[t * t_scale, f] for t, f in e['history']]
         spec['physics'] = ['transport']
         return
+    is_dc_bc = lambda b: 'hydraulic_head' in b                                       # noqa: E731
+    is_dc_ld = lambda ld: any(k in ld for k in DARCY_LOAD_TYPES)                      # noqa: E731
+    if spec['material'].get('type') == 'porous_medium':
+        n_other = sum(not is_dc_bc(b) for b in spec['bcs']) + sum(not is_dc_ld(ld) for ld in spec['loads'])
+        if n_other:
+            raise GraphSpecError('El estudio de flujo subterráneo solo admite BC «Carga hidráulica» y cargas de recarga, '
+                                 f'pozo o goteo: hay {n_other} condiciones de otro tipo.')
+        for e in spec['bcs'] + spec['loads']:
+            if t_scale != 1.0 and e.get('history'):
+                e['history'] = [[t * t_scale, f] for t, f in e['history']]
+        spec['physics'] = ['darcy']
+        return
+    if any(is_dc_bc(b) for b in spec['bcs']) or any(is_dc_ld(ld) for ld in spec['loads']):
+        raise GraphSpecError('Hay condiciones de flujo subterráneo (carga hidráulica, pozos, recarga) pero el material '
+                             'no es «Medio poroso (Darcy)».')
     if any(is_tr_bc(b) for b in spec['bcs']) or any(is_tr_ld(ld) for ld in spec['loads']):
         raise GraphSpecError('Hay condiciones de transporte (concentración, vertidos) pero el material no es '
                              '«Transporte de contaminantes».')
@@ -687,6 +769,15 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if bc_type == 'hydraulic_head':               # groundwater: fixed head [m] (lake, river, sea, far field)
+        entry = {'hydraulic_head': _num(props, 'head', node.label, 'la carga hidráulica (m)'), 'label': node.label}
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if bc_type == 'concentration':                # species transport: fixed concentration (inlet, source face)
         entry = {'concentration': _num(props, 'concentration', node.label, 'la concentración impuesta'),
                  'species': int(props.get('species') or 0), 'label': node.label}
@@ -811,6 +902,35 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if load_type in DARCY_LOAD_TYPES:             # groundwater (head m, rates SI after the unit tables)
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        if load_type == 'well':                   # positive = extraction; screen faces or a point (mm)
+            rate = mag * _unit(WELL_UNITS, props.get('unit'), node, 'm³/s')
+            if props.get('at_point'):
+                try:
+                    pt = [float(props.get(k)) / 1000.0 for k in ('x', 'y', 'z')]
+                except (TypeError, ValueError):
+                    raise GraphSpecError(f'"{node.label}": el pozo puntual necesita el punto x, y, z (mm).')
+                entry['well'] = {'rate': rate, 'point': pt}
+                return entry
+            entry['well'] = {'rate': rate}
+            _target(entry, _faces(ctx, node), props, 'tip', face=True)
+        elif load_type == 'recharge':             # infiltration into the body [m/s]
+            entry['recharge'] = mag * _unit(RECHARGE_UNITS, props.get('unit'), node, 'mm/d')
+            _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        else:                                     # leakage C (h_ext − h): river bed / leaky aquitard
+            cu = {'1/s': 1.0, '1/d': 1 / 86400.0}.get(props.get('conductance_unit') or '1/d')
+            if cu is None:
+                raise GraphSpecError(f'"{node.label}": unidad de conductancia no reconocida (1/s, 1/d).')
+            entry['leakage'] = {'conductance': _num(props, 'conductance', node.label, 'la conductancia de goteo',
+                                                    nonneg=True) * cu,
+                                'head': _num(props, 'head', node.label, 'la carga exterior (m)')}
+            _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if load_type == 'magnetic_flux':              # normal flux density entering the face [T]
         entry['magnetic_flux'] = mag * {'T': 1.0, 'mT': 1e-3}.get(props.get('unit') or 'T', 1.0)
         _target(entry, _faces(ctx, node), props, 'tip', face=True)
@@ -824,7 +944,7 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
     if load_type not in ('force', 'pressure'):
         raise GraphSpecError(f'"{node.label}": el tipo de carga "{load_type}" aún no está soportado '
                              '(disponibles: force, pressure, gravity, heat_flux, convection, heat_source, '
-                             'species_flux, exchange, species_source, point_source).')
+                             'species_flux, exchange, species_source, point_source, recharge, well, leakage).')
 
     faces = _faces(ctx, node)
     if load_type == 'pressure':

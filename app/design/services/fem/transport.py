@@ -28,6 +28,13 @@ Free faces: zero diffusive flux (∂c/∂n = 0): an outlet where the flow leaves
 Time: ``time`` {t_end, n_steps, scheme 'bdf2' (default) | 'cn' | 'be' | 'theta' (+ theta), n_output}; without
 ``time`` the steady problem is solved. Fixed Δt; the matrix is factorised once.
 
+Porous medium (FASE 10.6, material ``porous`` {porosity n_e, alpha_L, alpha_T} + per species ``retardation`` R ≥ 1;
+v = pore velocity, e.g. of a Darcy run): n_e R ∂c/∂t + n_e v·∇c − ∇·(n_e 𝔻∇c) + n_e R λ c = S, with the
+Bear–Scheidegger dispersion 𝔻 = (D_m + α_T|v|) I + (α_L − α_T) v vᵀ/|v| (D_m = species D, pore-water diffusion);
+decay and conversions act on the dissolved + sorbed mass. SUPG: the same test function with τ from |v|, the
+longitudinal 𝔻_L = D_m + α_L|v| and Rλ (= τ of the equation divided by n_e R, rescaled). Sources / fluxes are per
+bulk volume / area; masses are total (dissolved + sorbed) m = ∫ n_e R c dV.
+
 Mass balance: m = ∫c dV (consistent mass; the SUPG mass rows sum to zero). The budget terms (sources, mass entering
 through the fixed-concentration nodes = their reactions, advective outflow, exchange, reaction) are integrated with
 the same weights as the time scheme, so m(t_end) − m(0) − Σ terms is round-off: any visible error is a bug.
@@ -73,8 +80,12 @@ class TransportModel:
             lam = float(s.get('decay', 0.0) or 0.0)
             if D < 0 or lam < 0:
                 raise ValueError(f'Especie {s.get("name") or i}: la difusividad D y el decaimiento λ deben ser ≥ 0.')
+            Rt = float(s.get('retardation', 1.0) or 1.0)
+            if Rt < 1:
+                raise ValueError(f'Especie {s.get("name") or i}: el factor de retardo R debe ser ≥ 1.')
             self.species.append({'name': str(s.get('name') or f'c{i + 1}'), 'D': D, 'decay': lam,
-                                 'unit': s.get('unit') or 'mg/L', 'threshold': s.get('threshold')})
+                                 'unit': s.get('unit') or 'mg/L', 'threshold': s.get('threshold'),
+                                 'retardation': Rt})
         ns = len(self.species)
         R = np.diag([s['decay'] for s in self.species])
         for r in spec.get('reactions') or []:
@@ -99,6 +110,19 @@ class TransportModel:
             R[1, 1] += ka
             self.streeter_phelps = {'kd': kd, 'ka': ka, 'do_sat': float(rx.get('do_sat', 0.0) or 0.0)}
         self.R = R
+        por = spec.get('porous')
+        self.porous = None
+        if por:
+            ne = float(por.get('porosity', 0.0) or 0.0)
+            aL, aT = float(por.get('alpha_L', 0.0) or 0.0), float(por.get('alpha_T', 0.0) or 0.0)
+            if not 0 < ne <= 1 or aL < 0 or aT < 0:
+                raise ValueError('Medio poroso: porosidad eficaz en (0, 1] y dispersividades α_L, α_T ≥ 0 (m).')
+            self.porous = {'porosity': ne, 'alpha_L': aL, 'alpha_T': aT}
+        elif any(sp_['retardation'] != 1.0 for sp_ in self.species):
+            raise ValueError('El retardo por adsorción solo se aplica en un medio poroso (porous).')
+        ne = self.porous['porosity'] if self.porous else 1.0
+        self.phi = ne                                                  # advection / dispersion coefficient
+        self.cap = np.array([ne * sp_['retardation'] for sp_ in self.species])   # storage coefficient n_e R
         stab = spec.get('stabilization', 'supg')
         if stab not in ('supg', 'none'):
             raise ValueError(f'Estabilización desconocida {stab!r} (supg | none).')
@@ -164,6 +188,29 @@ def _laplacian(gL, et):
     return lap
 
 
+def dispersion_tensor(v: np.ndarray, aL: float, aT: float) -> np.ndarray:
+    """Mechanical dispersion α_T|v| I + (α_L − α_T) v vᵀ/|v| for v (…,3) → (…,3,3) (molecular part excluded)."""
+    vn = np.linalg.norm(v, axis=-1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        vv = np.where(vn[..., None, None] > 0, v[..., :, None] * v[..., None, :] / vn[..., None, None], 0.0)
+    return aT * vn[..., None, None] * np.eye(3) + (aL - aT) * vv
+
+
+def _hessian_contract(gL, et, Dt):
+    """𝔻:∇∇N_j on straight elements (m,n) for element tensors Dt (m,3,3): T10 corners 4 ∇L_iᵀ𝔻∇L_i, mids
+    8 ∇L_iᵀ𝔻∇L_j; 0 for T4."""
+    m = gL.shape[0]
+    if et == 'T4':
+        return np.zeros((m, 4))
+    out = np.zeros((m, 10))
+    DgL = np.einsum('mab,mbk->mak', Dt, gL)
+    for i in range(4):
+        out[:, i] = 4.0 * np.einsum('ma,ma->m', gL[:, :, i], DgL[:, :, i])
+    for e_, (i, j) in enumerate(tb.T10_EDGES):
+        out[:, 4 + e_] = 8.0 * np.einsum('ma,ma->m', gL[:, :, i], DgL[:, :, j])
+    return out
+
+
 def element_size(nodes, el, v_c: np.ndarray, gL: np.ndarray) -> np.ndarray:
     """Streamline length h_UGN = 2|v| / Σ|v·∇L_a| (longest corner edge where v = 0)."""
     Xc = nodes[el[:, :4]]
@@ -185,6 +232,8 @@ def tau_supg(vn, h_t, D, lam):
 def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
     """Global matrices: M (mass), A (advection), K (∫∇N·∇N), and per species the SUPG matrices
     P_s = ∫τ(v·∇N_i)N_j (mass/reaction/source perturbation), Q_s = ∫τ(v·∇N_i)(v·∇N_j − D_s ΔN_j).
+    Porous: also Kd = ∫∇N_iᵀ 𝔻_mech ∇N_j (dispersion at the quadrature points) and Q_s gets −𝔻_e:∇∇N_j (element-
+    centroid tensor, straight geometry); τ_s uses 𝔻_L = D_s + α_L|v| and R_s λ_s.
     Also element stats (h, |v|, Péclet, Courant ingredients)."""
     n = mesh.n_nodes
     et = mesh.element_type
@@ -192,7 +241,8 @@ def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
     ns = model.n_species
     supg = model.stabilization == 'supg'
     rows_all, cols_all = [], []
-    vals = {k: [] for k in ('M', 'A', 'K')}
+    por = model.porous
+    vals = {k: [] for k in (('M', 'A', 'K', 'Kd') if por else ('M', 'A', 'K'))}
     for s in range(ns):
         vals[f'P{s}'] = []
         vals[f'Q{s}'] = []
@@ -210,6 +260,11 @@ def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
         vn_all.append(vn)
         h_t = h if et == 'T4' else 0.5 * h
         lap = _laplacian(gL, et)
+        if por:
+            Dc = dispersion_tensor(v_c, por['alpha_L'], por['alpha_T'])
+            hes = _hessian_contract(gL, et, Dc)
+            Kde = np.zeros((m, nd, nd))
+            AHe = np.zeros((m, nd, nd))
         Me = np.zeros((m, nd, nd))
         Ae = np.zeros((m, nd, nd))
         Ke = np.zeros((m, nd, nd))
@@ -225,6 +280,11 @@ def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
             Me += w[:, None, None] * np.outer(N, N)[None]
             Ae += w[:, None, None] * N[None, :, None] * adv[:, None, :]
             Ke += w[:, None, None] * np.einsum('mci,mcj->mij', dN, dN)
+            if por:
+                Dq = dispersion_tensor(vq, por['alpha_L'], por['alpha_T'])
+                Kde += w[:, None, None] * np.einsum('mci,mcj->mij', dN, np.einsum('mcd,mdj->mcj', Dq, dN))
+                if supg:
+                    AHe += w[:, None, None] * adv[:, :, None] * hes[:, None, :]
             if supg:
                 Pe += w[:, None, None] * adv[:, :, None] * N[None, None, :]
                 AAe += w[:, None, None] * adv[:, :, None] * adv[:, None, :]
@@ -234,11 +294,14 @@ def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
         vals['M'].append(Me.ravel())
         vals['A'].append(Ae.ravel())
         vals['K'].append(Ke.ravel())
+        if por:
+            vals['Kd'].append(Kde.ravel())
         for s, spc in enumerate(model.species):
             if supg:
-                tau = tau_supg(vn, h_t, spc['D'], model.R[s, s])
+                tau = tau_supg(vn, h_t, species_DL(model, s, vn), spc['retardation'] * model.R[s, s])
                 vals[f'P{s}'].append((tau[:, None, None] * Pe).ravel())
-                vals[f'Q{s}'].append((tau[:, None, None] * (AAe - spc['D'] * ALe)).ravel())
+                Qe = AAe - spc['D'] * ALe - (AHe if por else 0.0)
+                vals[f'Q{s}'].append((tau[:, None, None] * Qe).ravel())
             else:
                 vals[f'P{s}'].append(np.zeros(Me.size))
                 vals[f'Q{s}'].append(np.zeros(Me.size))
@@ -252,6 +315,12 @@ def assemble_operators(mesh: FEMMesh, model: TransportModel, v: np.ndarray):
     # for the reported Péclet / Courant numbers (not for τ)
     ops['h_vol'] = np.cbrt(6.0 * np.sqrt(2.0) * tb.volumes(mesh.nodes, mesh.elements[:, :4]))
     return ops
+
+
+def species_DL(model: TransportModel, s: int, vn):
+    """Longitudinal diffusivity D_s + α_L|v| (just D_s without a porous medium)."""
+    D = model.species[s]['D']
+    return D + model.porous['alpha_L'] * vn if model.porous else D
 
 
 def supg_source_vector(mesh: FEMMesh, v: np.ndarray, tau: np.ndarray) -> np.ndarray:
@@ -341,8 +410,13 @@ class _Problem:
         ops = assemble_operators(mesh, model, v)
         self.ops = ops
         M, A, K = ops['M'], ops['A'], ops['K']
-        W = [M + ops[f'P{s}'] for s in range(ns)]                    # storage / reaction test operator
+        Wb = [M + ops[f'P{s}'] for s in range(ns)]                   # storage / reaction test operator
         C = [A + model.species[s]['D'] * K + ops[f'Q{s}'] for s in range(ns)]
+        if model.porous:                                             # n_e (advection + dispersion), n_e R storage
+            C = [model.phi * (C[s] + ops['Kd']) for s in range(ns)]
+            W = [model.cap[s] * Wb[s] for s in range(ns)]
+        else:
+            W = Wb
         self.Kex = [sp.csr_matrix((n, n)) for _ in range(ns)]
         # loads: (species, vector, history, kind, meta)
         self.load_terms = []
@@ -358,7 +432,8 @@ class _Problem:
                     vol = lumped_volume(mesh)
                 Fi = S * vol
                 if model.stabilization == 'supg':
-                    tau = tau_supg(ops['vn'], ops['h_tilde'], model.species[s]['D'], model.R[s, s])
+                    tau = tau_supg(ops['vn'], ops['h_tilde'], species_DL(model, s, ops['vn']),
+                                   model.species[s]['retardation'] * model.R[s, s])
                     Fi = Fi + S * supg_source_vector(mesh, v, tau)
                 meta.update(kind='species_source', rate=S)
             elif 'point_source' in ld:
@@ -372,8 +447,9 @@ class _Problem:
                 if model.stabilization == 'supg':      # consistent: the residual contains −Q δ(x − x_s) too
                     _, dN = tb._jac(mesh.nodes[el][None], tb.dshape(mesh.element_type, loc['nat']))
                     vq = wtest @ v[el]
-                    tau = tau_supg(ops['vn'][e:e + 1], ops['h_tilde'][e:e + 1], model.species[s]['D'],
-                                   model.R[s, s])[0]
+                    tau = tau_supg(ops['vn'][e:e + 1], ops['h_tilde'][e:e + 1],
+                                   species_DL(model, s, ops['vn'][e:e + 1]),
+                                   model.species[s]['retardation'] * model.R[s, s])[0]
                     wtest = wtest + tau * (vq @ dN[0])
                 np.add.at(Fi, el, float(ps['rate']) * wtest)
                 meta.update(kind='point_source', rate=float(ps['rate']), point=list(map(float, ps['point'])))
@@ -407,11 +483,12 @@ class _Problem:
         for s in range(ns):
             for r in range(ns):
                 Bs = (C[s] + self.Kex[s]) if s == r else None
-                if R[s, r] != 0:
-                    Bs = R[s, r] * W[s] if Bs is None else Bs + R[s, r] * W[s]
+                if R[s, r] != 0:                       # reaction of species r's total mass, tested like s
+                    Rw = R[s, r] * model.cap[r] * Wb[s] if model.porous else R[s, r] * W[s]
+                    Bs = Rw if Bs is None else Bs + Rw
                 blocks_S[s][r] = Bs
             blocks_W[s][s] = W[s]
-        self.S = sp.bmat(blocks_S, format='csr', dtype=float) if ns > 1 else (C[0] + self.Kex[0] + R[0, 0] * W[0]).tocsr()
+        self.S = sp.bmat(blocks_S, format='csr', dtype=float) if ns > 1 else blocks_S[0][0].tocsr()
         self.W = sp.block_diag(W, format='csr') if ns > 1 else W[0].tocsr()
         self.M, self.A = M, A
         # Dirichlet: node (global unknown) → (value, history) of the last entry
@@ -450,9 +527,11 @@ class _Problem:
                'reaction_out': np.zeros(ns)}
         cs = [x[s * n:(s + 1) * n] for s in range(ns)]
         mass = np.array([MT @ c for c in cs])
+        if self.model.porous:
+            mass = self.model.cap * mass                              # dissolved + sorbed
         for s in range(ns):
             out['source'][s] = F[s * n:(s + 1) * n].sum()
-            out['advection_out'][s] = AT @ cs[s]
+            out['advection_out'][s] = self.model.phi * (AT @ cs[s])
             out['exchange_out'][s] = one @ (self.Kex[s] @ cs[s])
             out['reaction_out'][s] = self.model.R[s] @ mass
         return out, mass
@@ -648,10 +727,12 @@ def peclet_max(prob: _Problem) -> float:
     """Max element Péclet |v| h / (2 D), h = edge of the equal-volume regular tet (T10 nodes are h/2 apart),
     over the species with D > 0 (inf with pure advection and flow)."""
     vals = []
-    for s in prob.model.species:
-        if s['D'] > 0:
-            vals.append(float(np.max(prob.ops['vn'] * prob.ops['h_vol'] / (2 * s['D']))))
-        elif np.any(prob.ops['vn'] > 0):
+    vn = prob.ops['vn']
+    for i, s in enumerate(prob.model.species):
+        DL = species_DL(prob.model, i, vn)
+        if np.all(np.asarray(DL) > 0) and (s['D'] > 0 or prob.model.porous):
+            vals.append(float(np.max(vn * prob.ops['h_vol'] / (2 * DL))))
+        elif np.any(vn > 0):
             vals.append(float('inf'))
     return max(vals) if vals else 0.0
 
