@@ -485,6 +485,44 @@ def _sw_material(spec: dict, node) -> None:
             raise GraphSpecError(f'"{lab}": punto de control {i + 1} sin lon/lat válidos.')
     if probes:
         spec['probes'] = probes
+    tracers, names = [], set()
+    for i, s in enumerate(p.get('species') or []):            # depth-averaged tracers (FASE 10.4)
+        nm = str(s.get('name') or '').strip() or f'Especie {i + 1}'
+        if nm in names:
+            raise GraphSpecError(f'"{lab}": especie «{nm}» repetida.')
+        names.add(nm)
+        sl = f'{lab} · {nm}'
+        t = {'name': nm, 'unit': s.get('unit') or 'mg/L',
+             'D': _num(s, 'D', sl, 'la difusividad horizontal (m²/s)', default=1.0, nonneg=True),
+             'decay': _decay_rate(s, sl)}
+        if s.get('threshold') not in (None, ''):
+            t['threshold'] = _num(s, 'threshold', sl, 'el umbral', nonneg=True)
+        if s.get('c0') not in (None, ''):
+            t['c0'] = _num(s, 'c0', sl, 'la concentración inicial', nonneg=True)
+        tracers.append(t)
+    if tracers:
+        m['tracers'] = tracers
+
+
+def _concentrations(p: dict, lab: str):
+    """{species name: c} from a BC / outfall node (``concentrations``), validated ≥ 0; None if absent."""
+    c = p.get('concentrations')
+    if not c:
+        return None
+    if not isinstance(c, dict):
+        raise GraphSpecError(f'"{lab}": concentraciones como {{especie: valor}}.')
+    out = {}
+    for k, v in c.items():
+        if v in (None, ''):
+            continue
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{lab}": concentración de «{k}» no numérica.')
+        if x < 0 or not math.isfinite(x):
+            raise GraphSpecError(f'"{lab}": concentración de «{k}» debe ser ≥ 0.')
+        out[str(k)] = x
+    return out
 
 
 def _ids(props) -> list:
@@ -499,6 +537,9 @@ def _sw_bc(node) -> dict:
     lab = node.label
     t = p.get('bc_type')
     e = {'label': lab, 'boundaries': _ids(p)}
+    conc = _concentrations(p, lab)
+    if conc is not None and t != 'coast':
+        e['c_named'] = conc
     if p.get('ramp_h') not in (None, ''):
         e['ramp_s'] = _num(p, 'ramp_h', lab, 'la rampa', nonneg=True) * 3600.0
     if t == 'tide':
@@ -554,6 +595,24 @@ def _sw_wind(node) -> dict:
     return {'wind': w, 'label': node.label}
 
 
+def _sw_outfall(node) -> dict:
+    """LOAD ``outfall``: point discharge (outfall / sewer / spill) at lon, lat — water Q + species concentrations;
+    optional ``t_off`` [h] (spill duration)."""
+    p = node.properties or {}
+    lab = node.label
+    try:
+        lon, lat = float(p['lon']), float(p['lat'])
+    except (KeyError, TypeError, ValueError):
+        raise GraphSpecError(f'"{lab}": el vertido necesita lon y lat.')
+    o = {'lon': lon, 'lat': lat,
+         'Q': _num(p, 'discharge', lab, 'el caudal del vertido', default=0.0, nonneg=True)
+         * _unit(DISCHARGE_UNITS, p.get('unit'), node, 'm3/s'),
+         'c_named': _concentrations(p, lab) or {}}
+    if p.get('t_off') not in (None, ''):
+        o['t_off_s'] = _num(p, 't_off', lab, 'la duración del vertido (h)', positive=True) * 3600.0
+    return {'outfall': o, 'label': lab}
+
+
 SW_DEFAULT_SIDE = {'tide': 'open', 'level': 'open', 'free': 'open', 'river': 'river', 'wall': 'coast'}
 
 
@@ -561,7 +620,7 @@ def _finalize_shallow_water(spec: dict) -> bool:
     """True when the study is a 2D shallow-water one (physics set, default boundaries resolved)."""
     is_sw = spec['material'].get('type') == 'shallow_water'
     dom = spec.get('mesh_source') == 'domain_2d'
-    sw_cond = [e for e in spec['bcs'] if 'sw_bc' in e] + [e for e in spec['loads'] if 'wind' in e]
+    sw_cond = [e for e in spec['bcs'] if 'sw_bc' in e] + [e for e in spec['loads'] if 'wind' in e or 'outfall' in e]
     if not (is_sw or dom or sw_cond):
         return False
     if not dom:
@@ -570,7 +629,7 @@ def _finalize_shallow_water(spec: dict) -> bool:
         raise GraphSpecError('Dominio 2D: el material debe ser «Agua (aguas someras)».')
     other = len(spec['bcs']) + len(spec['loads']) - len(sw_cond)
     if other:
-        raise GraphSpecError(f'Aguas someras: solo admite marea, caudal de río, mar abierto, costa y viento; hay '
+        raise GraphSpecError(f'Aguas someras: solo admite marea, caudal de río, mar abierto, costa, viento y vertidos; hay '
                              f'{other} condiciones de otro tipo.')
     segs = spec['domain_2d'].get('segments') or []
     taken = {i for e in spec['bcs'] for i in e.get('boundaries') or []}
@@ -585,6 +644,25 @@ def _finalize_shallow_water(spec: dict) -> bool:
             raise GraphSpecError(f'"{e["label"]}": no hay lados de tipo «{want}» libres en el dominio; elija los '
                                  'contornos en el nodo.')
         taken.update(e['boundaries'])
+    # species concentrations by name → lists in the material's species order
+    names = [t['name'] for t in spec['material'].get('tracers') or []]
+
+    def as_list(named, lab):
+        unknown = [k for k in named if k not in names]
+        if unknown:
+            raise GraphSpecError(f'"{lab}": especie «{unknown[0]}» no definida en el material '
+                                 f'({", ".join(names) or "sin especies"}).')
+        return [float(named.get(n, 0.0)) for n in names]
+    for e in spec['bcs']:
+        named = e.pop('c_named', None)
+        if named is not None and names:
+            e['c_in'] = as_list(named, e['label'])
+    for e in spec['loads']:
+        if 'outfall' in e:
+            o = e['outfall']
+            o['c'] = as_list(o.pop('c_named', {}), e['label'])
+            if not names and o['Q'] <= 0:
+                raise GraphSpecError(f'"{e["label"]}": vertido sin caudal ni especies.')
     spec['physics'] = ['shallow_water']
     return True
 
@@ -1015,6 +1093,8 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
 
     if load_type == 'wind':                       # shallow water: wind stress over the 2D domain
         return _sw_wind(node)
+    if load_type == 'outfall':                    # shallow water: point discharge (water + species)
+        return _sw_outfall(node)
     entry = {'label': node.label}
     if load_type in THERMAL_LOAD_TYPES:
         faces = _faces(ctx, node)

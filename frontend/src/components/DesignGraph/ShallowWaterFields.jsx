@@ -2,7 +2,9 @@
  * ShallowWaterFields — MATERIAL «Agua (aguas someras 2D)» (model_type = shallow_water, FASE 10.3): Manning n (+ the
  * zone attribute that overrides it), density, Coriolis, eddy viscosity, drying depth, initial level, scheme order,
  * duration and control points (lon/lat). SWBCFields — BC tide / river discharge / open sea / coast on the sides of
- * the study's 2-D domain (drawn in Mapa mode); WindLoadFields — LOAD «Viento».
+ * the study's 2-D domain (drawn in Mapa mode); WindLoadFields — LOAD «Viento». Tracers (FASE 10.4): species list
+ * on the material (`species`), inflow concentrations on tide / river / open-sea BCs and the LOAD «Vertido» (outfall:
+ * lon/lat, flow, concentrations) — all keyed by species name (`concentrations: {name: c}`).
  */
 import React, { useEffect, useMemo } from 'react';
 import {
@@ -11,6 +13,7 @@ import {
 import { Add, Delete } from '@mui/icons-material';
 import useDesignStore from '../../stores/designStore';
 import useGeoMapStore from '../../stores/geoMapStore';
+import { SpeciesRow } from './TransportFields';
 
 const txt = { style: { color: '#fff' } };
 const lbl = { style: { color: '#888' } };
@@ -48,6 +51,35 @@ export function useDomainSides() {
     }));
     return [...sides, { id: 'coast', kind: 'coast', label: 'Costa (tierra)' }];
   }, [nodes]);
+}
+
+/** Species of the study's shallow-water MATERIAL: [{name, unit, …}]. */
+export function useSWSpecies() {
+  const nodes = useDesignStore((s) => s.graphData.nodes);
+  return useMemo(() => {
+    const m = nodes.find((n) => n.data?.node_type === 'MATERIAL' && n.data?.properties?.model_type === 'shallow_water');
+    return (m?.data?.properties?.species || []).map((s, i) => ({ ...s, name: (s.name || '').trim() || `Especie ${i + 1}` }));
+  }, [nodes]);
+}
+
+/** Concentration per species of the study (`concentrations: {name: c}`). */
+function ConcentrationInputs({ props, setProp, title }) {
+  const species = useSWSpecies();
+  if (!species.length) return null;
+  const conc = props.concentrations || {};
+  return (
+    <>
+      <Typography variant="caption" sx={{ color: '#888' }}>{title}</Typography>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+        {species.map((s) => (
+          <TextField key={s.name} size="small" type="number" label={`${s.name} [${s.unit || 'mg/L'}]`}
+            sx={{ flex: '1 1 45%' }} value={conc[s.name] ?? ''}
+            onChange={(e) => setProp('concentrations', { ...conc, [s.name]: toNum(e.target.value) })}
+            inputProps={{ ...txt, 'aria-label': `concentración ${s.name}` }} InputLabelProps={lbl} />
+        ))}
+      </Box>
+    </>
+  );
 }
 
 function useForcings() {
@@ -88,6 +120,7 @@ function ForcingPick({ props, setProp, columnKeys = [['column', 'Columna']], all
 
 export default function ShallowWaterFields({ props, setProp }) {
   const probes = props.probes || [];
+  const species = props.species || [];
   const setProbe = (i, patch) => setProp('probes', probes.map((p, k) => (k === i ? { ...p, ...patch } : p)));
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -138,6 +171,24 @@ export default function ShallowWaterFields({ props, setProp }) {
         onClick={() => setProp('probes', [...probes, { label: `P${probes.length + 1}`, lon: null, lat: null }])}>
         Punto de control
       </Button>
+      <Typography variant="caption" sx={{ color: '#888' }}>
+        Sustancias transportadas (promediadas en la vertical): contaminantes, bacterias, salinidad…
+      </Typography>
+      {species.map((sp, i) => (
+        <SpeciesRow key={i} sp={sp} i={i} noPulse canRemove
+          onChange={(v) => setProp('species', species.map((x, k) => (k === i ? v : x)))}
+          onRemove={() => setProp('species', species.filter((_, k) => k !== i))} />
+      ))}
+      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+        <Button size="small" startIcon={<Add />}
+          onClick={() => setProp('species', [...species, { name: `Especie ${species.length + 1}`, unit: 'mg/L', D: 1 }])}>
+          Especie
+        </Button>
+        <Button size="small" startIcon={<Add />}
+          onClick={() => setProp('species', [...species, { name: 'E. coli', unit: 'UFC/100 mL', D: 1, decay: 24, decay_unit: 'T90_h', threshold: 500 }])}>
+          Bacterias (T90)
+        </Button>
+      </Box>
     </Box>
   );
 }
@@ -224,6 +275,32 @@ export function SWBCFields({ props, setProp }) {
           Pared impermeable con deslizamiento (la costa ya lo es por defecto; sirve para cerrar un lado dibujado).
         </Typography>
       )}
+      {t !== 'coast' && (
+        <ConcentrationInputs props={props} setProp={setProp}
+          title={t === 'open_boundary' && props.mode !== 'level'
+            ? 'Concentración del agua que entra (vacío = la del interior)'
+            : 'Concentración del agua que entra (vacío = 0)'} />
+      )}
+    </Box>
+  );
+}
+
+export function OutfallLoadFields({ props, setProp }) {
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <Box sx={{ display: 'flex', gap: 0.5 }}>
+        {num(props, setProp, 'lon', 'lon', '')}
+        {num(props, setProp, 'lat', 'lat', '')}
+      </Box>
+      <Box sx={{ display: 'flex', gap: 0.5 }}>
+        {num(props, setProp, 'discharge', 'Caudal Q', 0)}
+        {sel(props, setProp, 'unit', [['m3/s', 'm³/s'], ['L/s', 'L/s'], ['m3/h', 'm³/h']], 'm3/s', 'unidad de caudal')}
+      </Box>
+      {num(props, setProp, 't_off', 'Duración del vertido [h] (vacío = continuo)', '', {})}
+      <ConcentrationInputs props={props} setProp={setProp} title="Concentración del efluente" />
+      <Typography variant="caption" sx={{ color: '#777' }}>
+        Emisario, colector o derrame puntual: aporta Q de agua y Q·c de cada sustancia a la celda que contiene el punto.
+      </Typography>
     </Box>
   );
 }

@@ -3,7 +3,7 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import axios from 'axios';
-import ShallowWaterFields, { SWBCFields, WindLoadFields } from './ShallowWaterFields';
+import ShallowWaterFields, { OutfallLoadFields, SWBCFields, WindLoadFields } from './ShallowWaterFields';
 import useDesignStore from '../../stores/designStore';
 import { SummaryRows } from '../Results/ResultsViewer';
 
@@ -55,6 +55,26 @@ describe('Shallow-water fields (FASE 10.3)', () => {
     render(<WindLoadFields props={{}} setProp={setProp} />);
     fireEvent.change(screen.getByLabelText('Procedencia [° desde N]'), { target: { value: '225' } });
     expect(setProp).toHaveBeenCalledWith('direction', 225);
+  });
+
+  it('species on the material, inflow concentrations and the outfall', () => {
+    const setProp = vi.fn();
+    render(<ShallowWaterFields props={{}} setProp={setProp} />);
+    fireEvent.click(screen.getByText('Bacterias (T90)'));
+    expect(setProp).toHaveBeenCalledWith('species', [expect.objectContaining({ name: 'E. coli', decay_unit: 'T90_h' })]);
+    expect(screen.queryByText(/pulso gaussiano/)).toBeNull();
+    cleanup();
+    const mat = { id: 'm', data: { node_type: 'MATERIAL', properties: { model_type: 'shallow_water',
+      species: [{ name: 'E. coli', unit: 'UFC/100 mL' }, { name: 'DBO' }] } } };
+    useDesignStore.setState({ graphData: { nodes: [domainNode, mat], edges: [] } });
+    render(<SWBCFields props={{ bc_type: 'river_inflow', concentrations: { DBO: 3 } }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('concentración E. coli'), { target: { value: '2000' } });
+    expect(setProp).toHaveBeenCalledWith('concentrations', { DBO: 3, 'E. coli': 2000 });
+    cleanup();
+    render(<OutfallLoadFields props={{}} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('lon'), { target: { value: '-8.72' } });
+    expect(setProp).toHaveBeenCalledWith('lon', -8.72);
+    expect(screen.getByLabelText('concentración DBO')).toBeTruthy();
   });
 
   it('no 2-D domain in the study → hint', () => {

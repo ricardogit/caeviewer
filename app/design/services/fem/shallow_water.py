@@ -117,6 +117,7 @@ class SWGrid:
         self.dc = dc
         self.perim = np.zeros(nc)
         self.dist = np.linalg.norm(self.cen[self.R] - self.cen[self.L], axis=1)
+        self.tvec = (self.cen[self.R] - self.cen[self.L]) / self.dist[:, None]
 
     def acc(self, idx, w):
         return np.bincount(idx, weights=w, minlength=self.nc)
@@ -286,6 +287,28 @@ class ShallowWater:
                       if boundaries.get(name, {}).get('kind') in ('level', 'tide')]
         self.free_idx = np.flatnonzero(kinds == 'free')
         self.wall_idx = np.flatnonzero(kinds == 'wall')
+        # depth-averaged tracers (FASE 10.4): unknowns H·c after (H, Hu, Hv); D [m²/s], first-order decay λ [1/s]
+        tr = params.get('tracers') or []
+        self.ns = len(tr)
+        self.D = np.array([float(s.get('D') or 0.0) for s in tr])
+        self.lam = np.array([float(s.get('decay') or 0.0) for s in tr])
+        nbf = len(grid.bid)
+        self.c_ext = np.zeros((self.ns, nbf))               # inflow concentration per boundary face
+        self.c_interior = np.zeros(nbf, bool)               # free sides without a value: zero gradient
+        for name, idx in self.groups.items():
+            b = boundaries.get(name, {})
+            ci = b.get('c_in')
+            if ci is None:
+                self.c_interior[idx] = b.get('kind') == 'free'
+            elif self.ns:
+                self.c_ext[:, idx] = np.asarray(ci, float).reshape(self.ns, 1)
+        self.sources = []
+        for s in params.get('sources') or []:
+            cell = int(s['cell']) if 'cell' in s else int(grid.locate([s['xy']])[0])
+            mass = np.zeros(self.ns) if s.get('mass') is None else np.asarray(s['mass'], float).reshape(self.ns)
+            self.sources.append({'cell': cell, 'Q': float(s.get('Q') or 0.0), 'mass': mass,
+                                 'factor': s.get('factor') or (lambda t: 1.0), 'label': s.get('label')})
+        self._tb = np.zeros((self.ns, len(self.groups)))
 
     # primitive variables
     def velocity(self, U):
@@ -302,6 +325,10 @@ class ShallowWater:
         u, v, wet = self.velocity(U)
         eta = H + g.zb
         w = np.stack([eta, u, v])
+        if self.ns:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                c = np.where(H > 1e-12, U[3:] / np.where(H > 1e-12, H, 1.0), 0.0)
+            w = np.vstack([w, c])
         if self.order == 2:
             d = g.increments(*g.gradient(w))
             phi = g.limit(w, d)
@@ -344,9 +371,13 @@ class ShallowWater:
         Fx, Fy = F1 * nx - F2 * ny, F1 * ny + F2 * nx
         Ln = g.len
         A = g.acc
-        dU = np.stack([A(g.R, F0 * Ln) - A(g.L, F0 * Ln),
-                       A(g.R, (Fx + cR * nx) * Ln) - A(g.L, (Fx + cL * nx) * Ln),
-                       A(g.R, (Fy + cR * ny) * Ln) - A(g.L, (Fy + cL * ny) * Ln)])
+        dU = np.zeros((3 + self.ns, g.nc))
+        dU[0] = A(g.R, F0 * Ln) - A(g.L, F0 * Ln)
+        dU[1] = A(g.R, (Fx + cR * nx) * Ln) - A(g.L, (Fx + cL * nx) * Ln)
+        dU[2] = A(g.R, (Fy + cR * ny) * Ln) - A(g.L, (Fy + cL * ny) * Ln)
+        for k in range(self.ns):
+            ft = F0 * np.where(F0 > 0, wL[3 + k], wR[3 + k]) * Ln
+            dU[3 + k] = A(g.R, ft) - A(g.L, ft)
         lam = A(g.L, smax * Ln) + A(g.R, smax * Ln)
         # centred bed-slope source of the sloped cells: −g Σ nL (H_side + H)/2 (z_side − z)  (lake at rest exact)
         full = self._full
@@ -390,6 +421,42 @@ class ShallowWater:
         dU[2] -= A(c, By * Lb)
         lam += A(c, bs * Lb)
         bflux = {name: float(np.sum(B0[idx] * Lb[idx])) for name, idx in self.groups.items()}
+        if self.ns:
+            cin = np.where(self.c_interior[None], wB[3:], self.c_ext)
+            ftb = B0 * np.where(B0 > 0, wB[3:], cin) * Lb
+            for k in range(self.ns):
+                dU[3 + k] -= A(c, ftb[k])
+            self._tb = np.stack([ftb[:, idx].sum(1) for idx in self.groups.values()], 1)
+            # horizontal diffusion ∇·(H D ∇c) between wet cells. Face gradient = mean of the LSQ cell gradients
+            # corrected along the centroid line: ∇c_f = ḡ + ((c_R − c_L)/d − ḡ·t) t → exact for linear c on any
+            # triangulation (the plain two-point flux is inconsistent where t ∦ n). Two-point where a cell is
+            # next to a dry one (its gradient would see the dry zeros).
+            kd = np.flatnonzero(self.D > 0)
+            if len(kd):
+                Hc_ = U[0]
+                wet_ = Hc_ > self.h_dry
+                He = 0.5 * (Hc_[g.L] + Hc_[g.R]) * (wet_[g.L] & wet_[g.R])
+                ck = np.where(wet_, U[3 + kd] / np.where(wet_, Hc_, 1.0), 0.0)
+                gx, gy = g.gradient(ck)
+                near = ~wet_ | ~wet_[g.nb].all(1)
+                ok = ~(near[g.L] | near[g.R])
+                tx, ty = g.tvec[:, 0], g.tvec[:, 1]
+                tn = tx * g.n[:, 0] + ty * g.n[:, 1]
+                mx, my = 0.5 * (gx[:, g.L] + gx[:, g.R]), 0.5 * (gy[:, g.L] + gy[:, g.R])
+                dct = (ck[:, g.R] - ck[:, g.L]) / g.dist
+                gn = np.where(ok, mx * g.n[:, 0] + my * g.n[:, 1] + (dct - mx * tx - my * ty) * tn, dct)
+                for j, k in enumerate(kd):
+                    fl = self.D[k] * He * gn[j] * Ln
+                    dU[3 + k] += A(g.L, fl) - A(g.R, fl)
+        # point sources (outfalls): water Q [m³/s] and tracer mass [c·m³/s] into their cell
+        self._src = np.zeros(1 + self.ns)
+        for s in self.sources:
+            fct = float(s['factor'](t))
+            dU[0][s['cell']] += s['Q'] * fct
+            self._src[0] += s['Q'] * fct
+            if self.ns:
+                dU[3:, s['cell']] += s['mass'] * fct
+                self._src[1:] += s['mass'] * fct
 
         dU /= g.area
         # wind (explicit)
@@ -429,41 +496,84 @@ class ShallowWater:
             U[2] = -s * hu + c * hv
         U[1][~wet] = 0.0
         U[2][~wet] = 0.0
+        self._decayed = np.zeros(self.ns)
+        for k in range(self.ns):
+            if self.lam[k] > 0:
+                before = U[3 + k].copy()
+                U[3 + k] *= math.exp(-self.lam[k] * dt)
+                self._decayed[k] = float(np.sum(self.g.area * (before - U[3 + k])))
         return U
 
     def dt_from(self, lam, U):
         dt = self.cfl / max(float(lam.max()), 1e-300)
-        if self.nu > 0:
-            dt = min(dt, 0.25 * float(np.min(self.g.dist)) ** 2 / self.nu)
+        nu = max(self.nu, float(self.D.max()) if self.ns else 0.0)
+        if nu > 0:
+            dt = min(dt, 0.25 * float(np.min(self.g.dist)) ** 2 / nu)
         return dt
 
     def step(self, U, t, dt_max):
         """One SSP-RK2 step; returns (U, dt, boundary volumes over the step {id: m³ outward}, clipped mass)."""
         k1, b1, lam = self.rhs(U, t)
-        dt = min(self.dt_from(lam, U), dt_max)
+        t1, s1 = self._tb.copy(), self._src.copy()
+        self.dt_cfl = self.dt_from(lam, U)
+        dt = min(self.dt_cfl, dt_max)
         U1 = U + dt * k1
-        neg1 = U1[0] < 0
-        U1[0][neg1] = 0.0
+        clip1 = self._clip(U1)
         k2, b2, _ = self.rhs(U1, t + dt)
         Un = 0.5 * (U + U1 + dt * k2)
-        clip = float(-np.sum(self.g.area * np.minimum(Un[0], 0)))
-        Un[0] = np.maximum(Un[0], 0)
+        clip2 = self._clip(Un)
+        clip = 0.5 * clip1 + clip2                  # stage-1 clipping enters the average with weight ½
         Un = self._sources_split(Un, dt)
         vol = {k: 0.5 * dt * (b1[k] + b2[k]) for k in b1}
-        return Un, dt, vol, clip
+        self.last = {'tracer_out': 0.5 * dt * (t1 + self._tb), 'source': 0.5 * dt * (s1 + self._src),
+                     'decayed': self._decayed, 'clipped': clip}
+        return Un, dt, vol, float(clip[0])
+
+    def _clip(self, U):
+        """Negative depths → 0 (with their tracer); negative tracer mass → 0. Removed volume / mass per row."""
+        A = self.g.area
+        out = np.zeros(1 + self.ns)
+        neg = U[0] < 0
+        if neg.any():
+            out[0] = -float(np.sum(A[neg] * U[0][neg]))
+            U[0][neg] = 0.0
+            if self.ns:
+                out[1:] -= np.sum(A[neg] * U[3:, neg], axis=1)       # mass removed with the dried cell
+                U[3:, neg] = 0.0
+        if self.ns:
+            m = U[3:] < 0
+            if m.any():
+                out[1:] -= np.sum(np.where(m, A * U[3:], 0.0), axis=1)
+                U[3:][m] = 0.0
+        return out
 
 
 def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.0, U0=None, wind=None,
-          n_output: int = 24, probes=None, progress=None, max_steps: int = 2_000_000) -> dict:
-    """Run to ``t_end`` [s]. Returns snapshots [(t, U)], budget, probes and statistics."""
+          n_output: int = 24, probes=None, progress=None, max_steps: int = 2_000_000, c0=None) -> dict:
+    """Run to ``t_end`` [s]. Returns snapshots [(t, U)], budget, probes and statistics. With ``params['tracers']``
+    the rows 3.. of U are H·c per species; ``c0`` (ns, nc) or per-species scalars = initial concentration."""
     sw = ShallowWater(grid, params, boundaries, wind=wind)
+    ns = sw.ns
     if U0 is None:
         eta = np.broadcast_to(np.asarray(eta0, float), (grid.nc,))
-        U = np.zeros((3, grid.nc))
+        U = np.zeros((3 + ns, grid.nc))
         U[0] = np.maximum(eta - grid.zb, 0)
+        if ns and c0 is not None:
+            U[3:] = U[0] * np.broadcast_to(np.asarray(c0, float).reshape(ns, -1), (ns, grid.nc))
     else:
         U = np.array(U0, float)
+        if len(U) != 3 + ns:
+            raise ValueError(f'U0 must have {3 + ns} rows.')
     mass0 = float(np.sum(grid.area * U[0]))
+    tmass0 = np.sum(grid.area * U[3:], axis=1) if ns else np.zeros(0)
+    t_out = np.zeros((ns, len(sw.groups)))
+    t_in = np.zeros((ns, len(sw.groups)))
+    t_src, t_dec, t_clip = np.zeros(ns), np.zeros(ns), np.zeros(ns)
+    w_src = 0.0
+    thr = np.array([s.get('threshold') if s.get('threshold') is not None else np.inf
+                    for s in params.get('tracers') or []], float)
+    cmax = np.zeros((ns, grid.nc))
+    t_above = np.zeros((ns, grid.nc))
     out_t = np.linspace(0, t_end, n_output + 1)[1:]
     snaps = [(0.0, U.copy())]
     vol = {k: 0.0 for k in sw.groups}
@@ -473,8 +583,8 @@ def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.
     pcells = grid.locate([p['xy'] for p in probes]) if probes else None
     prows = []
     smax = np.zeros(grid.nc)
-    hmax = U[0].copy()
     wet_ever = U[0] > sw.h_dry
+    hmax = np.where(wet_ever, U[0] + grid.zb, -np.inf)          # highest water level reached (wet cells)
     wet0 = wet_ever.copy()
     dts = []
     t0 = _time.perf_counter()
@@ -486,8 +596,20 @@ def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.
                              f'contornos).')
         t += dt
         n_steps += 1
-        dts.append(dt)
+        dts.append(sw.dt_cfl)                       # stability step (the last one before an output is shortened)
         clipped += cl
+        last = sw.last
+        w_src += float(last['source'][0])
+        if ns:
+            t_out += last['tracer_out']
+            t_in += -np.minimum(last['tracer_out'], 0.0)
+            t_src += last['source'][1:]
+            t_dec += last['decayed']
+            t_clip += last['clipped'][1:]
+            H_ = U[0]
+            cc = np.where(H_ > sw.h_dry, U[3:] / np.where(H_ > sw.h_dry, H_, 1.0), 0.0)
+            np.maximum(cmax, cc, out=cmax)
+            t_above += dt * (cc > thr[:, None])
         for k_, val in v.items():
             vol[k_] += val
             vol_in[k_] += -min(val, 0.0)
@@ -497,7 +619,10 @@ def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.
         np.maximum(hmax, U[0] + grid.zb, out=hmax, where=wet)
         wet_ever |= wet
         if pcells is not None:
-            prows.append([t] + [x for c in pcells for x in (U[0][c] + grid.zb[c], u[c], vv[c], U[0][c])])
+            row = [t] + [x for c in pcells for x in (U[0][c] + grid.zb[c], u[c], vv[c], U[0][c])]
+            if ns:
+                row += [float(cc[k, c]) for c in pcells for k in range(ns)]
+            prows.append(row)
         if t >= target - 1e-9 * max(t_end, 1):
             snaps.append((t, U.copy()))
             k_out += 1
@@ -510,8 +635,19 @@ def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.
                              f'engrose la malla.')
     mass1 = float(np.sum(grid.area * U[0]))
     net_out = sum(vol.values())
-    scale = max(mass0, abs(sum(vol_in.values())), 1e-30)
-    balance = (mass1 - mass0 + net_out - clipped) / scale
+    scale = max(mass0, abs(sum(vol_in.values())), w_src, 1e-30)
+    balance = (mass1 - mass0 + net_out - clipped - w_src) / scale
+    tracers = []
+    names = list(sw.groups)
+    for k in range(ns):
+        m1 = float(np.sum(grid.area * U[3 + k]))
+        sc = max(tmass0[k], float(t_in[k].sum()), t_src[k], 1e-300)
+        tracers.append({'mass0': float(tmass0[k]), 'mass1': m1, 'source': float(t_src[k]), 'decayed': float(t_dec[k]),
+                        'clipped': float(t_clip[k]),
+                        'boundary_out': {n_: float(t_out[k, j]) for j, n_ in enumerate(names)},
+                        'boundary_in': {n_: float(t_in[k, j]) for j, n_ in enumerate(names)},
+                        'balance_error': abs(m1 - tmass0[k] + float(t_out[k].sum()) - t_src[k] + t_dec[k]
+                                             - t_clip[k]) / sc})
     u, vv, wet = sw.velocity(U)
     fr = np.where(wet, np.hypot(u, vv) / np.sqrt(G * np.maximum(U[0], 1e-12)), 0.0)
     return {'snaps': snaps, 'n_steps': n_steps, 'dt_min': float(min(dts)) if dts else 0.0,
@@ -519,7 +655,8 @@ def solve(grid: SWGrid, params: dict, boundaries: dict, *, t_end: float, eta0=0.
             'boundary_volume_out': vol, 'boundary_volume_in': vol_in, 'clipped_mass': clipped,
             'balance_error': float(abs(balance)), 'max_speed': smax, 'max_eta': hmax, 'wet_ever': wet_ever,
             'wet0': wet0, 'froude_max': float(fr.max()) if fr.size else 0.0, 'probe_cells': pcells,
-            'probe_rows': prows, 'wall_time_s': _time.perf_counter() - t0, 'solver': sw}
+            'probe_rows': prows, 'wall_time_s': _time.perf_counter() - t0, 'solver': sw, 'source_volume': w_src,
+            'tracers': tracers, 'cmax': cmax, 't_above': t_above}
 
 
 # ── Test meshes ──────────────────────────────────────────────────────────────

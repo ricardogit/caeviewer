@@ -527,6 +527,29 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   cell), no Boussinesq / non-hydrostatic effects, no turbulence model beyond constant ν_t, Stoker has a 2-cell wide
   channel (all wall cells) — the order is ~0.8 there, not 1; start-up seiches need friction or time to decay (the
   frictionless standing-wave check starts from the exact state).
+- **2-D transport on the shallow-water flow** (FASE 10.4, inside `fem/shallow_water.py`): material `tracers` [{name,
+  unit, D m²/s, decay 1/s, threshold, c0}] → extra unknowns H·c (rows 3.. of U). Advective flux = the HLL mass flux F0
+  × upwind MUSCL-limited c (same F0 as the water → a uniform c is kept exactly through tides and wetting/drying);
+  diffusion ∇·(H D ∇c) with a **corrected face gradient** ḡ + ((c_R − c_L)/d − ḡ·t)t (the plain two-point flux is
+  inconsistent on non-orthogonal triangles; two-point next to dry cells), dt ≤ ¼d²/D; decay exact (e^(−λdt)) in the
+  split step; clipping of negative depth/mass accounted. Boundaries: `c_in` per side (tide/level/river inflow; free
+  sides without values → interior c, zero gradient; default 0 = clean water). Outfalls = `params['sources']`
+  [{cell|xy, Q m³/s, mass [Q·c], factor(t)}] (water also enters the water budget). Per-species budget (initial, source,
+  boundary in/out, decay, clipped) with the RK weights → round-off. Kernel (`sw_run`): spec load `{'outfall': {lon, lat,
+  Q, c [per species], t_off_s}}`; summary `shallow_water.tracers` (masses, max, threshold area / hours, boundary
+  out), `tracer_balance_error`, `outfalls`, probe `c_max`/`c_curve`; fields `c<k>` (series), `cmax<k>`, `tabove<k>` [h];
+  n_dof = (3 + ns)·cells. Graph: MATERIAL `species` (SpeciesRow shared from TransportFields with `noPulse`; D default 1
+  m²/s, decay + `decay_unit` incl. T90_h), BC `concentrations {name: c}` (not on coast), LOAD `load_type: 'outfall'`
+  (lon, lat, discharge + unit, `t_off` h, concentrations); names mapped to lists in `_finalize_shallow_water` (unknown
+  species → 422). UI `ShallowWaterFields.jsx` (+ `OutfallLoadFields`, `useSWSpecies`), Results rows per species.
+  Hito `python validate_sw_transport.py [--server …] [--server-only]` (~20 min local): uniform c exact (0.0) with tide
+  + river + wetting; Gaussian diffusion + decay 0.23 % at 64² (order 2.1), mass e^(−λT) 1e-13; advected pulse 4.5 % at
+  σ = 3 cells (order 1.6), centre of mass −9.6 m in 5 km; steady outfall plume vs K0 −1.4 % at 10 km (order 2.0),
+  section mass 0.04 %; T90 outfall in a tidal estuary budgets 3e-15. Server: bay + tide (salinity 35) + outfall
+  (E. coli T90 24 h, 3 h) → budgets 3e-15, salinity ≤ 35·(1 + 1.4e-7) (MUSCL + diffusion correction are not strictly
+  monotone), series fields in the surface pack. Tests in `tests/test_shallow_water.py`. Caveats: an outfall goes into
+  one cell (near field = cell size; use a refinement point in Mapa mode), no near-field dilution model, constant D (no
+  Elder/shear dispersion), the source switches off inside the RK step that crosses `t_off` (½ weight).
 - **Performance caveat (Windows, OpenBLAS numpy):** batched tiny `np.linalg.solve` in `tet_batch._jac` is ~60× slower
   with OpenBLAS threading on a loaded machine (0.54 s vs 0.009 s per 8000 elements); `OPENBLAS_NUM_THREADS=1` for the
   worker / scripts (backend suite 82 s → 45 s). Not changed in code.

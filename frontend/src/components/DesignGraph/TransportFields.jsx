@@ -48,7 +48,8 @@ export function useTransportSpecies() {
   return (mat?.data?.properties?.species || [DEFAULT_SPECIES]).map((s, i) => s.name || `Especie ${i + 1}`);
 }
 
-function SpeciesRow({ sp, i, onChange, onRemove, canRemove, porous }) {
+/** One species: name, unit, D, threshold, decay; initial value c0 or (3-D only) a Gaussian pulse. */
+export function SpeciesRow({ sp, i, onChange, onRemove, canRemove, porous, noPulse = false }) {
   const set = (k, v) => onChange({ ...sp, [k]: v });
   const [pulse, setPulse] = useState(sp.pulse_sigma_mm != null);
   return (
@@ -79,14 +80,14 @@ function SpeciesRow({ sp, i, onChange, onRemove, canRemove, porous }) {
             <MenuItem key={v} value={v}>{l}</MenuItem>))}
         </Select>
       </Box>
-      <FormControlLabel
+      {!noPulse && <FormControlLabel
         control={<Switch size="small" checked={pulse} onChange={(e) => {
           setPulse(e.target.checked);
           onChange(e.target.checked ? { ...sp, pulse_sigma_mm: sp.pulse_sigma_mm ?? 10 }
             : { ...sp, pulse_sigma_mm: null, pulse_center_mm: null, pulse_peak: null });
         }} />}
-        label={<Typography variant="caption" sx={{ color: '#bbb' }}>Condición inicial: pulso gaussiano</Typography>} />
-      {pulse ? (
+        label={<Typography variant="caption" sx={{ color: '#bbb' }}>Condición inicial: pulso gaussiano</Typography>} />}
+      {pulse && !noPulse ? (
         <>
           <Box sx={{ display: 'flex', gap: 0.5 }}>
             {[0, 1, 2].map((k) => (

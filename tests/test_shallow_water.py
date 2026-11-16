@@ -187,6 +187,69 @@ def test_graph_conditions_and_default_sides():
                                     'domain_2d': {'segments': []}, 'bcs': [], 'loads': [{'force': [0, 0, 1]}]})
 
 
+def test_graph_species_concentrations_and_outfall():
+    from app.design.services import graph_to_solver_spec as gs
+    spec = {'material': {}, 'mesh_source': 'domain_2d', 'domain_2d': {'segments': ['open', 'coast', 'river']}}
+    gs._sw_material(spec, _node('Agua', t_end=6, species=[
+        {'name': 'E. coli', 'unit': 'UFC/100 mL', 'decay': 24, 'decay_unit': 'T90_h', 'threshold': 500},
+        {'name': 'DBO', 'D': 3, 'c0': 2}]))
+    tr = spec['material']['tracers']
+    assert tr[0]['D'] == 1.0 and tr[0]['decay'] == pytest.approx(math.log(10) / (24 * 3600))
+    assert tr[1]['c0'] == 2 and tr[1]['decay'] == 0
+    river = gs._sw_bc(_node('Río', bc_type='river_inflow', discharge=10, concentrations={'DBO': 5}))
+    tide = gs._sw_bc(_node('Marea', bc_type='tide', constituents=[{'name': 'M2', 'amplitude': 1}]))
+    out = gs._sw_outfall(_node('Emisario', load_type='outfall', lon=-8.7, lat=42.2, discharge=500, unit='L/s',
+                               concentrations={'E. coli': 1e6}, t_off=3))
+    spec.update(bcs=[river, tide], loads=[out])
+    gs._finalize_shallow_water(spec)
+    assert river['c_in'] == [0.0, 5.0] and 'c_in' not in tide           # tide without values → clean sea (0)
+    o = out['outfall']
+    assert o['Q'] == pytest.approx(0.5) and o['c'] == [1e6, 0.0] and o['t_off_s'] == 3 * 3600
+    with pytest.raises(gs.GraphSpecError):                     # species not defined in the material
+        bad = gs._sw_bc(_node('R', bc_type='river_inflow', discharge=1, concentrations={'Hg': 1}))
+        gs._finalize_shallow_water({**spec, 'bcs': [bad], 'loads': []})
+    with pytest.raises(gs.GraphSpecError):                     # outfall without position
+        gs._sw_outfall(_node('X', load_type='outfall', discharge=1))
+
+
+def test_tracer_uniform_concentration_is_preserved():
+    """c = 1 everywhere and at the inflows: stays 1 to round-off through tide, wetting/drying and a river
+    (tracer flux = mass flux × upwind c, same F0); per-species budgets close with decay and diffusion."""
+    g = _grid(np.linspace(0, 2000, 21), np.linspace(0, 400, 5), lambda x, y: 3.0 - 4.0 * x / 2000.0)
+    sig = sw.make_signal({'constituents': [{'name': 'M2', 'amplitude': 1.0, 'phase': 0}], 'ramp': 3600.0})
+    bnd = {'x0': {'kind': 'tide', 'signal': sig, 'c_in': [1.0, 0.0]},
+           'x1': {'kind': 'river', 'signal': lambda t: 5.0, 'c_in': [1.0, 2.0]}}
+    r = sw.solve(g, {'order': 2, 'manning': 0.025, 'h_dry': 0.01,
+                     'tracers': [{'D': 0}, {'D': 1.0, 'decay': 1e-4}]},
+                 bnd, t_end=3 * 3600.0, eta0=0.0, n_output=3, c0=[1.0, 0.0])
+    U = r['snaps'][-1][1]
+    wet = U[0] > 0.05
+    assert np.abs(U[3][wet] / U[0][wet] - 1).max() < 1e-12
+    assert r['wet_ever'].sum() > r['wet0'].sum()                # the flat really floods and dries
+    for t in r['tracers']:
+        assert t['balance_error'] < 1e-12
+    assert r['tracers'][1]['decayed'] > 0 and r['cmax'][1].max() <= 2.0 + 1e-9
+
+
+def test_tracer_pulse_diffusion_and_decay():
+    """Gaussian pulse in still water: σ² = σ0² + 2DT, amplitude σ0²/σ², decay e^(−λT); mass exact."""
+    xs = np.linspace(-5000, 5000, 33)
+    g = _grid(xs, xs, lambda x, y: 10.0 + 0 * x)
+    s0, D, lam, T = 500.0, 20.0, 1e-4, 5000.0
+    r2 = (g.cen ** 2).sum(1)
+    r = sw.solve(g, {'order': 2, 'manning': 0.0, 'coriolis_f': 0.0, 'tracers': [{'D': D, 'decay': lam}]}, {},
+                 t_end=T, eta0=0.0, n_output=1, c0=np.exp(-r2 / (2 * s0 ** 2))[None])
+    U = r['snaps'][-1][1]
+    c = U[3] / U[0]
+    s2 = s0 ** 2 + 2 * D * T
+    ex = s0 ** 2 / s2 * np.exp(-r2 / (2 * s2)) * math.exp(-lam * T)
+    err = np.sqrt(np.sum(g.area * (c - ex) ** 2) / np.sum(g.area * ex ** 2))
+    assert err < 0.012                                         # 0.99 % at 32², 0.23 % at 64² (order ≈ 2)
+    m0 = np.sum(g.area * 10.0 * np.exp(-r2 / (2 * s0 ** 2)))
+    assert np.sum(g.area * U[3]) == pytest.approx(m0 * math.exp(-lam * T), rel=1e-11)
+    assert r['tracers'][0]['balance_error'] < 1e-12
+
+
 # ── kernel run on a (synthetic) 2-D domain mesh ──────────────────────────────
 
 def test_kernel_run_on_domain_mesh(monkeypatch):
@@ -207,22 +270,38 @@ def test_kernel_run_on_domain_mesh(monkeypatch):
     monkeypatch.setattr(service, 'get_or_build_mesh', lambda spec, progress=None: (mesh, True))
     lon, lat = mesh.frame.to_lonlat([1000.0], [500.0])
     spec = {'mesh_source': 'domain_2d', 'domain_2d': {}, 'physics': ['shallow_water'],
-            'material': {'type': 'shallow_water', 'manning': 0.025, 'coriolis': True, 'h_dry': 0.01, 'order': 2},
+            'material': {'type': 'shallow_water', 'manning': 0.025, 'coriolis': True, 'h_dry': 0.01, 'order': 2,
+                         'tracers': [{'name': 'E. coli', 'unit': 'UFC', 'D': 2.0, 'decay': 1e-5, 'threshold': 100.0},
+                                     {'name': 'Sal', 'unit': 'psu', 'D': 1.0, 'c0': 35.0}]},
             'time': {'t_end': 3 * 3600.0, 'n_output': 6},
             'bcs': [{'sw_bc': 'tide', 'boundaries': ['edge0'], 'label': 'Marea', 'ramp_s': 3600.0,
                      'tide': {'constituents': [{'name': 'M2', 'amplitude': 1.0, 'phase': 0}], 'z0': 0.0}},
-                    {'sw_bc': 'river', 'boundaries': ['edge2'], 'label': 'Río', 'discharge': 20.0}],
-            'loads': [{'wind': {'speed': 5, 'direction': 0}, 'label': 'Viento'}],
+                    {'sw_bc': 'river', 'boundaries': ['edge2'], 'label': 'Río', 'discharge': 20.0, 'c_in': [0.0, 0.0]}],
+            'loads': [{'wind': {'speed': 5, 'direction': 0}, 'label': 'Viento'},
+                      {'outfall': {'lon': float(lon[0]), 'lat': float(lat[0]), 'Q': 2.0, 'c': [1e5, 0.0],
+                                   't_off_s': 7200.0}, 'label': 'Emisario'}],
             'probes': [{'label': 'P1', 'lon': float(lon[0]), 'lat': float(lat[0])}]}
     res = sw_run.run(spec, lambda p, m: None, 1, check_tier_limits)
     s = res['summary']
     d = s['shallow_water']
     assert s['physics'] == ['shallow_water'] and s['converged']
     assert d['balance_error'] < 1e-12
+    assert 0.9 < d['max_eta_m'] < 2.05                         # a water level (river ponds on the +2 m end), not H
+    assert d['dt_min_s'] > 0.2 * d['dt_max_s']                 # stability steps, not the shortened output steps
     assert d['manning_zones'][0]['manning'] == 0.06 and d['manning_zones'][0]['n_cells'] == len(tris) // 2
     assert {r['kind'] for r in d['boundaries']} == {'tide', 'river', 'wall'}
     riv = next(r for r in d['boundaries'] if r['id'] == 'edge2')
     assert riv['volume_in_m3'] == pytest.approx(20.0 * 3 * 3600.0, rel=1e-12)
+    # tracers: outfall mass in for 2 h, budgets closed, series fields, probe concentration curves
+    assert d['source_volume_m3'] == pytest.approx(2.0 * 7200.0, rel=1e-3)        # the step across t_off gets ½
+    ec, salt = d['tracers']
+    assert ec['source'] == pytest.approx(1e5 * d['source_volume_m3'], rel=1e-12) and ec['decayed'] > 0
+    assert d['tracer_balance_error'] < 1e-12 and s['n_dof'] == 5 * len(tris)
+    assert salt['mass_final'] < salt['mass_initial']           # fresh river water and the outfall dilute the sea
+    assert ec['area_above_max_m2'] > 0 and 'tabove0' in res['extra_fields']
+    assert res['time_series']['fields']['c0'].shape == (7, len(nodes))
+    assert d['probes'][0]['c_max'][0] > 100 and len(d['probes'][0]['c_curve'][0]) == 3
+    assert {f['key'] for f in s['extra_fields']} >= {'c0', 'cmax0', 'c1', 'cmax1'}
     assert len(d['probes']) == 1 and d['probes'][0]['curve']
     assert len(res['time_series']['times']) == 7
     assert res['time_series']['fields']['eta'].shape == (7, len(nodes))

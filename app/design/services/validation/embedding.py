@@ -75,7 +75,7 @@ FAMILY_KIN = {('steel', 'stainless'): 0.7, ('steel', 'cast_iron'): 0.6, ('alumin
 
 LOAD_KINDS = ('force', 'pressure', 'gravity', 'force_per_node', 'heat_flux', 'convection', 'heat_source',
               'surface_charge', 'magnetic_flux', 'species_flux', 'exchange', 'species_source', 'point_source',
-              'recharge', 'well', 'leakage', 'wind')
+              'recharge', 'well', 'leakage', 'wind', 'outfall')
 BC_KINDS = ('fixed', 'partial', 'symmetry', 'prescribed', 'temperature', 'voltage', 'velocity', 'magnetic_potential',
             'concentration', 'hydraulic_head', 'sw_bc')
 PHYSICS = ('structural', 'thermal', 'piezoelectric', 'fluid', 'magnetic', 'nonlinear', 'transport', 'darcy',

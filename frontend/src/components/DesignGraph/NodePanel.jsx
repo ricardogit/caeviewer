@@ -22,7 +22,7 @@ import FluidFields from './FluidFields';
 import MagneticFields, { CoilFields } from './MagneticFields';
 import TransportFields, { ConcentrationBCFields, SpeciesLoadFields, SPECIES_LOADS } from './TransportFields';
 import DarcyFields, { HeadBCFields, DarcyLoadFields, DARCY_LOADS } from './DarcyFields';
-import ShallowWaterFields, { SWBCFields, WindLoadFields, SW_BCS } from './ShallowWaterFields';
+import ShallowWaterFields, { OutfallLoadFields, SWBCFields, WindLoadFields, SW_BCS } from './ShallowWaterFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -68,7 +68,7 @@ const LOAD_TYPES = [
   ['exchange', 'Intercambio con el exterior (transporte)'], ['species_source', 'Fuente de especie en volumen (transporte)'],
   ['well', 'Pozo de bombeo / inyección (Darcy)'], ['recharge', 'Recarga por infiltración (Darcy)'],
   ['leakage', 'Goteo río / acuitardo (Darcy)'],
-  ['wind', 'Viento (aguas someras 2D)'],
+  ['wind', 'Viento (aguas someras 2D)'], ['outfall', 'Vertido / emisario (aguas someras 2D)'],
   ['torque', 'Par (próximamente)'],
 ];
 const LOAD_UNITS = {
@@ -76,7 +76,7 @@ const LOAD_UNITS = {
   heat_flux: ['W/m²', 'kW/m²'], convection: ['W/m²·K'], heat_source: ['W/m³', 'kW/m³', 'MW/m³'],
   surface_charge: ['C/m²', 'mC/m²', 'µC/m²'], magnetic_flux: ['T', 'mT'],
   point_source: [''], species_flux: [''], exchange: [''], species_source: [''],
-  well: [''], recharge: [''], leakage: [''], wind: [''],
+  well: [''], recharge: [''], leakage: [''], wind: [''], outfall: ['m3/s'],
 };
 const THERMAL_LOADS = ['heat_flux', 'convection', 'heat_source'];
 // face-based scalar loads of the field physics (same panel as the thermal ones)
@@ -543,6 +543,14 @@ export default function NodePanel({ node, graphId, onClose }) {
               <>
                 {typeSelect}
                 <WindLoadFields props={props} setProp={setProp} />
+              </>
+            );
+          }
+          if (lt === 'outfall') {
+            return (
+              <>
+                {typeSelect}
+                <OutfallLoadFields props={props} setProp={setProp} />
               </>
             );
           }

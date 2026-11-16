@@ -150,8 +150,16 @@ export function SummaryRows({ header }) {
         ['Área mojada final / total', `${km2(w.wet_area_final_m2)} / ${km2(w.area_m2)}`
           + (w.flooded_area_m2 > 0 ? ` · inundada ${km2(w.flooded_area_m2)}` : '')],
         ...(w.probes || []).map((p) => [`Punto ${p.label}`, `η ${fmt(p.min_eta_m)} … ${fmt(p.max_eta_m)} m · |u| máx. `
-          + `${fmt(p.max_speed_m_s)} m/s · prof. ${fmt(p.depth_m)} m`]),
+          + `${fmt(p.max_speed_m_s)} m/s · prof. ${fmt(p.depth_m)} m`
+          + (p.c_max ? ` · c máx. ${p.c_max.map((c, k) => `${w.tracers?.[k]?.name ?? k} ${fmt(c)}`).join(', ')}` : '')]),
+        ...(w.outfalls || []).map((o) => [`Vertido ${o.label}`, `Q ${fmt(o.Q_m3_s)} m³/s · prof. ${fmt(o.depth_m)} m`
+          + (o.t_off_s != null ? ` · ${fmt(o.t_off_s / 3600)} h` : '')]),
+        ...(w.tracers || []).map((t) => [`Especie ${t.name}`, `máx. ${fmt(t.max)} ${t.unit} · masa ${fmt(t.mass_initial)} → `
+          + `${fmt(t.mass_final)} · aportada ${fmt(t.source)} · decaída ${fmt(t.decayed)}`
+          + (t.boundary_out?.length ? ` · sale ${t.boundary_out.map((b) => `${b.label} ${fmt(b.net_out)}`).join(', ')}` : '')
+          + (t.threshold != null ? ` · > ${fmt(t.threshold)}: ${km2(t.area_above_max_m2)} (máx. ${fmt(t.hours_above_max)} h)` : '')]),
         ['Balance de agua', fmt(w.balance_error)],
+        ...(w.tracers?.length ? [['Balance de masa (especies)', fmt(w.tracer_balance_error)]] : []),
       ];
     })() : []),
     ...(s.darcy ? [
@@ -183,7 +191,7 @@ export function SummaryRows({ header }) {
           ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
           : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : (s.fluid || s.magnetic || s.transport || s.darcy) ? [] : [['k', header?.material?.k
+    ] : (s.fluid || s.magnetic || s.transport || s.darcy || s.shallow_water) ? [] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
       : '—']]),
   ];

@@ -160,7 +160,7 @@ export default function DomainPanel() {
           )}
           <Divider sx={{ my: 1, borderColor: '#333' }} />
           <StudyLink />
-          <Typography sx={{ fontSize: 10.5, color: '#777', mt: 1 }}>El solver 2D (aguas someras, FASE 10.3) usará este dominio y sus contornos.</Typography>
+          <Typography sx={{ fontSize: 10.5, color: '#777', mt: 1 }}>Simule con un MATERIAL «Agua (aguas someras 2D)» y condiciones de marea / río / mar abierto sobre estos contornos.</Typography>
         </>
       )}
     </Paper>

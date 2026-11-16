@@ -29,7 +29,7 @@ def is_sw_bc(b: dict) -> bool:
 
 
 def is_sw_load(ld: dict) -> bool:
-    return 'wind' in ld
+    return 'wind' in ld or 'outfall' in ld
 
 
 def _series_signal(fc: dict, column: str | None, label: str, ramp: float):
@@ -87,7 +87,7 @@ def boundary_setup(bcs: list, mesh) -> tuple[dict, list, list]:
         else:
             sig = None
         for i in ids:
-            out[i] = {'kind': kind, 'signal': sig, 'label': b.get('label') or kind}
+            out[i] = {'kind': kind, 'signal': sig, 'label': b.get('label') or kind, 'c_in': b.get('c_in')}
         info.append({'label': b.get('label'), 'kind': kind, 'boundaries': ids, **meta})
     for i, bi in known.items():
         if i in out:
@@ -112,7 +112,9 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
         raise ValueError('Dominio 2D: el material debe ser «Agua (aguas someras)».')
     emit(2, 'malla 2D del dominio')
     mesh, cached = get_or_build_mesh(spec['domain_2d'], progress=lambda p, m: emit(2 + p * 0.03, m))
-    check_tier(mesh.n_nodes, mesh.n_elements, 3 * mesh.n_elements, tier)
+    tracers = mat.get('tracers') or []
+    ns = len(tracers)
+    check_tier(mesh.n_nodes, mesh.n_elements, (3 + ns) * mesh.n_elements, tier)
     if not mesh.stats.get('has_bathymetry', True) or not np.isfinite(mesh.depth).all():
         raise ValueError('Aguas someras: el dominio necesita batimetría (marque una capa de batimetría en el modo '
                          'Mapa y regenere la malla).')
@@ -136,7 +138,7 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
     bnd, binfo, warnings = boundary_setup([b for b in spec.get('bcs') or [] if is_sw_bc(b)], mesh)
     # wind
     wind = None
-    winds = [ld for ld in spec.get('loads') or [] if is_sw_load(ld)]
+    winds = [ld for ld in spec.get('loads') or [] if 'wind' in ld]
     if len(winds) > 1:
         raise ValueError('Aguas someras: solo un viento por estudio.')
     if winds:
@@ -164,6 +166,29 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
               'order': int(mat.get('order') or 2), 'rho': float(mat.get('rho') or 1025.0)}
     if mat.get('cfl'):
         params['cfl'] = float(mat['cfl'])
+    # tracers (FASE 10.4): species carried by the flow; outfalls = point water + mass sources
+    sources, src_info = [], []
+    if ns:
+        params['tracers'] = tracers
+    for ld in spec.get('loads') or []:
+        if 'outfall' not in ld:
+            continue
+        o = ld['outfall']
+        x, y = mesh.frame.from_lonlat([o['lon']], [o['lat']])
+        cell = int(grid.locate([[float(x[0]), float(y[0])]])[0])
+        Q = float(o.get('Q') or 0.0)
+        conc = np.asarray(o.get('c') or [0.0] * ns, float)
+        mass = np.asarray(o.get('mass_rate'), float) if o.get('mass_rate') is not None else Q * conc
+        t_off = o.get('t_off_s')
+        fac = (lambda t, t_off=float(t_off): 1.0 if t < t_off else 0.0) if t_off is not None else None
+        sources.append({'cell': cell, 'Q': Q, 'mass': mass if ns else None, 'factor': fac, 'label': ld.get('label')})
+        src_info.append({'label': ld.get('label'), 'lon': o['lon'], 'lat': o['lat'], 'Q_m3_s': Q,
+                         'mass_rate': mass.tolist() if ns else [], 'depth_m': float(-grid.zb[cell]),
+                         'cell_area_m2': float(grid.area[cell]), **({'t_off_s': float(t_off)} if t_off is not None else {})})
+        if grid.zb[cell] > 0:
+            warnings.append(f'Vertido «{ld.get("label")}» sobre terreno emergido (cota {grid.zb[cell]:.2f} m).')
+    if sources:
+        params['sources'] = sources
     probes = []
     for i, p in enumerate(spec.get('probes') or []):
         x, y = mesh.frame.from_lonlat([p['lon']], [p['lat']])
@@ -173,7 +198,9 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
 
     def prog(k, total, t):
         emit(6 + 90 * k / total, f'aguas someras: t = {t / 3600:.3g} h ({k}/{total})')
-    r = sw.solve(grid, params, bnd, t_end=t_end, eta0=eta0, wind=wind, n_output=n_out, probes=probes, progress=prog)
+    c0 = [float(sp_.get('c0') or 0.0) for sp_ in tracers] if ns else None
+    r = sw.solve(grid, params, bnd, t_end=t_end, eta0=eta0, wind=wind, n_output=n_out, probes=probes, progress=prog,
+                 c0=c0)
 
     # ── fields on the nodes ───────────────────────────────────────────────────
     bed_nodes = -mesh.depth
@@ -187,10 +214,15 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
         sp, _ = grid.node_average(np.hypot(u, v))
         un, _ = grid.node_average(u)
         vn, _ = grid.node_average(v)
-        return eta, H, sp, un, vn
+        cs = []
+        for k in range(ns):
+            ck = np.where(wet, U[3 + k] / np.where(wet, U[0], 1.0), 0.0)
+            cn, den_c = grid.node_average(ck, wet.astype(float))
+            cs.append(np.where(den_c > 0, cn, 0.0))
+        return eta, H, sp, un, vn, cs
     times = [float(t) for t, _ in r['snaps']]
     series = [nodal(U) for _, U in r['snaps']]
-    eta, H, sp, un, vn = series[-1]
+    eta, H, sp, un, vn, cs_end = series[-1]
     smax, _ = grid.node_average(r['max_speed'])
     flooded_c = r['wet_ever'] & ~r['wet0']
     flooded, _ = grid.node_average(flooded_c.astype(float))
@@ -230,6 +262,11 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
                                 'max_speed_m_s': float(np.hypot(u_, v_).max()),
                                 'curve': [[float(P[i, 0]), float(e_[i]), float(np.hypot(u_[i], v_[i])), float(h_[i])]
                                           for i in idx]})
+            if ns:                                   # concentration columns after the hydrodynamic ones
+                base = 1 + 4 * len(probes) + ns * j
+                cc = P[:, base:base + ns]
+                d['probes'][-1]['c_max'] = cc.max(0).tolist()
+                d['probes'][-1]['c_curve'] = [[float(P[i, 0])] + [float(v) for v in cc[i]] for i in idx]
     if r['froude_max'] > 1:
         warnings.append(f'Flujo supercrítico (Froude {r["froude_max"]:.2f}).')
     if params['order'] == 2 and r['clipped_mass'] > 1e-9 * max(r['mass0'], 1):
@@ -247,8 +284,43 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
     ts = {'times': times, 'fields': {'eta': np.stack([s_[0] for s_ in series]),
                                       'speed': np.stack([s_[2] for s_ in series]),
                                       'H': np.stack([s_[1] for s_ in series])}}
-    s = {'physics': ['shallow_water'], 'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': 3 * nc,
-         'element_type': 'TRI3', 'tier': tier, 'converged': bool(r['balance_error'] < 1e-8),
+    if ns:
+        names = list(r['solver'].groups)
+        d['tracers'] = []
+        for k, sp_ in enumerate(tracers):
+            unit = sp_.get('unit') or 'mg/L'
+            nm = sp_.get('name') or f'Especie {k + 1}'
+            fields.append({'key': f'c{k}', 'label': nm, 'unit': unit, 'series': True})
+            fields.append({'key': f'cmax{k}', 'label': f'{nm} máx.', 'unit': unit})
+            extra[f'c{k}'] = cs_end[k]
+            extra[f'cmax{k}'] = grid.node_average(r['cmax'][k])[0]
+            ts['fields'][f'c{k}'] = np.stack([s_[5][k] for s_ in series])
+            tb = r['tracers'][k]
+            row = {'name': nm, 'unit': unit, 'D_m2_s': float(sp_.get('D') or 0), 'decay_1_s': float(sp_.get('decay') or 0),
+                   'mass_initial': tb['mass0'], 'mass_final': tb['mass1'], 'source': tb['source'],
+                   'decayed': tb['decayed'], 'clipped': tb['clipped'], 'balance_error': tb['balance_error'],
+                   'boundary_out': [{'id': n_, 'label': next((b['label'] for b in mesh.boundary_info if b['id'] == n_), n_),
+                                     'net_out': tb['boundary_out'][n_], 'in': tb['boundary_in'][n_]}
+                                    for n_ in names if tb['boundary_out'][n_] or tb['boundary_in'][n_]],
+                   'max': float(r['cmax'][k].max())}
+            thr = sp_.get('threshold')
+            if thr is not None:
+                above = r['cmax'][k] > thr
+                row['threshold'] = float(thr)
+                row['area_above_max_m2'] = float(grid.area[above].sum())
+                cend = np.where(U_end[0] > params['h_dry'], U_end[3 + k] / np.maximum(U_end[0], 1e-300), 0.0)
+                row['area_above_final_m2'] = float(grid.area[cend > thr].sum())
+                row['hours_above_max'] = float(r['t_above'][k].max() / 3600.0)
+                fields.append({'key': f'tabove{k}', 'label': f'{nm}: horas sobre el umbral', 'unit': 'h'})
+                extra[f'tabove{k}'] = grid.node_average(r['t_above'][k] / 3600.0)[0]
+            d['tracers'].append(row)
+        d['tracer_balance_error'] = max(t_['balance_error'] for t_ in d['tracers'])
+    if src_info:
+        d['outfalls'] = src_info
+        d['source_volume_m3'] = r['source_volume']
+    s = {'physics': ['shallow_water'], 'n_nodes': mesh.n_nodes, 'n_elements': mesh.n_elements, 'n_dof': (3 + ns) * nc,
+         'element_type': 'TRI3', 'tier': tier,
+         'converged': bool(r['balance_error'] < 1e-8 and all(t_['balance_error'] < 1e-8 for t_ in r['tracers'])),
          'n_iterations': r['n_steps'], 'final_residual': r['balance_error'],
          'solver_method': f'FV HLL + reconstrucción hidrostática, orden {params["order"]}, SSP-RK2',
          'wall_time_s': round(time.perf_counter() - t_start, 3), 'material_model': 'shallow_water',
