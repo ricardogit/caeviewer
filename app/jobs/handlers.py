@@ -61,6 +61,7 @@ def _load_builtin_handlers():
         _loaded = True
         from app.jobs import builtin_handlers  # noqa: F401  (registers on import)
         from app.geometry import handlers as _geometry_handlers  # noqa: F401
+        from app.geodata import handlers as _geodata_handlers  # noqa: F401
 
 
 class JobContext:

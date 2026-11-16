@@ -59,6 +59,36 @@ Draco-compress it (Draco reorders vertices). Frontend: **Geometría** mode → `
 `stores/geometryStore.js` (picking/highlight via per-vertex colors). DB file URIs are relative to `DATA_DIR`. `occ_import`/`gmsh_bridge` must never be
 imported at module level from web code.
 
+**Geographic data + Mapa mode (FASE 10.5):** `app/geodata/` (no GDAL: pyproj, shapely, pyshp, tifffile, h5py/scipy for
+NetCDF, Pillow). Table `geo_datasets` (migration `b5e7d9f1a3c6`), kinds coastline | bathymetry | zones | points | forcing;
+source file content-addressed under `DATA_DIR/geodata/files/`, normalised data (lon/lat GeoJSON, npz, json) + bathymetry
+preview PNG under `geodata/<id>/`; same sha + kind + import params → deduplicated. Readers (`readers.py`): GeoJSON
+(legacy `crs` member), KML, zipped shapefile (.prj → CRS), GeoTIFF (geokeys, PixelIsArea/Point, no rotation), NetCDF-4
+(h5py) / classic (scipy) with 1-D lon/lat axes, XYZ soundings, points CSV, forcing CSV = time series (seconds or ISO
+dates) or tidal constants (`forcing.py`: η = Z0 + Σ A cos(ωt − g), no nodal corrections). Depth stored positive down;
+`convention` auto picks elevation (GEBCO) when most values are negative. Vectors are reprojected to WGS84 on import;
+grids keep their CRS and are sampled through pyproj (`DepthSampler`: priority list, bilinear / Delaunay, nearest only
+for the last dataset). `crs.py`: `utm_epsg` (Norway/Svalbard), `LocalFrame` (UTM − origin rounded to 1 km).
+`mesh2d.py`: water = drawn lon/lat polygon − land (islands → holes), Gmsh 2-D (Frontal-Delaunay, `NumThreads=1`) with
+a background size field on a grid (PostView, no Python callback): min(h_max, √(g·d)·T/N, β·d/|∇d|, size + growth·r
+around points), clamped, gradation-limited (|∇h| ≤ growth). Boundary ids `edge<i>` (part of drawn edge i left in the
+water, kind open|river|coast per edge, label) and `coast` (land contact) — the "faces" of 2-D BCs. Node depth from the
+bathymetry, zone index per triangle, stats. Cached by content key (`mesh_key`: spec + dataset sha + params +
+`MESHER2D_VERSION` + gmsh version) in `DATA_DIR/geodata/meshes/<key>.npz`; job `geo.mesh2d` (queue default). API
+`/api/geodata`: upload (multipart file, kind, crs, convention, time_unit), list/get/delete (409 if a study node uses
+it), `/geojson`, `/preview.png`, `/series` (harmonics synthesised), `/depth`, `POST /mesh` (200 cached | 202 job),
+`GET /mesh/<key>[?format=npz]`, `/utm`. Study: GEOMETRY `shape: 'domain_2d'` (domain, segments, segment_labels,
+mesh, points, *_datasets, mesh_key) → `graph_to_solver_spec` raises GraphSpecError (shown in preflight) until the
+shallow-water solver (FASE 10.3); the hasher replaces dataset ids by sha256 + params (`domain_2d_identity`).
+Frontend **Mapa** mode (TopBar chip `map`): `components/Map/` — `GeoDataList` (sidebar: upload, show/hide, use in the
+domain, forcing chart), lazy `MapMode` = `MapView` (react-leaflet 4, OSM tiles, `VITE_MAP_TILES`/`VITE_MAP_ATTRIBUTION`
+override; draw / drag / right-click remove / Alt+click insert vertex; edge colour by kind; mesh drawn on a canvas
+layer, `MeshCanvasLayer`) + `DomainPanel` (edge kinds, points, mesh params, generate, stats, save to the study GEOMETRY
+node); `stores/geoMapStore.js`, `utils/geoDomain.js` (+ tests). Hito `python validate_geodata.py [--server …]`: UTM round
+trip 2e-14°, k0 = 0.9996, all readers vs the synthetic truth (1e-8), bay mesh area / hole / coast length exact, depth at
+nodes 1e-11, min angle 37°, size / target median 0.93, wavelength criterion 2018 vs 2000 elements per λ, tide constants
+recovered 2e-15, deterministic. Tests `tests/test_geodata.py`.
+
 **Hub catalog (H1d):** the Hub (Catálogo mode; Design stays the default mode) renders cards from the `solver_catalog` table. Add or
 edit tools in `app/catalog/seed_data.py`, then run `flask catalog seed` (idempotent upsert by slug;
 `--prune` disables removed slugs). Run it once after `flask db upgrade` on a fresh database.
@@ -168,7 +198,7 @@ config/config.py          # DevelopmentConfig / ProductionConfig / TestingConfig
 
 ```
 src/
-  App.jsx              # Root: appMode (designStore) design|results|geometry|step|cae|hub, drawers
+  App.jsx              # Root: appMode (designStore) design|results|geometry|map|step|cae|hub, drawers
   main.jsx
   components/
     DesignGraph/
@@ -223,6 +253,7 @@ src/
 |--------|--------|---------|
 | `/api/jobs` | `app/jobs/api.py` | Job list/get/log/cancel/stats; POST only for `dummy` |
 | `/api/catalog` | `app/catalog/api.py` | Hub tool catalog (`solver_catalog`) + filter facets |
+| `/api/geodata` | `app/geodata/api.py` | Geographic datasets, 2-D water-domain mesh (FASE 10.5) |
 | `/api/geometry` | `app/geometry/api.py` | Versioned STEP upload → `geometry.import` job (OCC worker); entities, versions, remap |
 | `/api/auth` | `app/auth/api.py` | Login/logout/me, projects (`AUTH_REQUIRED` env gates `/api/*`, default off) |
 | `/api/design/graph` | `graph_routes.py` | Design graph CRUD, validation, topological sort |

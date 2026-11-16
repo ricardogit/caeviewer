@@ -77,6 +77,7 @@ def _register_models(app):
         from app.jobs.models import Job  # noqa
         from app.auth.models import User, Project  # noqa
         from app.geometry.models import Geometry, GeometryEntity  # noqa
+        from app.geodata.models import GeoDataset  # noqa
         from app.catalog.models import SolverCatalog  # noqa
         try:
             from app.design.models import (  # noqa
@@ -112,6 +113,8 @@ def _register_blueprints(app):
     init_auth(app)
     from app.geometry.api import bp as geometry_bp
     app.register_blueprint(geometry_bp, url_prefix='/api/geometry', strict_slashes=False)
+    from app.geodata.api import bp as geodata_bp
+    app.register_blueprint(geodata_bp, url_prefix='/api/geodata', strict_slashes=False)
     from app.catalog import init_catalog
     init_catalog(app)
     _register_material_cli(app)

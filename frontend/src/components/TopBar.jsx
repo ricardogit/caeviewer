@@ -4,7 +4,7 @@ import {
 } from '@mui/material';
 import {
   Menu as MenuIcon, PlayArrow, GridOn, ViewInAr, AccountTree, Category, Apps, Assessment, FactCheck, History,
-  Download, Bolt, LibraryBooks,
+  Download, Bolt, LibraryBooks, Public,
 } from '@mui/icons-material';
 import JobMonitor from './JobMonitor';
 import MaterialEditor from './Material/MaterialEditor';
@@ -13,7 +13,7 @@ import { useStudy } from '../stores/designStore';
 
 /**
  * TopBar — FASE 9 §9.2. Three sections:
- *   1. work mode: Design | Resultados | Geometría | STEP | CAE/FEA | Catálogo
+ *   1. work mode: Design | Resultados | Geometría | Mapa | STEP | CAE/FEA | Catálogo
  *   2. project context: study name · version · graph status · tier (estimated vs declared)
  *   3. contextual actions on the study: Validar · Simular · Historial · Exportar · Materiales (library)
  */
@@ -21,6 +21,7 @@ export const MODES = [
   { key: 'design', label: 'Design', Icon: AccountTree, color: '#7986cb' },
   { key: 'results', label: 'Resultados', Icon: Assessment, color: '#4db6ac' },
   { key: 'geometry', label: 'Geometría', Icon: Category, color: '#ffb74d' },
+  { key: 'map', label: 'Mapa', Icon: Public, color: '#4fc3f7' },
   { key: 'step', label: 'STEP', Icon: ViewInAr, color: '#90caf9' },
   { key: 'cae', label: 'CAE/FEA', Icon: GridOn, color: '#80cbc4' },
   { key: 'hub', label: 'Catálogo', Icon: Apps, color: '#ce93d8' },

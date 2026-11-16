@@ -38,6 +38,7 @@ import GraphEditor from './components/DesignGraph/GraphEditor';
 import GraphProjectList from './components/DesignGraph/GraphProjectList';
 import SolverPanel from './components/Solver/SolverPanel';
 import GeometryList from './components/Geometry/GeometryList';
+import GeoDataList from './components/Map/GeoDataList';
 import HubPage from './components/Hub/HubPage';
 import HubFilters from './components/Hub/HubFilters';
 import GeometryViewer from './components/Geometry/GeometryViewer';
@@ -55,6 +56,8 @@ const darkTheme = createTheme({
   },
 });
 
+// Leaflet only loads when the Mapa mode opens (FASE 10.5)
+const MapMode = React.lazy(() => import('./components/Map/MapMode'));
 const SIDEBAR_WIDTH = 300;
 
 export default function App() {
@@ -192,6 +195,8 @@ export default function App() {
             ? <ResultsRunList />
             : appMode === 'geometry'
             ? <GeometryList />
+            : appMode === 'map'
+            ? <GeoDataList />
             : appMode === 'cae'
               ? <CAEFileList onSelectMesh={setSelectedMesh} selectedMeshId={selectedMesh?.id} />
               : <FileList onSelectFile={handleFileSelect} selectedFileId={selectedFile?.id} />
@@ -242,6 +247,10 @@ export default function App() {
                 </Box>
               )}
             </Box>
+          ) : appMode === 'map' ? (
+            <React.Suspense fallback={<Box sx={{ p: 3, color: '#888' }}>Cargando mapa…</Box>}>
+              <MapMode />
+            </React.Suspense>
           ) : appMode === 'geometry' ? (
             <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
               <GeometryViewer />

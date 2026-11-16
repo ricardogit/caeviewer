@@ -1,7 +1,7 @@
 /**
  * Workspace slice of the study store (plan §9.3, FASE 9): the cross-mode UI state shared by TopBar, App and panels.
  *
- *   appMode      design | results | geometry | step | cae | hub
+ *   appMode      design | results | geometry | map | step | cae | hub
  *   solverOpen   right context panel (SolverPanel) visible in Design
  *   solverMode   which SolverPanel section: graph | cantilever | topology | rom | uncertainty | validation
  *   historyOpen  simulation history dialog (FASE 7)

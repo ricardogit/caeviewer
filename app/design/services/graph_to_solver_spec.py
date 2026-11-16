@@ -141,6 +141,18 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         elif mesh_id:
             spec['mesh_source'] = 'cae_mesh'
             spec['mesh_id'] = mesh_id
+        elif props.get('shape') == 'domain_2d':
+            # FASE 10.5: 2D water domain drawn in the Mapa mode (lon/lat polygon, boundary kinds per edge,
+            # geographic datasets by id, mesh parameters). Solved by the shallow-water module (FASE 10.3).
+            dom = {k: props[k] for k in ('domain', 'segments', 'segment_labels', 'epsg', 'mesh', 'points',
+                                          'land_datasets', 'bathymetry_datasets', 'zone_dataset', 'points_datasets')
+                   if props.get(k) not in (None, '', [])}
+            if not dom.get('domain'):
+                raise GraphSpecError('GEOMETRY dominio 2D: dibuje el polígono del dominio en el modo Mapa.')
+            spec['mesh_source'] = 'domain_2d'
+            spec['domain_2d'] = dom
+            raise GraphSpecError('Dominio 2D (modo Mapa): la malla se genera y se ve en el modo Mapa, pero el '
+                                 'solver hidrodinámico 2D (aguas someras, FASE 10.3) aún no existe.')
         elif props.get('shape') == 'beam':
             # FASE 9: parametric beam defined in the graph (no CAD). Dimensions in mm; faces
             # 'fixed' (x = 0) and 'tip' (x = L) are the default BC / LOAD sets. T10 by default.

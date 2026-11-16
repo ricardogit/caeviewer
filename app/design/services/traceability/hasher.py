@@ -94,6 +94,25 @@ def _cae_mesh_identity(mesh_id) -> dict:
     return {'mesh_id': str(mesh_id)}
 
 
+DOMAIN_DATASET_KEYS = ('land_datasets', 'bathymetry_datasets', 'zone_dataset', 'points_datasets')
+
+
+def domain_2d_identity(dom: dict) -> dict:
+    """2D water domain (FASE 10.5): geographic datasets by content (sha256 + import options), not by id."""
+    out = {k: v for k, v in dom.items() if k not in DOMAIN_DATASET_KEYS and k not in ('segment_labels',)}
+    try:
+        from app.geodata.service import dataset_identity, get_datasets
+        for k in DOMAIN_DATASET_KEYS:
+            ids = dom.get(k)
+            if ids:
+                ids = [ids] if isinstance(ids, str) else ids
+                out[k] = [dataset_identity(d) for d in get_datasets(ids)]
+    except Exception as e:                       # no DB / missing dataset: fall back to the ids
+        logger.debug('geodata identity unavailable: %s', e)
+        out.update({k: dom[k] for k in DOMAIN_DATASET_KEYS if dom.get(k)})
+    return out
+
+
 def _run_result_identity(run_id) -> dict:
     """Content identity of another run's result (e.g. the fluid run whose velocity a transport study uses)."""
     try:
@@ -129,6 +148,8 @@ def canonical_inputs(spec: dict) -> dict:
         s['geometry'] = _geometry_identity(s.pop('geometry_id'))
     if s.get('mesh_source') == 'cae_mesh' and s.get('mesh_id'):
         s['cae_mesh'] = _cae_mesh_identity(s.pop('mesh_id'))
+    if s.get('mesh_source') == 'domain_2d' and isinstance(s.get('domain_2d'), dict):
+        s['domain_2d'] = domain_2d_identity(s['domain_2d'])
     if 'nodes' in s or 'elements' in s:              # inline mesh: hash the arrays, not their JSON
         import numpy as np
         s['inline_mesh_sha256'] = mesh_hash(np.asarray(s.pop('nodes', []), float),
