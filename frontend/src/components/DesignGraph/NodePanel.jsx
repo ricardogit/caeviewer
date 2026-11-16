@@ -20,6 +20,7 @@ import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields from './PiezoFields';
 import FluidFields from './FluidFields';
 import MagneticFields, { CoilFields } from './MagneticFields';
+import TransportFields, { ConcentrationBCFields, SpeciesLoadFields, SPECIES_LOADS } from './TransportFields';
 
 // [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
 export const MATERIAL_TYPES = [
@@ -34,6 +35,7 @@ export const MATERIAL_TYPES = [
   ['thermopiezoelectric', 'Termo-piezoeléctrico (α, piroeléctrico p3)', true],
   ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
   ['linear_magnetic', 'Magnético (μr, imán Br, saturación B-H)', true],
+  ['scalar_transport', 'Transporte de contaminantes (advección–difusión–reacción)', true],
 ];
 
 // FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
@@ -45,6 +47,7 @@ const BC_TYPES = [
   ['velocity', 'Velocidad impuesta / entrada (fluido)'],
   ['magnetic_potential', 'Potencial magnético / polo (magnético)'],
   ['coil', 'Bobina N·I (magnético)'],
+  ['concentration', 'Concentración impuesta (transporte)'],
 ];
 const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
 const LOAD_TYPES = [
@@ -52,12 +55,16 @@ const LOAD_TYPES = [
   ['heat_flux', 'Flujo de calor (térmico)'], ['convection', 'Convección (térmico)'],
   ['heat_source', 'Fuente de calor interna (térmico)'],
   ['surface_charge', 'Carga eléctrica superficial (piezo)'],
-  ['magnetic_flux', 'Flujo magnético normal Bn (magnético)'], ['torque', 'Par (próximamente)'],
+  ['magnetic_flux', 'Flujo magnético normal Bn (magnético)'],
+  ['point_source', 'Vertido puntual (transporte)'], ['species_flux', 'Flujo de especie en caras (transporte)'],
+  ['exchange', 'Intercambio con el exterior (transporte)'], ['species_source', 'Fuente de especie en volumen (transporte)'],
+  ['torque', 'Par (próximamente)'],
 ];
 const LOAD_UNITS = {
   force: ['N', 'kN', 'MN', 'lbf'], pressure: ['Pa', 'kPa', 'MPa', 'GPa', 'psi', 'bar'], gravity: ['m/s²', 'g'],
   heat_flux: ['W/m²', 'kW/m²'], convection: ['W/m²·K'], heat_source: ['W/m³', 'kW/m³', 'MW/m³'],
   surface_charge: ['C/m²', 'mC/m²', 'µC/m²'], magnetic_flux: ['T', 'mT'],
+  point_source: [''], species_flux: [''], exchange: [''], species_source: [''],
 };
 const THERMAL_LOADS = ['heat_flux', 'convection', 'heat_source'];
 // face-based scalar loads of the field physics (same panel as the thermal ones)
@@ -276,6 +283,7 @@ export default function NodePanel({ node, graphId, onClose }) {
               ['nu', 'Coeficiente de Poisson', 0.33],
               ['rho', 'Densidad [kg/m³]', 2700],
               ['yield_strength', 'Límite elástico σy [Pa]', '']]
+              .filter(() => props.model_type !== 'scalar_transport')
               .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid',
                 'linear_magnetic']
                 .includes(props.model_type) || k === 'rho')
@@ -315,8 +323,11 @@ export default function NodePanel({ node, graphId, onClose }) {
             )}
             {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
             {props.model_type === 'linear_magnetic' && <MagneticFields props={props} setProp={setProp} />}
-            <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
-            {THERMAL_MATERIAL.map(([k, lbl, ph]) => (
+            {props.model_type === 'scalar_transport' && <TransportFields props={props} setProp={setProp} />}
+            {props.model_type !== 'scalar_transport' && (
+              <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
+            )}
+            {props.model_type !== 'scalar_transport' && THERMAL_MATERIAL.map(([k, lbl, ph]) => (
               <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}
                 value={props[k] ?? ''}
                 onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
@@ -383,6 +394,9 @@ export default function NodePanel({ node, graphId, onClose }) {
               );
             })()}
             {props.bc_type === 'coil' && <CoilFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />}
+            {props.bc_type === 'concentration' && (
+              <ConcentrationBCFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+            )}
             {props.bc_type === 'velocity' && (
               <>
                 <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -414,7 +428,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 )}
               </>
             )}
-            {!['symmetry', 'velocity', 'coil'].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
+            {!['symmetry', 'velocity', 'coil', 'concentration'].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
               <Box>
                 <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
                   Desplazamientos restringidos:
@@ -451,7 +465,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 </Box>
               </Box>
             )}
-            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil'].includes(props.bc_type) && (
+            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil', 'concentration'].includes(props.bc_type) && (
               <TextField
                 label="Desplazamiento prescrito [m]"
                 size="small" fullWidth type="number"
@@ -462,7 +476,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                 InputLabelProps={{ style: { color: '#888' } }}
               />
             )}
-            {!studyGeometryId && (
+            {!studyGeometryId && props.bc_type !== 'concentration' && (
               <TextField
                 label="Conjunto de nodos (malla CAE / viga de prueba)"
                 size="small" fullWidth
@@ -504,6 +518,17 @@ export default function NodePanel({ node, graphId, onClose }) {
               </Select>
             </FormControl>
           );
+          if (SPECIES_LOADS.includes(lt)) {
+            return (
+              <>
+                {typeSelect}
+                {['species_flux', 'exchange'].includes(lt) && (
+                  <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)} />
+                )}
+                <SpeciesLoadFields lt={lt} props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+              </>
+            );
+          }
           if (FIELD_LOADS.includes(lt)) {
             return (
               <>

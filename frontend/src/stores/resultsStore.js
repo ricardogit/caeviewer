@@ -20,6 +20,21 @@ const useResultsStore = create((set, get) => ({
 
   setField: (field) => set({ field }),
   setScale: (scale) => set({ scale }),
+  stepLoading: false,
+
+  /** Transient runs (FASE 10.2): reload the surface at output step `step` (header.times), keeping the view. */
+  setStep: async (step) => {
+    const { runId } = get();
+    if (!runId) return;
+    set({ stepLoading: true });
+    try {
+      const r = await axios.get(`${API}/${runId}/surface`, { params: { step }, responseType: 'arraybuffer' });
+      if (get().runId !== runId) return;
+      set({ pack: parsePack(r.data), stepLoading: false });
+    } catch (e) {
+      if (get().runId === runId) set({ stepLoading: false, error: e.message });
+    }
+  },
 
   listRuns: async (graphId) => {
     if (!graphId) {

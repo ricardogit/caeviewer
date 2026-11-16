@@ -36,12 +36,14 @@ PHYSICS_LABELS = {
     ('piezoelectric', 'thermal'): 'Termo-piezoeléctrico 3D (térmico → desplazamiento + potencial, piroeléctrico)',
     ('fluid',): 'Fluido newtoniano 3D (Stokes o Navier-Stokes laminar estacionario)',
     ('magnetic',): 'Magnetostática 3D (potencial escalar; bobinas N·I, saturación B-H)',
+    ('transport',): 'Transporte de contaminantes 3D (advección–difusión–reacción, SUPG)',
 }
 
 
 # material models only the plain kernel run supports (Newton / time stepping)
 NONLINEAR_MATERIALS = ('elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
-                       'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid', 'linear_magnetic')   # (piezo / fluid: linear, plain kernel run only)
+                       'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid', 'linear_magnetic',
+                       'scalar_transport')   # (piezo / fluid: linear, plain kernel run only)
 MATERIAL_LABELS = {
     'elastoplastic_vonmises': 'elastoplástico J2 (Newton-Raphson)',
     'hyperelastic_neohookean': 'hiperelástico Neo-Hookean (grandes deformaciones)',
@@ -793,8 +795,25 @@ def run_surface(run_id):
         summary = {}
         if 'summary_json' in f.attrs:
             summary = json.loads(f.attrs['summary_json'])
-        extras = [(m, f[f"fields/x_{m['key']}/step_0"][:]) for m in summary.get('extra_fields') or []
-                  if f"fields/x_{m['key']}/step_0" in f]
+        # transient fields (FASE 10.2): fields/x_<key>/step_<n> + attrs times / final_step; ?step=n picks one
+        # output step (default: the final one); the header lists the times
+        step_arg = request.args.get('step', type=int)
+        times, step_used = None, None
+        extras = []
+        for m in summary.get('extra_fields') or []:
+            g = f.get(f"fields/x_{m['key']}")
+            if g is None or 'step_0' not in g:
+                continue
+            if 'final_step' in g.attrs:
+                last = int(g.attrs['final_step'])
+                k = last if step_arg is None else max(0, min(step_arg, last))
+                times = [float(t) for t in g.attrs['times']]
+                step_used = k
+                lo = min(float(np.min(g[f'step_{i}'][:])) for i in range(last + 1))
+                hi = max(float(np.max(g[f'step_{i}'][:])) for i in range(last + 1))
+                extras.append(({**m, 'series': True, 'min_all': lo, 'max_all': hi}, g[f'step_{k}'][:]))
+            else:
+                extras.append((m, g['step_0'][:]))
     used, inv = np.unique(tris.ravel(), return_inverse=True)
     t = inv.reshape(-1, 3).astype(np.uint32)
     xyz = (X[used] * 1000.0).astype(np.float32)
@@ -814,6 +833,8 @@ def run_surface(run_id):
         'summary': summary, 'material': ((run.solver_config or {}).get('material') or {}),
     }
     arrays = [('xyz', xyz), ('tris', t), ('u', u), ('vm', v)]
+    if times is not None:
+        header['times'], header['step'] = times, step_used
     header['extra_fields'] = []
     for meta, data in extras:                    # generic nodal scalars (piezo φ, fluid velocity, magnetic B …)
         vals = np.asarray(data, float)[used].astype(np.float32)

@@ -34,7 +34,7 @@ MODEL_GROUPS = {
     'fourier_orthotropic': 'thermal_only', 'linear_elastic_orthotropic': 'orthotropic',
     'elastoplastic_vonmises': 'plastic', 'hyperelastic_neohookean': 'hyperelastic',
     'viscoelastic_maxwell': 'viscoelastic', 'piezoelectric': 'piezoelectric', 'thermopiezoelectric': 'piezoelectric',
-    'newtonian_fluid': 'fluid', 'linear_magnetic': 'magnetic',
+    'newtonian_fluid': 'fluid', 'linear_magnetic': 'magnetic', 'scalar_transport': 'transport',
 }
 GROUPS = sorted(set(MODEL_GROUPS.values()))
 # groups that share most of the mechanics (a plastic steel study is closer to an elastic one than to a fluid)
@@ -73,9 +73,10 @@ FAMILY_KIN = {('steel', 'stainless'): 0.7, ('steel', 'cast_iron'): 0.6, ('alumin
               ('ceramic', 'piezoceramic'): 0.4, ('magnet', 'steel'): 0.2}
 
 LOAD_KINDS = ('force', 'pressure', 'gravity', 'force_per_node', 'heat_flux', 'convection', 'heat_source',
-              'surface_charge', 'magnetic_flux')
-BC_KINDS = ('fixed', 'partial', 'symmetry', 'prescribed', 'temperature', 'voltage', 'velocity', 'magnetic_potential')
-PHYSICS = ('structural', 'thermal', 'piezoelectric', 'fluid', 'magnetic', 'nonlinear')
+              'surface_charge', 'magnetic_flux', 'species_flux', 'exchange', 'species_source', 'point_source')
+BC_KINDS = ('fixed', 'partial', 'symmetry', 'prescribed', 'temperature', 'voltage', 'velocity', 'magnetic_potential',
+            'concentration')
+PHYSICS = ('structural', 'thermal', 'piezoelectric', 'fluid', 'magnetic', 'nonlinear', 'transport')
 
 
 # ── encoders ──────────────────────────────────────────────────────────────────
@@ -184,7 +185,7 @@ def _geometry_identity(spec: dict):
 def _bc_kinds(bcs: list) -> set:
     out = set()
     for b in bcs or []:
-        for k in ('temperature', 'voltage', 'magnetic_potential'):
+        for k in ('temperature', 'voltage', 'magnetic_potential', 'concentration'):
             if k in b:
                 out.add(k)
                 break

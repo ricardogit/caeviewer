@@ -4,14 +4,14 @@
  * component, drawn on the deformed shape (scale slider, true scale 1×), with colour bar and the
  * run summary. Opened from the run list, the solver panel ("Ver resultados 3D") or the TopBar.
  */
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import {
   Box, Typography, ToggleButtonGroup, ToggleButton, Slider, CircularProgress, Alert, Button, Tooltip,
 } from '@mui/material';
-import { AccountTree } from '@mui/icons-material';
+import { AccountTree, PlayArrow, Pause } from '@mui/icons-material';
 import useResultsStore from '../../stores/resultsStore';
 import { colormap, COLORBAR_CSS } from '../../utils/colormap';
 import { autoScale, fieldMeta, availableFields, fieldValues, fmt, normalizer, range } from './resultsField';
@@ -107,6 +107,28 @@ export function SummaryRows({ header }) {
         ['Inductancia', `secante ${fmt(c.L_secant_H * 1e3)} mH · incremental ${fmt(c.L_incremental_H * 1e3)} mH`],
       ]),
     ] : []),
+    ...(s.transport ? [
+      ['Modelo', `Transporte · ${s.transport.n_species} especie(s) · ${s.transport.steady ? 'estacionario'
+        : `${s.transport.time?.scheme?.toUpperCase()} Δt = ${fmt(s.transport.time?.dt)} s`}`],
+      ['Velocidad', s.transport.velocity?.source === 'run'
+        ? `run ${String(s.transport.velocity.run_id).slice(0, 8)} · |v| máx. ${fmt(s.transport.velocity.max_velocity_m_s)} m/s`
+        : s.transport.velocity?.source === 'uniform'
+          ? `uniforme [${(s.transport.velocity.velocity_m_s || []).map(fmt).join(', ')}] m/s` : 'campo dado'],
+      ['Péclet de elemento máx.', `${fmt(s.transport.peclet_max)}${s.transport.stabilization === 'supg' ? ' · SUPG' : ''}`],
+      ...(s.transport.courant_max != null ? [['Courant máx.', fmt(s.transport.courant_max)]] : []),
+      ...(s.transport.species || []).flatMap((sp) => [
+        [sp.name, `máx. ${fmt(sp.max_c)}${sp.max_c_any_time > sp.max_c ? ` (pico ${fmt(sp.max_c_any_time)})` : ''} ${sp.unit}`],
+        ...(sp.mass_final != null ? [[`Masa ${sp.name}`, `${fmt(sp.mass_initial)} → ${fmt(sp.mass_final)} ${sp.mass_unit}`]]
+          : sp.mass != null ? [[`Masa ${sp.name}`, `${fmt(sp.mass)} ${sp.mass_unit}`]] : []),
+        ...(sp.volume_above_m3 != null ? [[`Vol. > ${fmt(sp.threshold)}`, `${fmt(sp.volume_above_m3)} m³`
+          + (sp.volume_above_max_m3 != null ? ` (máx. ${fmt(sp.volume_above_max_m3)})` : '')]] : []),
+      ]),
+      ...(s.transport.streeter_phelps ? [['OD mínimo', `${fmt(s.transport.streeter_phelps.min_DO)} mg/L en `
+        + `[${s.transport.streeter_phelps.min_DO_point_m.map((v) => fmt(v * 1e3)).join(', ')}] mm`]] : []),
+      ...(s.transport.probes || []).map((p) => [`Punto ${p.label}`, `máx. ${p.max.map(fmt).join(' / ')} `
+        + `(t = ${p.t_max.map(fmt).join(' / ')} s)${p.inside ? '' : ' ⚠ fuera'}`]),
+      ['Balance de masa', fmt(s.transport.mass_balance_error)],
+    ] : []),
     ...(header?.max_T != null ? [
       ['Temperatura', `${fmt(header.min_T)} … ${fmt(header.max_T)} °C`],
       ['Flujo de calor máx.', `${fmt(header.max_q)} W/m²`],
@@ -121,7 +143,7 @@ export function SummaryRows({ header }) {
           ? ['c11ᴱ / c33ᴱ', `${fmt(header.material.c11 / 1e9)} / ${fmt(header.material.c33 / 1e9)} GPa`]
           : ['E', header?.material?.E ? `${fmt(header.material.E / 1e9)} GPa` : '—'],
       ['Equilibrio', s.equilibrium_error != null ? `${fmt(100 * s.equilibrium_error)} %` : '—'],
-    ] : (s.fluid || s.magnetic) ? [] : [['k', header?.material?.k
+    ] : (s.fluid || s.magnetic || s.transport) ? [] : [['k', header?.material?.k
       ? `${Array.isArray(header.material.k) ? header.material.k.map(fmt).join(' / ') : fmt(header.material.k)} W/m·K`
       : '—']]),
   ];
@@ -133,6 +155,35 @@ export function SummaryRows({ header }) {
           <Typography sx={{ color: '#ddd', fontSize: 11, fontFamily: 'monospace', textAlign: 'right' }}>{v}</Typography>
         </React.Fragment>
       ))}
+    </Box>
+  );
+}
+
+/** Output-step slider of a transient run (header.times): reloads the surface at that step; play loops. */
+function TimeBar({ header }) {
+  const setStep = useResultsStore((s) => s.setStep);
+  const stepLoading = useResultsStore((s) => s.stepLoading);
+  const times = header.times;
+  const [pos, setPos] = useState(header.step ?? times.length - 1);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => { setPos(header.step ?? times.length - 1); }, [header.step, times.length]);
+  useEffect(() => {
+    if (!playing || stepLoading) return undefined;
+    const id = setTimeout(() => setStep((pos + 1) % times.length), 450);
+    return () => clearTimeout(id);
+  }, [playing, stepLoading, pos, times.length, setStep]);
+  return (
+    <Box data-testid="timebar" sx={{ display: 'flex', alignItems: 'center', gap: 1, width: 320, bgcolor: '#1a1a1acc',
+      px: 1, borderRadius: 1 }}>
+      <Button size="small" sx={{ minWidth: 0, p: 0.25 }} onClick={() => setPlaying((v) => !v)}
+        aria-label={playing ? 'Pausa' : 'Reproducir'}>
+        {playing ? <Pause fontSize="small" /> : <PlayArrow fontSize="small" />}
+      </Button>
+      <Slider size="small" min={0} max={times.length - 1} step={1} value={pos}
+        onChange={(_, v) => setPos(v)} onChangeCommitted={(_, v) => setStep(v)} aria-label="Instante" />
+      <Typography variant="caption" sx={{ color: '#ccc', whiteSpace: 'nowrap', minWidth: 72 }}>
+        t = {fmt(times[pos])} s
+      </Typography>
     </Box>
   );
 }
@@ -157,7 +208,10 @@ export default function ResultsViewer() {
   const auto = useMemo(() => (pack ? autoScale(pack) : 1), [pack]);
   const k = scale ?? auto;
   const values = useMemo(() => (pack ? fieldValues(pack, field) : null), [pack, field]);
-  const norm = useMemo(() => (values ? normalizer(field, range(values)) : null), [values, field]);
+  // transient fields keep one colour range over all output steps (min_all / max_all), so steps compare
+  const series = (pack?.header?.extra_fields || []).find((m) => `x_${m.key}` === field && m.series);
+  const norm = useMemo(() => (values ? normalizer(field, series ? [series.min_all, series.max_all] : range(values)) : null),
+    [values, field, series]);
 
   useEffect(() => {
     if (!geometry || !values) return;
@@ -239,6 +293,7 @@ export default function ResultsViewer() {
                 <Button size="small" sx={{ fontSize: 10, minWidth: 0 }} onClick={() => setScale(1)}>1:1</Button>
               </Box>
             </Tooltip>}
+            {pack.header?.times?.length > 1 && <TimeBar header={pack.header} />}
           </Box>
           <Box sx={{ position: 'absolute', bottom: 12, right: 12, bgcolor: '#1a1a1add', p: 1, borderRadius: 1,
             border: '1px solid #333', minWidth: 220 }}>

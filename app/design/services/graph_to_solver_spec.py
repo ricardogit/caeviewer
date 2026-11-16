@@ -109,6 +109,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 spec['material']['inertia'] = True
                 if props.get('stabilization') == 'supg':     # opt-in: unstabilised studies keep their hash
                     spec['material']['stabilization'] = 'supg'
+        elif spec['material']['type'] == 'scalar_transport':
+            _transport_material(spec, mat_node)
         elif spec['material']['type'] == 'linear_magnetic':
             mu_r = props.get('mu_r')
             if mu_r in (None, '') or float(mu_r) <= 0:
@@ -231,6 +233,137 @@ def _magnetic_saturation(spec: dict, node) -> None:
     spec['material']['mu_r'] = c.mu_r_initial
 
 
+RATE_UNITS = {'1/s': 1.0, '1/h': 1 / 3600.0, '1/d': 1 / 86400.0}
+TIME_UNITS = {'s': 1.0, 'min': 60.0, 'h': 3600.0, 'd': 86400.0}
+TRANSPORT_LOAD_TYPES = ('species_flux', 'exchange', 'species_source', 'point_source')
+
+
+def _num(props: dict, key: str, label: str, what: str, default=None, positive=False, nonneg=False) -> float:
+    v = props.get(key)
+    if v in (None, ''):
+        if default is None:
+            raise GraphSpecError(f'"{label}": falta {what}.')
+        return float(default)
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise GraphSpecError(f'"{label}": {what} debe ser numérico.')
+    if (positive and not x > 0) or (nonneg and x < 0):
+        raise GraphSpecError(f'"{label}": {what} debe ser {"> 0" if positive else "≥ 0"}.')
+    return x
+
+
+def _decay_rate(sp_props: dict, label: str) -> float:
+    """Species decay λ [1/s] from ``decay`` + ``decay_unit`` (1/s | 1/h | 1/d | T90_h: λ = ln 10 / T90)."""
+    v = sp_props.get('decay')
+    if v in (None, '', 0, '0'):
+        return 0.0
+    unit = sp_props.get('decay_unit') or '1/s'
+    x = _num(sp_props, 'decay', label, 'el decaimiento', positive=True)
+    if unit == 'T90_h':
+        return math.log(10.0) / (x * 3600.0)
+    if unit not in RATE_UNITS:
+        raise GraphSpecError(f'"{label}": unidad de decaimiento «{unit}» no reconocida (1/s, 1/h, 1/d, T90_h).')
+    return x * RATE_UNITS[unit]
+
+
+def _history(props: dict, label: str):
+    """Time series [[t, factor], …] (t in the study time unit, scaled to s in ``_finalize_physics``) or ``t_off``:
+    on until t_off, then off."""
+    if props.get('history'):
+        try:
+            h = [[float(t), float(f)] for t, f in props['history']]
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{label}": serie temporal inválida ([[t, factor], …]).')
+        if any(b[0] < a[0] for a, b in zip(h, h[1:])):
+            raise GraphSpecError(f'"{label}": la serie temporal necesita tiempos crecientes.')
+        return h
+    if props.get('t_off') not in (None, ''):
+        t = _num(props, 't_off', label, 'el tiempo de corte', positive=True)
+        return [[0.0, 1.0], [t, 1.0], [t * (1 + 1e-9), 0.0]]
+    return None
+
+
+def _transport_material(spec: dict, node) -> None:
+    """MATERIAL ``scalar_transport`` (FASE 10.1): ``species`` [{name, D [m²/s], decay + decay_unit, unit, threshold,
+    c0, pulse_center_mm, pulse_sigma_mm, pulse_peak}], ``reaction_model`` none | streeter_phelps (kd, ka in
+    ``rate_unit``, do_sat), ``velocity_source`` uniform (vx, vy, vz m/s) | run (``velocity_run_id``, a finished fluid
+    run on the same mesh), ``stabilization`` supg | none, ``transient`` + t_end / time_steps / scheme / n_output in
+    ``time_unit``, ``probes`` [{label, x, y, z mm}]."""
+    p = node.properties or {}
+    label = node.label
+    species_p = p.get('species') or [{'name': 'Contaminante', 'D': 1e-6}]
+    if not isinstance(species_p, list) or not species_p:
+        raise GraphSpecError(f'"{label}": defina al menos una especie.')
+    rx_model = p.get('reaction_model') or 'none'
+    if rx_model == 'streeter_phelps' and len(species_p) != 2:
+        raise GraphSpecError(f'"{label}": Streeter–Phelps usa dos especies (DBO y déficit de oxígeno).')
+    species, initial = [], []
+    for i, sp_ in enumerate(species_p):
+        name = str(sp_.get('name') or f'Especie {i + 1}')
+        lab = f'{label} · {name}'
+        d = {'name': name, 'D': _num(sp_, 'D', lab, 'la difusividad D (m²/s)', default=0.0, nonneg=True),
+             'decay': _decay_rate(sp_, lab), 'unit': sp_.get('unit') or 'mg/L'}
+        if sp_.get('threshold') not in (None, ''):
+            d['threshold'] = _num(sp_, 'threshold', lab, 'el umbral')
+        species.append(d)
+        if sp_.get('pulse_sigma_mm') not in (None, ''):
+            c = sp_.get('pulse_center_mm') or [0, 0, 0]
+            try:
+                center = [float(v) / 1000.0 for v in c]
+            except (TypeError, ValueError):
+                raise GraphSpecError(f'"{lab}": centro del pulso inválido (x, y, z en mm).')
+            initial.append({'gaussian': {'center': center,
+                                         'sigma': _num(sp_, 'pulse_sigma_mm', lab, 'σ del pulso', positive=True) / 1000.0,
+                                         'peak': _num(sp_, 'pulse_peak', lab, 'el pico del pulso', default=1.0)}})
+        else:
+            initial.append({'value': _num(sp_, 'c0', lab, 'la concentración inicial', default=0.0)})
+    m = {'type': 'scalar_transport', 'species': species}
+    if rx_model == 'streeter_phelps':
+        f = RATE_UNITS.get(p.get('rate_unit') or '1/d')
+        if f is None:
+            raise GraphSpecError(f'"{label}": unidad de tasa «{p.get("rate_unit")}» no reconocida (1/s, 1/h, 1/d).')
+        m['reaction'] = {'model': 'streeter_phelps',
+                         'kd': _num(p, 'kd', label, 'la tasa de desoxigenación kd', positive=True) * f,
+                         'ka': _num(p, 'ka', label, 'la tasa de reaireación ka', positive=True) * f,
+                         'do_sat': _num(p, 'do_sat', label, 'el oxígeno de saturación', default=0.0, nonneg=True)}
+    elif rx_model != 'none':
+        raise GraphSpecError(f'"{label}": modelo de reacción desconocido «{rx_model}» (none | streeter_phelps).')
+    src = p.get('velocity_source') or 'uniform'
+    if src == 'run':
+        if not p.get('velocity_run_id'):
+            raise GraphSpecError(f'"{label}": elija el run de fluido que da la velocidad.')
+        m['velocity'] = {'run_id': str(p['velocity_run_id'])}
+    elif src == 'uniform':
+        m['velocity'] = [_num(p, k, label, k, default=0.0) for k in ('vx', 'vy', 'vz')]
+    else:
+        raise GraphSpecError(f'"{label}": origen de velocidad desconocido «{src}» (uniform | run).')
+    if p.get('stabilization') == 'none':
+        m['stabilization'] = 'none'
+    if any(ic.get('value') or 'gaussian' in ic for ic in initial):
+        m['initial'] = initial
+    spec['material'] = m
+    t_scale = TIME_UNITS.get(p.get('time_unit') or 's')
+    if t_scale is None:
+        raise GraphSpecError(f'"{label}": unidad de tiempo «{p.get("time_unit")}» no reconocida (s, min, h, d).')
+    spec['transport_time_scale'] = t_scale              # popped in _finalize_physics (BC/LOAD series → s)
+    if p.get('transient'):
+        spec['time'] = {'t_end': _num(p, 't_end', label, 'el tiempo final', positive=True) * t_scale,
+                        'n_steps': int(_num(p, 'time_steps', label, 'el número de pasos', default=50, positive=True)),
+                        'scheme': p.get('scheme') or 'bdf2'}
+        if p.get('n_output') not in (None, ''):
+            spec['time']['n_output'] = int(_num(p, 'n_output', label, 'las salidas', positive=True))
+    probes = []
+    for i, pr in enumerate(p.get('probes') or []):
+        try:
+            probes.append({'label': pr.get('label') or f'P{i + 1}',
+                           'point': [float(pr.get(k)) / 1000.0 for k in ('x', 'y', 'z')]})
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{label}": punto de control {i + 1} con coordenadas inválidas (mm).')
+    if probes:
+        spec['probes'] = probes
+
+
 def _finalize_physics(spec: dict) -> None:
     """Physics of the special material models (piezo, thermo-piezo, magnetic, fluid) and the checks that the
     conditions match the material."""
@@ -247,6 +380,26 @@ def _finalize_physics(spec: dict) -> None:
                                 if k not in ('p3', 'alpha', 'k', 'T_ref')}
             spec['material']['type'] = 'piezoelectric'
             spec['physics'] = ['piezoelectric']
+    t_scale = spec.pop('transport_time_scale', 1.0)
+    is_tr_bc = lambda b: 'concentration' in b                                         # noqa: E731
+    is_tr_ld = lambda ld: any(k in ld for k in TRANSPORT_LOAD_TYPES)                  # noqa: E731
+    if spec['material'].get('type') == 'scalar_transport':
+        n_other = sum(not is_tr_bc(b) for b in spec['bcs']) + sum(not is_tr_ld(ld) for ld in spec['loads'])
+        if n_other:
+            raise GraphSpecError('El estudio de transporte solo admite BC «Concentración» y cargas de especie (flujo, '
+                                 f'intercambio, fuente, vertido puntual): hay {n_other} condiciones de otro tipo.')
+        n_sp = len(spec['material']['species'])
+        for e in spec['bcs'] + spec['loads']:
+            sp_ = e.get('species', 0)
+            if not (isinstance(sp_, int) and 0 <= sp_ < n_sp):
+                raise GraphSpecError(f'"{e.get("label")}": especie {sp_!r} inexistente (hay {n_sp}).')
+            if t_scale != 1.0 and e.get('history'):
+                e['history'] = [[t * t_scale, f] for t, f in e['history']]
+        spec['physics'] = ['transport']
+        return
+    if any(is_tr_bc(b) for b in spec['bcs']) or any(is_tr_ld(ld) for ld in spec['loads']):
+        raise GraphSpecError('Hay condiciones de transporte (concentración, vertidos) pero el material no es '
+                             '«Transporte de contaminantes».')
     if spec['material'].get('type') != 'linear_magnetic' and (
             any('magnetic_potential' in b for b in spec['bcs']) or any('magnetic_flux' in ld for ld in spec['loads'])):
         raise GraphSpecError('Hay condiciones magnéticas pero el material no es magnético (μr, Br).')
@@ -534,6 +687,16 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if bc_type == 'concentration':                # species transport: fixed concentration (inlet, source face)
+        entry = {'concentration': _num(props, 'concentration', node.label, 'la concentración impuesta'),
+                 'species': int(props.get('species') or 0), 'label': node.label}
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if bc_type == 'velocity':                     # fluid inlet / moving wall [m/s or mm/s]
         f = {'m/s': 1.0, 'mm/s': 1e-3}.get(props.get('unit') or 'm/s', 1.0)
         values = [float(props.get(k) or 0) * f for k in ('vx', 'vy', 'vz')]
@@ -621,6 +784,33 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if load_type in TRANSPORT_LOAD_TYPES:         # species transport (units: concentration c, m, s)
+        entry['species'] = int(props.get('species') or 0)
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        if load_type == 'species_source':         # uniform volumetric source [c/s]
+            entry['species_source'] = mag
+            return entry
+        if load_type == 'point_source':           # discharge [c·m³/s] (mg/L → g/s) at a point given in mm
+            try:
+                pt = [float(props.get(k)) / 1000.0 for k in ('x', 'y', 'z')]
+            except (TypeError, ValueError):
+                raise GraphSpecError(f'"{node.label}": el vertido puntual necesita el punto x, y, z (mm).')
+            entry['point_source'] = {'point': pt, 'rate': mag}
+            return entry
+        faces = _faces(ctx, node)
+        if load_type == 'species_flux':           # [c·m/s] into the body
+            entry['species_flux'] = mag
+            _target(entry, faces, props, 'tip', face=True)
+        else:                                      # exchange k (c_ext − c) with the atmosphere / bed
+            entry['exchange'] = {'k': _num(props, 'k', node.label, 'el coeficiente de intercambio k (m/s)',
+                                           nonneg=True),
+                                 'c_ext': _num(props, 'c_ext', node.label, 'la concentración exterior', default=0.0)}
+            _target(entry, faces, props, '@free', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
     if load_type == 'magnetic_flux':              # normal flux density entering the face [T]
         entry['magnetic_flux'] = mag * {'T': 1.0, 'mT': 1e-3}.get(props.get('unit') or 'T', 1.0)
         _target(entry, _faces(ctx, node), props, 'tip', face=True)
@@ -633,7 +823,8 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
         return entry
     if load_type not in ('force', 'pressure'):
         raise GraphSpecError(f'"{node.label}": el tipo de carga "{load_type}" aún no está soportado '
-                             '(disponibles: force, pressure, gravity, heat_flux, convection, heat_source).')
+                             '(disponibles: force, pressure, gravity, heat_flux, convection, heat_source, '
+                             'species_flux, exchange, species_source, point_source).')
 
     faces = _faces(ctx, node)
     if load_type == 'pressure':

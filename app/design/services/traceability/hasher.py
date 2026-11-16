@@ -94,6 +94,19 @@ def _cae_mesh_identity(mesh_id) -> dict:
     return {'mesh_id': str(mesh_id)}
 
 
+def _run_result_identity(run_id) -> dict:
+    """Content identity of another run's result (e.g. the fluid run whose velocity a transport study uses)."""
+    try:
+        import uuid
+        from app.design.models.simulation import SimulationRun
+        run = SimulationRun.query.filter_by(id=uuid.UUID(str(run_id))).first()
+        if run is not None and run.result_hash:
+            return {'run_result_hash': run.result_hash}
+    except Exception as e:
+        logger.debug('run identity unavailable for %s: %s', run_id, e)
+    return {'run_id': str(run_id)}
+
+
 def file_sha256(path) -> str:
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -121,6 +134,9 @@ def canonical_inputs(spec: dict) -> dict:
         s['inline_mesh_sha256'] = mesh_hash(np.asarray(s.pop('nodes', []), float),
                                             np.asarray(s.pop('elements', []), np.int64))
     s['physics'] = sorted(s.get('physics') or [])
+    vel = (s.get('material') or {}).get('velocity')
+    if isinstance(vel, dict) and vel.get('run_id'):    # transport on a fluid run's velocity: hash its content
+        s['material']['velocity'] = _run_result_identity(vel['run_id'])
     out = _normalize(s)
     for k in ('bcs', 'loads'):            # graph edges have no intrinsic order
         if isinstance(out.get(k), list):

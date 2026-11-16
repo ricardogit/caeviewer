@@ -222,6 +222,11 @@ class FEMKernel:
         self._emit(socketio, run_id, 5, f'mesh built: {mesh.n_nodes:,} nodes, '
                    f'{mesh.n_elements:,} {mesh.element_type} elements', t_start)
 
+        # 3a. Species transport (FASE 10.1): advection–diffusion–reaction on a given velocity field
+        if 'transport' in physics:
+            return self._solve_transport(mesh, mesh_meta, mat_spec, solver_spec, all_bcs, all_loads, tier,
+                                         socketio, run_id, t_start)
+
         # 3b. Thermal field (FASE 2 multiphysics): steady conduction, then one-way coupling
         T = thermal = None
         if 'thermal' in physics and mat_spec.get('type') == 'piezoelectric':
@@ -760,6 +765,160 @@ class FEMKernel:
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
         }
 
+    # ── Species transport (FASE 10.1 + 10.2) ─────────────────────────────────
+
+    @staticmethod
+    def _run_velocity(run_id: str, mesh: FEMMesh) -> tuple[np.ndarray, dict]:
+        """Nodal velocity [m/s] of a finished fluid run on the same mesh (HDF5 fields x_vx/x_vy/x_vz, mm/s)."""
+        import h5py
+        from flask import current_app
+        data_dir = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
+        path = os.path.join(data_dir, f'{run_id}.h5')
+        if not os.path.exists(path):
+            raise ValueError(f'Transporte: el run de fluido {run_id} no tiene resultados guardados.')
+        with h5py.File(path, 'r') as f:
+            if 'fields/x_vx/step_0' not in f:
+                raise ValueError(f'Transporte: el run {run_id} no es un run de fluido (sin campo de velocidad).')
+            X = f['nodes'][:]
+            v = np.column_stack([f[f'fields/x_{k}/step_0'][:] for k in ('vx', 'vy', 'vz')]) * 1e-3
+        if X.shape != mesh.nodes.shape or not np.allclose(X, mesh.nodes, rtol=0, atol=1e-9 * max(1.0, np.abs(X).max())):
+            raise ValueError('Transporte: la malla del run de fluido no coincide con la de este estudio (misma '
+                             'geometría, tamaño y orden de malla).')
+        return v, {'source': 'run', 'run_id': str(run_id), 'max_velocity_m_s': float(np.linalg.norm(v, axis=1).max())}
+
+    def _solve_transport(self, mesh, mesh_meta, mat_spec, spec, all_bcs, all_loads, tier,
+                         socketio, run_id, t_start) -> dict:
+        from app.design.services.fem import transport as tr
+        model = tr.TransportModel(mat_spec)
+        bcs = [b for b in all_bcs if tr.is_transport_bc(b)]
+        loads = [ld for ld in all_loads if tr.is_transport_load(ld)]
+        other = len(all_bcs) - len(bcs) + len(all_loads) - len(loads)
+        if other:
+            raise ValueError('Transporte: solo admite concentración impuesta (BC) y flujo / intercambio / fuentes de '
+                             f'especie (cargas); hay {other} condiciones mecánicas, térmicas u otras.')
+        vel = mat_spec.get('velocity')
+        v_field = None
+        if isinstance(vel, dict) and vel.get('run_id'):
+            v_field, vinfo = self._run_velocity(vel['run_id'], mesh)
+        elif spec.get('velocity_field') is not None:                       # inline nodal field (tests / scripts)
+            v_field = np.asarray(spec['velocity_field'], float)
+            vinfo = {'source': 'field', 'max_velocity_m_s': float(np.linalg.norm(v_field, axis=1).max())}
+        else:
+            vinfo = {'source': 'uniform', 'velocity_m_s': (model.velocity if model.velocity is not None
+                                                           else np.zeros(3)).tolist()}
+        time_spec = spec.get('time') or None
+        ns, n = model.n_species, mesh.n_nodes
+        self._emit(socketio, run_id, 10, f'transporte: {ns} especie(s), {ns * n:,} incógnitas'
+                   + (f", {int(time_spec['n_steps'])} pasos" if time_spec else ' (estacionario)'), t_start)
+
+        def prog(k, total, t):
+            self._emit(socketio, run_id, 10 + int(80 * k / total), f'transporte: paso {k}/{total} (t = {t:.4g} s)',
+                       t_start)
+        snaps, info = tr.solve(mesh, model, bcs, loads, velocity=v_field, time=time_spec,
+                               initial=mat_spec.get('initial'), probes=spec.get('probes'), progress=prog)
+        prob = info.pop('problem')
+        t_final, x = snaps[-1]
+        X_all = np.stack([s[1] for s in snaps])                             # (n_out, ns·N)
+        xmax = X_all.max(0)
+        species_out, extra, fields = [], {}, []
+        for s, spc in enumerate(model.species):
+            sl = slice(s * n, (s + 1) * n)
+            c = x[sl]
+            key = f'c{s}'
+            d = {'name': spc['name'], 'unit': spc['unit'], 'mass_unit': tr.mass_unit(spc['unit']), 'D': spc['D'],
+                 'decay': spc['decay'], 'max_c': float(c.max()), 'min_c': float(c.min()),
+                 'max_c_any_time': float(xmax[sl].max()), 'min_c_any_time': float(X_all[:, sl].min())}
+            if info['steady']:
+                d['rates'] = {k: info['rates'][k][s] for k in info['rates']}
+                d['mass'] = info['mass'][s]
+            else:
+                d['mass_initial'] = info['mass_initial'][s]
+                d['mass_final'] = info['mass_final'][s]
+                d['budget'] = {k: info['budget'][k][s] for k in info['budget']}
+            if spc.get('threshold') not in (None, ''):
+                thr = float(spc['threshold'])
+                d['threshold'] = thr
+                d['volume_above_m3'] = tr.volume_above(mesh, c, thr)
+                if not info['steady']:
+                    d['volume_above_max_m3'] = tr.volume_above(mesh, xmax[sl], thr)
+            species_out.append(d)
+            extra[key] = c
+            fields.append({'key': key, 'label': spc['name'], 'unit': spc['unit'], 'series': not info['steady']})
+            if not info['steady']:
+                extra[f'cmax{s}'] = xmax[sl]
+                fields.append({'key': f'cmax{s}', 'label': f'{spc["name"]} máx. en el tiempo', 'unit': spc['unit']})
+        trans = {'steady': info['steady'], 'n_species': ns, 'species': species_out, 'velocity': vinfo,
+                 'stabilization': model.stabilization, 'peclet_max': tr.peclet_max(prob),
+                 'mass_balance_error': info['mass_balance_error'], 'solver': info['solver'],
+                 'reaction_matrix': model.R.tolist()}
+        warnings = []
+        if not info['steady']:
+            ts = info['time']
+            trans['time'] = {k: ts[k] for k in ('t_end', 'n_steps', 'dt', 'scheme', 'theta', 'n_output')}
+            trans['courant_max'] = tr.courant_max(prob, ts['dt'])
+            trans['times'] = [float(t) for t, _ in snaps]
+            trans['mass_history'] = info['mass_history'][::max(1, len(info['mass_history']) // 200)]
+        if model.streeter_phelps:
+            sp_ = model.streeter_phelps
+            DO = sp_['do_sat'] - x[n:2 * n]
+            i = int(np.argmin(DO))
+            trans['streeter_phelps'] = {**sp_, 'min_DO': float(DO[i]), 'min_DO_point_m': mesh.nodes[i].tolist(),
+                                        'max_deficit': float(x[n:2 * n].max())}
+            extra['DO'] = DO
+            fields.append({'key': 'DO', 'label': 'Oxígeno disuelto', 'unit': model.species[1]['unit']})
+            if sp_['do_sat'] > 0 and DO[i] < 0:
+                warnings.append('El oxígeno disuelto calculado es negativo (déficit > saturación): la carga de DBO '
+                                'agota el oxígeno; el modelo lineal de Streeter–Phelps deja de ser válido (anoxia).')
+        if info['curves']:
+            locs = info['probe_locations']
+            trans['probes'] = [{'label': p.get('label') or f'P{i + 1}', 'point': list(map(float, p['point'])),
+                                'inside': lc['inside'], 'distance_m': lc['distance_m'],
+                                'curve': [[row[0]] + row[1 + i] for row in info['curves']]}
+                               for i, (p, lc) in enumerate(zip(spec.get('probes') or [], locs))]
+            stride = max(1, len(info['curves']) // 500)                      # summary stays small (≤ ~500 rows)
+            for p in trans['probes']:
+                vals = np.array([r[1:] for r in p['curve']])
+                p['max'] = vals.max(0).tolist()
+                p['t_max'] = [float(p['curve'][int(j)][0]) for j in vals.argmax(0)]
+                p['curve'] = p['curve'][::stride] + ([p['curve'][-1]] if (len(p['curve']) - 1) % stride else [])
+        Pe = trans['peclet_max']
+        if model.stabilization == 'none' and Pe > 1:
+            warnings.append(f'Péclet de elemento máx. ≈ {Pe:.3g} (> 1) sin estabilización: la concentración puede '
+                            'oscilar entre nodos; active SUPG o refine la malla.')
+        cmax_all = max(float(np.abs(X_all).max()), 1e-300)
+        cmin_all = float(X_all.min())
+        if cmin_all < -0.01 * cmax_all:
+            warnings.append(f'Concentración mínima {cmin_all:.3g} (< −1 % del máximo): sub-oscilación en un frente '
+                            'abrupto; refine la malla en el frente o reduzca el paso de tiempo.')
+        trans['undershoot'] = min(cmin_all, 0.0) / cmax_all
+        resid = info['mass_balance_error']
+        s = {
+            'physics': ['transport'],
+            'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': ns * n, 'element_type': mesh.element_type,
+            'tier': tier, 'converged': bool(resid < 1e-6), 'n_iterations': (info['time']['n_steps']
+                                                                            if not info['steady'] else 1),
+            'final_residual': resid, 'solver_method': info['solver'],
+            'wall_time_s': round(time.perf_counter() - t_start, 3), 'loads': prob.info,
+            'material_model': 'scalar_transport', 'transport': trans, 'extra_fields': fields,
+            'mesh_hash': mesh_hash(mesh.nodes, mesh.elements), 'result_hash': array_hash(x),
+        }
+        if warnings:
+            s['warnings'] = warnings
+        if mesh_meta:
+            s['mesh'] = {k: val for k, val in mesh_meta.items() if k not in ('attempts', 'bridge')}
+        series = None
+        if not info['steady']:
+            series = {'times': trans['times'],
+                      'fields': {f'c{s_}': X_all[:, s_ * n:(s_ + 1) * n] for s_ in range(ns)}}
+            if model.streeter_phelps:
+                series['fields']['DO'] = model.streeter_phelps['do_sat'] - X_all[:, n:2 * n]
+        return {
+            'concentration': x, 'extra_fields': extra, 'time_series': series,
+            'solve_info': {'method': info['solver'], 'converged': s['converged'], 'final_residual': resid},
+            'surface_triangles': mesh.extract_surface_triangles(),
+            'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
+        }
+
     # ── Linear magnetostatics (scalar potential, current-free) ───────────────
 
     def _solve_magnetic(self, mesh, mesh_meta, material, all_bcs, all_loads, tier,
@@ -1203,8 +1362,18 @@ class FEMKernel:
                 if result.get(name) is not None:
                     fields.create_dataset(f'{name}/step_0', data=np.array(result[name]))
 
+            series = result.get('time_series') or {}
             for key, data in (result.get('extra_fields') or {}).items():   # generic nodal fields (new physics)
+                if key in (series.get('fields') or {}):
+                    continue
                 fields.create_dataset(f'x_{key}/step_0', data=np.asarray(data, dtype=np.float64))
+            # transient results (FASE 10.2): fields/x_<key>/step_<n> in time order, attrs times + final_step
+            for key, steps in (series.get('fields') or {}).items():
+                g = fields.create_group(f'x_{key}')
+                for i, arr in enumerate(steps):
+                    g.create_dataset(f'step_{i}', data=np.asarray(arr, dtype=np.float64))
+                g.attrs['times'] = np.asarray(series['times'], float)
+                g.attrs['final_step'] = len(steps) - 1
 
             surf = result.get('surface_triangles', [])
             if surf:

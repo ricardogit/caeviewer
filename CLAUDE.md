@@ -396,6 +396,36 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   `python validate_thermopiezo.py [--server …]`: clamped σ = −CᴱαΔT and charges ∓p3ΔTA, open-circuit voltage
   (7×7 homogeneous system), linear T → quadratic φ, ΔT = 0 = piezo — all exact (1e-15). Tests `tests/test_thermopiezo.py`.
 
+- **Species transport** (FASE 10.1 + 10.2, `fem/transport.py`): advection–diffusion–reaction of ns species on T4/T10,
+  ∂c/∂t + v·∇c − DΔc + Rc = S, given velocity (uniform, or the nodal field of a finished fluid run on the **same mesh**:
+  material `velocity: {run_id}`, `FEMKernel._run_velocity`, mesh checked; the hash uses that run's `result_hash`).
+  R = decay λ + conversions (`reactions` [{from, to, rate, yield}]) or `reaction: {model: streeter_phelps, kd, ka,
+  do_sat}` (BOD → oxygen deficit, extra field DO). SUPG on by default (`stabilization: 'none'` opts out): τ = ((2|v|/h̃)²
+  + (12D/h̃²)² + λ²)^-½, h = streamline length h_UGN, h̃ = h/2 on T10, no 1/Δt term; −DΔc exact on straight T10;
+  point sources get their SUPG term too (consistency). Conditions by key: BC `concentration` (+ `species`, `history`
+  [[t, f]]), loads `species_flux`, `exchange` {k, c_ext}, `species_source`, `point_source` {point, rate}; free faces =
+  ∂c/∂n = 0. Top-level `time` {t_end, n_steps, scheme bdf2 (default, BE start) | cn | be | theta, n_output}; without it
+  steady. The **initial field is kept at fixed-concentration nodes at t = 0** (BC switches on at 0⁺): overwriting adds
+  O(h) interpolant mass. Mass budget (sources, Dirichlet reactions, net advective outflow 1ᵀAc, exchange, reaction)
+  integrated with the scheme's own weights → balance error is round-off (1e-15). Matrix factorised once (splu ≤ 300K
+  unknowns, else ILU-GMRES). Kernel `_solve_transport` (physics ['transport'], dispatched before thermal): summary
+  `transport` {species (max, mass, budget, volume above threshold), peclet_max / courant_max (equal-volume tet size),
+  probes (arrival curves, ≤ 500 rows), streeter_phelps, undershoot, times}, fields `x_c<i>`, `x_cmax<i>`, `x_DO`.
+  **Transient HDF5**: `fields/x_<key>/step_<n>` in time order + attrs `times`, `final_step`; `/surface?step=n` (default
+  last) adds header `times`, `step`, and per series field `min_all`/`max_all` (fixed colour range); ResultsViewer
+  `TimeBar` (slider + play). Graph: MATERIAL `model_type: 'scalar_transport'` (`_transport_material`: species list
+  with D, decay + `decay_unit` 1/s|1/h|1/d|T90_h, unit, threshold, c0 or Gaussian pulse in mm; `reaction_model`;
+  `velocity_source` uniform|run; `transient` + `time_unit`; `probes` mm), BC `bc_type: 'concentration'`, LOAD types
+  `point_source` (x, y, z mm), `species_flux`, `exchange`, `species_source`; `t_off` / `history` in the study time unit;
+  mixing with other physics → 422. UI `DesignGraph/TransportFields.jsx` (+ test). Topology/ROM/uncertainty/adaptive → 422.
+  Hito `python validate_transport.py [--server …]` (~70 s): Ogata–Banks Pe_h 21 SUPG 0.24 % (Galerkin 0.47 %),
+  Gaussian pulse + decay 0.24 %, m(T)/m0 = e^(−λT) to 1e-7; 3-D point-source plume 1.4 % SUPG / 1.0 % Galerkin at
+  0.3–0.7 m; Streeter–Phelps reactor orders BE 1 / CN 2 / BDF2 2, plug-flow river 0.02 % BOD, critical deficit 0.006 %;
+  flux + exchange exact. Server: slip-wall Stokes run → transport on its velocity → probes 0.15 % vs Ogata–Banks.
+  Caveats: SUPG costs accuracy on well-resolved flows; on transient T4 fronts it is not better than Galerkin (use T10);
+  no discontinuity capturing yet (undershoot reported + warning), fixed Δt only, no warm start from a previous run.
+  Ogata–Banks reference must use erfcx (exp(vx/D) overflows; capping it drops a 1 % term). Tests `tests/test_transport.py`.
+
 **Assembly & Solving:**
 - `assemble_K()`: batched, chunked COO→CSR. `assemble_F()`: face_set force/pressure, body force/gravity,
   node/node_set forces; records applied resultant.
