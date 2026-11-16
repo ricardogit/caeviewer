@@ -18,7 +18,7 @@ import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields from './PiezoFields';
-import FluidFields from './FluidFields';
+import FluidFields, { InletTurbulenceFields } from './FluidFields';
 import MagneticFields, { CoilFields } from './MagneticFields';
 import TransportFields, { ConcentrationBCFields, SpeciesLoadFields, SPECIES_LOADS } from './TransportFields';
 import DarcyFields, { HeadBCFields, DarcyLoadFields, DARCY_LOADS } from './DarcyFields';
@@ -436,6 +436,7 @@ export default function NodePanel({ node, graphId, onClose }) {
                   Fluido: «Empotrado» = pared sin deslizamiento; «Rodillo» = pared con deslizamiento; caras sin
                   condición = salida libre (p = 0) o presión impuesta con una CARGA «Presión normal».
                 </Typography>
+                <InletTurbulenceFields props={props} setProp={setProp} />
                 {!studyGeometryId && (
                   <TextField
                     label="Conjunto de caras (viga de prueba)" size="small" fullWidth

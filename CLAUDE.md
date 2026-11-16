@@ -383,6 +383,31 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   Poiseuille stays exact; cavity Re 1000, n = 20: SUPG 0.04–0.18 % vs Marchi Table 6 (Galerkin 0.4–0.8 %); n = 28
   0.4–0.55 % vs 1.4–1.6 %; n ≤ 12 neither is accurate. Costs accuracy on well-resolved flows (Kovasznay Re 40
   velocity order 3.16 → 2.37): recommend it only for high element Re.
+- **RANS k-ε** (FASE 10.4, `fem/rans.py`): steady turbulent flow, material `turbulence` {model k_epsilon, wall_distance
+  m (empty = ½ wall-element height), inlet_intensity, inlet_length_scale, max_iter 400, tol 1e-6, relax 0.3, cfl 5,
+  cfl_max 1e4} with `inertia: true` (graph MATERIAL `flow_model: 'rans_k_epsilon'` + `wall_distance_mm`,
+  `inlet_intensity` %, `inlet_length_mm`; velocity BC `turbulence_intensity` %, `turbulence_length_mm`; absent →
+  laminar paths and hashes unchanged). Standard Launder–Spalding k-ε, ν_t = C_μkT with Durbin's realizability bound,
+  production ≤ 10ε, p* = p + ⅔ρk. **Wall functions** (Mohammadi–Pironneau): no-slip BCs become walls whose mesh
+  boundary sits at δ from the real wall; u_τ from |v_t| by inverse Reichardt, friction β = ρu_τ/u⁺ (Robin, P2 face mass,
+  Newton-linearised: the lagged secant 2-cycles at δ⁺ 200), wall k = u_τ²/√C_μ, ε = u_τ³/(κ_ε δ) with κ_ε = 0.433 (the model's own log constant). No
+  penetration via per-node projectors on the wall-face normals (exact DOFs on axis-aligned nodes, penalty otherwise):
+  concave edges constrain every normal (k, ε free there), **convex edges are left free** (the averaged normal made a
+  jet down the face of a backward step); wall nodes on the rim of an inlet (sharing a *non-wall* face with inlet nodes)
+  take no slip + inlet k, ε (counting wall faces blocked a 5 mm band behind every inlet → separation, divergence). k, ε
+  are P1 on the 8 sub-tets of each T10 (`IsoP1`), Galerkin + SUPG; momentum = symmetric viscous form with μ + ρν_t
+  at the degree-5 points + Picard SUPG incl. the ∇μ_t term. Segregated pseudo-time Picard (local Δτ, CFL ×1.3 per
+  iteration, halved when the residual doubles — a "shrink when not falling" rule stalled the channel at CFL 1).
+  Kernel `_solve_fluid` → summary `fluid.model 'rans_k_epsilon'`, `fluid.turbulence` {converged, iterations,
+  wall_distance_m, y_plus min/mean/max, u_tau_max, nut_ratio_max, inlet k/ε, curve}, warnings (not converged, mean
+  y⁺ < 15 or > 300); extra fields k, eps, nut_ratio. UI `FluidFields.jsx` (`TurbulenceFields`, `InletTurbulenceFields`
+  in the velocity BC), Results rows. Hito `python validate_rans.py [--server …] [--no-step]` (~10 min local): channel
+  Re_τ 2000 equilibrium 2e-7, u_τ 5e-4, Reichardt 1.1 % (50 < y⁺ < 400), wall k⁺ = 1/√C_μ, c_f −3.3 % vs Dean, U_b⁺
+  spread 1.2 % for δ⁺ 30–200 (all converged); backward step (Driver–Seegmiller) **informative**: x_r/H 5.45 (exp. 6.26, k-ε band
+  5–5.5) but no strict convergence (2-cycle at a step-face node: residual 1e-4…1e-3 at mesh 0.4, 0.2 at 0.6, x_r
+  unchanged; not cured by friction / wall-value / velocity relaxation (friction relaxation broke δ⁺ ≥ 100) or CFL — next step: true
+  BDF2 time marching). Server: Gmsh duct 100×20×20 mm, water 1 m/s, converged in 53 it, y⁺ 133. Gmsh slab / duct
+  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: k-ω SST, transient, stratified σ-layer model.
 - `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
   potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
   the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes); coils (MMF

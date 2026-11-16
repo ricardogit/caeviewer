@@ -6,7 +6,7 @@ import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields, { PZT5H } from './PiezoFields';
-import FluidFields from './FluidFields';
+import FluidFields, { InletTurbulenceFields } from './FluidFields';
 import MagneticFields, { CoilFields, parseBH } from './MagneticFields';
 import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
@@ -119,6 +119,24 @@ describe('material model fields (item 8)', () => {
     expect(screen.getByText(/Navier-Stokes laminar · μ/)).toBeTruthy();
     expect(screen.getByText('4 Picard + 3 Newton')).toBeTruthy();
     expect(screen.queryByText(/⚠/)).toBeNull();                 // Re 150 is fine for Navier-Stokes
+  });
+
+  it('fluid: RANS k-ε fields, inlet turbulence and turbulence summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon' }} setProp={setProp} />);
+    expect(screen.getByTestId('turbulence-fields')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Intensidad turbulenta de entrada [%]'), { target: { value: '3' } });
+    expect(setProp).toHaveBeenCalledWith('inlet_intensity', 3);
+    render(<InletTurbulenceFields props={{}} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Escala turb. [mm]'), { target: { value: '5' } });
+    expect(setProp).toHaveBeenCalledWith('turbulence_length_mm', 5);
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'rans_k_epsilon', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 2e4,
+      flow_rates: [], turbulence: { iterations: 64, converged: true, y_plus_min: 20, y_plus_max: 60, y_plus_mean: 40,
+        wall_distance_m: 5e-4, u_tau_max_m_s: 0.05, nut_ratio_max: 120 } } } }} />);
+    expect(screen.getByText(/RANS k-ε \(funciones de pared\)/)).toBeTruthy();
+    expect(screen.getByText('Iteraciones RANS')).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();                 // y⁺ 40 and Re 2e4 are fine for RANS
   });
 
   it('magnetic: NdFeB preset sets μr and Br; summary shows poles and permeance', () => {

@@ -706,8 +706,17 @@ class FEMKernel:
                     body += float(ld.get('density', 0.0)) * np.asarray(ld['gravity'], float)
                 elif 'body_force' in ld:
                     body += np.asarray(ld['body_force'], float)
-            v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog, stabilization=fm.stabilization,
-                                     body=body)
+            if fm.turbulence:                        # RANS k-ε with wall functions (FASE 10.4)
+                from app.design.services.fem import rans
+                ts = rans.TurbulenceSettings(fm.turbulence)
+                self._emit(socketio, run_id, 30, f'RANS k-ε: Picard segregado ({n_dof:,} incógnitas + k, ε)', t_start)
+
+                def prog_t(it, msg):
+                    self._emit(socketio, run_id, min(30 + it // 3, 90), msg, t_start)
+                v, p, info = rans.solve_rans(mesh, fm, F, all_bcs, ts, body=body, progress=prog_t)
+            else:
+                v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog, stabilization=fm.stabilization,
+                                         body=body)
         else:
             self._emit(socketio, run_id, 30, f'Stokes: resolviendo velocidad + presión ({n_dof:,} incógnitas)',
                        t_start)
@@ -729,14 +738,20 @@ class FEMKernel:
         Lc = float(ext[ext > 0].min()) if np.any(ext > 0) else 0.0
         Re = fm.rho * float(vmag.max()) * Lc / fm.mu
         R = info['reaction']
-        wall = [float(-R[dofs[dofs % 3 == c]].sum()) for c in range(3)]
+        turb = info.get('turbulence')
+        if turb:
+            wall = [float(x) for x in turb['wall_force']]
+            dofs = np.flatnonzero(np.abs(R) > 0)
+        else:
+            wall = [float(-R[dofs[dofs % 3 == c]].sum()) for c in range(3)]
         resid = info['residual']
         s = {
             'physics': ['fluid'],
             'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': info['n_dof'], 'element_type': mesh.element_type,
             'tier': tier, 'converged': bool(resid < 1e-8), 'final_residual': resid,
-            'n_iterations': info['navier_stokes']['iterations'] if fm.inertia else 1,
-            'solver_method': 'newton_picard_saddle_point' if fm.inertia else 'direct_saddle_point',
+            'n_iterations': (turb['iterations'] if turb else info['navier_stokes']['iterations']) if fm.inertia else 1,
+            'solver_method': ('rans_segregated_picard' if turb else 'newton_picard_saddle_point') if fm.inertia
+            else 'direct_saddle_point',
             'wall_time_s': round(time.perf_counter() - t_start, 3),
             'loads': load_info, 'n_constrained_dofs': int(len(dofs)), 'material_model': 'newtonian_fluid',
             'fluid': {'mu': fm.mu, 'rho': fm.rho, 'max_velocity_m_s': float(vmag.max()),
@@ -755,7 +770,31 @@ class FEMKernel:
         }
         s['fluid']['model'] = 'navier_stokes' if fm.inertia else 'stokes'
         warnings = []
-        if fm.inertia:
+        extra = {}
+        if turb:
+            s['fluid']['model'] = 'rans_k_epsilon'
+            s['converged'] = bool(turb['converged'])
+            nu = fm.mu / fm.rho
+            yp = turb['wall']['y_plus']
+            s['fluid']['turbulence'] = {
+                'model': turb['model'], 'converged': turb['converged'], 'iterations': turb['iterations'],
+                'wall_distance_m': turb['wall_distance'], 'y_plus_min': float(yp.min()), 'y_plus_mean': float(yp.mean()),
+                'y_plus_max': float(yp.max()), 'u_tau_max_m_s': float(turb['wall']['u_tau'].max()),
+                'nut_ratio_max': float(turb['nut'].max() / nu), 'k_max_m2_s2': float(turb['k'].max()),
+                'inlet_k_m2_s2': turb['inlet']['k'], 'inlet_eps_m2_s3': turb['inlet']['eps'],
+                'curve': [{'it': h['it'], 'residual': h['residual'], 'dk': h['dk']} for h in turb['history']][-500:]}
+            extra = {'k': turb['k'], 'eps': turb['eps'], 'nut_ratio': turb['nut'] / nu}
+            s['extra_fields'] += [{'key': 'k', 'label': 'k energía turbulenta', 'unit': 'm²/s²'},
+                                  {'key': 'eps', 'label': 'ε disipación', 'unit': 'm²/s³'},
+                                  {'key': 'nut_ratio', 'label': 'ν_t/ν viscosidad turbulenta', 'unit': '—'}]
+            if not turb['converged']:
+                warnings.append(f'RANS k-ε no alcanzó la tolerancia en {turb["iterations"]} iteraciones (residuo '
+                                f'{resid:.2e}): el resultado es la última iteración.')
+            if yp.mean() < 15 or yp.mean() > 300:
+                warnings.append(f'y⁺ medio en las paredes ≈ {yp.mean():.3g}: las funciones de pared son fiables con '
+                                '30 ≲ y⁺ ≲ 300; ajuste la distancia de pared δ (o la malla junto a las paredes).')
+            s['fluid']['pressure_note'] = 'p* = p + ⅔ρk (presión modificada del modelo k-ε)'
+        if fm.inertia and not turb:
             ns = info['navier_stokes']
             Re_h = st.element_reynolds_max(mesh, v, fm)
             s['fluid']['navier_stokes'] = {k: ns[k] for k in ('iterations', 'picard_iterations', 'newton_iterations',
@@ -766,7 +805,7 @@ class FEMKernel:
                                                      'residual': h['residual']} for i, h in enumerate(ns['history'])]
             if Re > 2000:
                 warnings.append(f'Re ≈ {Re:.3g}: por encima de ~2000 el flujo suele ser turbulento o no estacionario; '
-                                'este modelo laminar estacionario no lo representa.')
+                                'este modelo laminar estacionario no lo representa (active la turbulencia RANS k-ε).')
             if Re_h > 100 and not fm.stabilization:
                 warnings.append(f'Reynolds de elemento máx. ≈ {Re_h:.3g} (> 100): sin estabilización la solución puede '
                                 'oscilar entre nodos; active la estabilización SUPG o refine la malla donde la velocidad es alta.')
@@ -780,7 +819,7 @@ class FEMKernel:
         return {
             'velocity': v, 'pressure': p,
             'extra_fields': {'vmag': vmag * 1e3, 'vx': v[:, 0] * 1e3, 'vy': v[:, 1] * 1e3, 'vz': v[:, 2] * 1e3,
-                             'p': p},
+                             'p': p, **extra},
             'solve_info': {'method': 'direct_saddle_point', 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,

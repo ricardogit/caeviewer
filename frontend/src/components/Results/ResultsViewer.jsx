@@ -76,7 +76,16 @@ export function SummaryRows({ header }) {
         `${fmt(el.voltage_V)} V · Q = ${fmt(el.charge_C * 1e9)} nC`]),
     ] : []),
     ...(s.fluid ? [
-      ['Modelo', `${s.fluid.model === 'navier_stokes' ? 'Navier-Stokes laminar' : 'Stokes'} · μ = ${fmt(s.fluid.mu)} Pa·s`],
+      ['Modelo', `${{ navier_stokes: 'Navier-Stokes laminar', rans_k_epsilon: 'RANS k-ε (funciones de pared)' }[s.fluid.model]
+        || 'Stokes'} · μ = ${fmt(s.fluid.mu)} Pa·s`],
+      ...(s.fluid.turbulence ? [
+        ['Iteraciones RANS', `${s.fluid.turbulence.iterations}${s.fluid.turbulence.converged ? '' : ' ⚠ sin converger'}`],
+        ['y⁺ en paredes', `${fmt(s.fluid.turbulence.y_plus_min)} … ${fmt(s.fluid.turbulence.y_plus_max)} (medio `
+          + `${fmt(s.fluid.turbulence.y_plus_mean)})${s.fluid.turbulence.y_plus_mean < 15
+          || s.fluid.turbulence.y_plus_mean > 300 ? ' ⚠' : ''} · δ = ${fmt(s.fluid.turbulence.wall_distance_m * 1e3)} mm`],
+        ['u_τ máx.', `${fmt(s.fluid.turbulence.u_tau_max_m_s)} m/s`],
+        ['ν_t/ν máx.', fmt(s.fluid.turbulence.nut_ratio_max)],
+      ] : []),
       ...(s.fluid.navier_stokes ? [
         ['Iteraciones', `${s.fluid.navier_stokes.picard_iterations} Picard + ${s.fluid.navier_stokes.newton_iterations} Newton`
           + (s.fluid.navier_stokes.continuation_steps > 1 ? ` · ${s.fluid.navier_stokes.continuation_steps} pasos de Re` : '')],
@@ -89,7 +98,7 @@ export function SummaryRows({ header }) {
         ...(s.fluid.flow_rates || []).map(g => Math.abs(g.flow_m3_s)))).map(f => [
         `Caudal ${f.label || f.face_set}`, `${fmt(f.flow_m3_s * 6e7)} mL/min (${f.flow_m3_s > 0 ? 'sale' : 'entra'})`]),
       ['Balance de masa', `${fmt(100 * s.fluid.mass_balance_error)} %`],
-      ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.model === 'navier_stokes'
+      ['Reynolds', `${fmt(s.fluid.reynolds)}${s.fluid.model === 'rans_k_epsilon' ? '' : s.fluid.model === 'navier_stokes'
         ? (s.fluid.reynolds > 2000 ? ' ⚠ > 2000' : '') : (s.fluid.reynolds > 1 ? ' ⚠ > 1' : '')}`],
     ] : []),
     ...(s.magnetic ? [

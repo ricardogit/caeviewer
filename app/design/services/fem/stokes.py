@@ -47,6 +47,9 @@ class FluidMaterial:
             raise ValueError(f'Fluido: estabilización desconocida {self.stabilization!r} (supg).')
         if self.stabilization and not self.inertia:
             raise ValueError('La estabilización SUPG solo se aplica a Navier-Stokes (inercia activada).')
+        self.turbulence = spec.get('turbulence') or None   # RANS settings (``rans.TurbulenceSettings``)
+        if self.turbulence and not self.inertia:
+            raise ValueError('La turbulencia (RANS) necesita Navier-Stokes (inercia activada).')
 
 
 def pressure_index(mesh):

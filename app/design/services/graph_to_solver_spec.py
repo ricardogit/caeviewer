@@ -100,14 +100,16 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
                                 'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
             flow_model = props.get('flow_model') or 'stokes'
-            if flow_model not in ('stokes', 'navier_stokes'):
+            if flow_model not in ('stokes', 'navier_stokes', 'rans_k_epsilon'):
                 raise GraphSpecError(f'"{mat_node.label}": modelo de flujo desconocido «{flow_model}» '
-                                     '(stokes | navier_stokes).')
-            if flow_model == 'navier_stokes':        # only when on: Stokes studies keep their hash
+                                     '(stokes | navier_stokes | rans_k_epsilon).')
+            if flow_model in ('navier_stokes', 'rans_k_epsilon'):   # only when on: Stokes studies keep their hash
                 if not spec['material']['rho'] > 0:
                     raise GraphSpecError(f'"{mat_node.label}": Navier-Stokes necesita la densidad ρ > 0.')
                 spec['material']['inertia'] = True
-                if props.get('stabilization') == 'supg':     # opt-in: unstabilised studies keep their hash
+                if flow_model == 'rans_k_epsilon':
+                    spec['material']['turbulence'] = _turbulence_settings(props, mat_node.label)
+                elif props.get('stabilization') == 'supg':   # opt-in: unstabilised studies keep their hash
                     spec['material']['stabilization'] = 'supg'
         elif spec['material']['type'] == 'scalar_transport':
             _transport_material(spec, mat_node)
@@ -1032,6 +1034,13 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         f = {'m/s': 1.0, 'mm/s': 1e-3}.get(props.get('unit') or 'm/s', 1.0)
         values = [float(props.get(k) or 0) * f for k in ('vx', 'vy', 'vz')]
         entry = {'dofs': [0, 1, 2], 'values': values, 'label': node.label}
+        turb = {}                                 # inlet turbulence of a RANS study (overrides the material's)
+        if props.get('turbulence_intensity') not in (None, ''):
+            turb['intensity'] = _num(props, 'turbulence_intensity', node.label, 'la intensidad turbulenta') / 100.0
+        if props.get('turbulence_length_mm') not in (None, ''):
+            turb['length_scale'] = _num(props, 'turbulence_length_mm', node.label, 'la escala de longitud') * 1e-3
+        if turb:
+            entry['turbulence'] = turb
         _target(entry, faces, props, 'fixed')
         if geometry_id:
             entry['geometry_id'] = geometry_id
@@ -1057,6 +1066,23 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     if geometry_id:
         entry['geometry_id'] = geometry_id
     return entry
+
+
+def _turbulence_settings(props: dict, label: str) -> dict:
+    """MATERIAL fluid with ``flow_model: 'rans_k_epsilon'`` → spec ``turbulence`` (SI). ``wall_distance_mm`` empty =
+    automatic (½ wall-element height); inlet intensity in %, length scale in mm (empty = 0.07 × smallest extent)."""
+    t = {'model': 'k_epsilon'}
+    if props.get('wall_distance_mm') not in (None, ''):
+        t['wall_distance'] = _num(props, 'wall_distance_mm', label, 'la distancia de pared δ') * 1e-3
+        if not t['wall_distance'] > 0:
+            raise GraphSpecError(f'"{label}": la distancia de pared δ debe ser > 0 mm.')
+    if props.get('inlet_intensity') not in (None, ''):
+        t['inlet_intensity'] = _num(props, 'inlet_intensity', label, 'la intensidad turbulenta') / 100.0
+        if not 0 < t['inlet_intensity'] < 1:
+            raise GraphSpecError(f'"{label}": la intensidad turbulenta de entrada va entre 0 y 100 %.')
+    if props.get('inlet_length_mm') not in (None, ''):
+        t['inlet_length_scale'] = _num(props, 'inlet_length_mm', label, 'la escala de longitud') * 1e-3
+    return t
 
 
 def _target(entry: dict, faces, props: dict, default: str, face: bool = False) -> None:
