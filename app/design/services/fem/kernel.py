@@ -210,6 +210,12 @@ class FEMKernel:
         """``mesh``: an already built mesh (adaptive cycles) instead of the spec's mesh source."""
         t_start = time.perf_counter()
 
+        # 0. 2D water domain (FASE 10.3): shallow-water finite volumes on the Mapa-mode mesh
+        if solver_spec.get('mesh_source') == 'domain_2d':
+            from app.design.services.fem import sw_run
+            return sw_run.run(solver_spec, lambda pct, msg: self._emit(socketio, run_id, pct, msg, t_start),
+                              int(solver_spec.get('tier', 1)), check_tier_limits)
+
         # 1. Build mesh
         if mesh is None:
             self._emit(socketio, run_id, 2, 'building mesh', t_start)

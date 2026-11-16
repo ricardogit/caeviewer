@@ -34,6 +34,19 @@ def estimate_problem_size(spec: dict) -> dict | None:
         return {'n_nodes': rec.node_count, 'n_elements': rec.element_count or 0,
                 'n_dof': 3 * rec.node_count, 'estimated': False}
 
+    if source == 'domain_2d' and spec.get('domain_2d'):        # FASE 10.3: cached 2D mesh, else not known
+        try:
+            from app.geodata.mesh2d import Mesh2D
+            from app.geodata.service import mesh_inputs, mesh_path
+            path = mesh_path(mesh_inputs(spec['domain_2d'])['key'])
+            if path.exists():
+                m = Mesh2D.from_bytes(path.read_bytes())
+                return {'n_nodes': m.n_nodes, 'n_elements': m.n_elements, 'n_dof': 3 * m.n_elements,
+                        'estimated': False}
+        except Exception:
+            return None
+        return None
+
     if source == 'inline' and spec.get('nodes') is not None:
         n = len(spec['nodes'])
         return {'n_nodes': n, 'n_elements': len(spec.get('elements') or []), 'n_dof': 3 * n,

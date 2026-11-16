@@ -78,8 +78,8 @@ bathymetry, zone index per triangle, stats. Cached by content key (`mesh_key`: s
 `/api/geodata`: upload (multipart file, kind, crs, convention, time_unit), list/get/delete (409 if a study node uses
 it), `/geojson`, `/preview.png`, `/series` (harmonics synthesised), `/depth`, `POST /mesh` (200 cached | 202 job),
 `GET /mesh/<key>[?format=npz]`, `/utm`. Study: GEOMETRY `shape: 'domain_2d'` (domain, segments, segment_labels,
-mesh, points, *_datasets, mesh_key) → `graph_to_solver_spec` raises GraphSpecError (shown in preflight) until the
-shallow-water solver (FASE 10.3); the hasher replaces dataset ids by sha256 + params (`domain_2d_identity`).
+mesh, points, *_datasets, mesh_key) → `mesh_source: 'domain_2d'` solved by the shallow-water solver (FASE 10.3, below);
+the hasher replaces dataset ids by sha256 + params (`domain_2d_identity`).
 Frontend **Mapa** mode (TopBar chip `map`): `components/Map/` — `GeoDataList` (sidebar: upload, show/hide, use in the
 domain, forcing chart), lazy `MapMode` = `MapView` (react-leaflet 4, OSM tiles, `VITE_MAP_TILES`/`VITE_MAP_ATTRIBUTION`
 override; draw / drag / right-click remove / Alt+click insert vertex; edge colour by kind; mesh drawn on a canvas
@@ -487,6 +487,46 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   anisotropic pulse 0.50 % (320 steps; 80 steps give 1.1 %: time error of the scheme, identical to molecular D);
   Darcy → transport coupling 0.04 %; server: Darcy run → transport run (porosity from the run) 0.023 %. Tests
   `tests/test_darcy.py`. Not done: unconfined (water-table) aquifers, seawater intrusion, multiple materials.
+- **Shallow water 2-D** (FASE 10.3, `fem/shallow_water.py` + `fem/sw_run.py`): depth-averaged equations on the Mapa
+  mode triangle mesh (GEOMETRY `domain_2d`), cell-centred finite volumes, unknowns (H, Hu, Hv) per triangle. HLL flux
+  (HLLC-style tangential upwinding), MUSCL on (η, u, v) with LSQ gradients (boundary ghosts weighted 1e-3: exact for
+  linear fields with two interior neighbours) + Barth–Jespersen, first order next to near-dry cells, SSP-RK2,
+  dt = CFL·A/Σλ L (CFL 0.45 order 2, 0.9 order 1). **Bed**: P1 from the node depths; a cell wet on all three edges
+  sees the bed at the edge midpoints (continuous) + centred source −g Σ nL (H_f + H)/2 (z_f − z_c); partly dry cells
+  use the cell-constant bed with Audusse's hydrostatic reconstruction (positive, well-balanced). The cell-constant
+  bed alone acts as a staircase of weirs on slopes (Δz/H = S·dx/H: −30 % depth error in a 1e-3 river channel at
+  50 m cells, Delestre 2012); do not go back. Sources split after the step: Manning semi-implicit (per cell, zone
+  attribute `manning_zone_key` overrides n), Coriolis exact rotation (f from each cell's latitude), wind explicit
+  (Wu 1982 C_d, meteorological direction), constant ν_t explicit. Boundaries (ids of the mesh: `edge<i>`, `coast`):
+  wall (mirror), tide / level (ghost depth η_ext − z, Riemann-invariant velocity), free = transmissive with the
+  depth **mirrored about the cell value** (2H_c − H_face: same jump as the interior first-order faces; the plain copy
+  blocked a sloping outlet, −30 %), river = exact imposed mass flux Q split ∝ H^{5/3}. Open sides without a BC →
+  free (warning), river sides without discharge → error, coast → wall. Mass budget per boundary with the RK weights
+  (balance = round-off), clipped negative depth reported. Spec: material `shallow_water` {rho, manning, coriolis, nu_t,
+  h_dry, eta0 (None → tide level at t = 0), order, cfl}, `time` {t_end, n_output}, BCs `sw_bc` tide|level|river|free|
+  wall + `boundaries`, `tide` {constituents, z0} | `discharge` | `level` | `forcing_dataset` (+ `column`), `ramp_s`;
+  load `wind` {speed, direction} | {forcing_dataset, u_column, v_column}; probes lon/lat. Kernel: `mesh_source ==
+  'domain_2d'` dispatches to `sw_run.run` before any 3-D meshing; the mesh comes from `geodata.service.
+  get_or_build_mesh` (cache or Gmsh, shared with `geo.mesh2d`), tier n_dof = 3·cells. Results: nodes (x, y, 0) in
+  the local UTM frame, surface = the triangles, node fields (area-weighted cell averages) `eta` (dry → ground),
+  `speed`, `H` as **series**, `u`, `v`, `smax`, `depth`, `flooded`; summary `shallow_water` {boundaries (volume in,
+  net out), conditions, balance_error, dt, froude_max, max_eta, wet/flooded areas, manning_zones, latitude_mean,
+  probes (curve t, η, |u|, H ≤ 500 rows), frame, mesh_key}. ResultsViewer: plan view for flat models + summary rows.
+  Graph: MATERIAL `model_type: 'shallow_water'` (`_sw_material`: `manning_n`, `t_end` + `time_unit` default h,
+  probes lon/lat), BC `bc_type` tide (inline `constituents` [{name, amplitude, phase}] + `z0`, or `forcing_dataset`;
+  `ramp_h`) | river_inflow (`discharge` + unit m3/s|L/s|m3/h or a series dataset) | open_boundary (`mode` free|level)
+  | coast, `boundaries` = side ids (empty → all free sides of the matching kind: tide/open → open, river → river,
+  coast → coast + land); LOAD `wind`. Other conditions, or water without a 2-D domain (and vice versa) → 422
+  (`_finalize_shallow_water`). Forcing datasets are hashed by content. UI `DesignGraph/ShallowWaterFields.jsx`
+  (side chips from the study's domain, forcing pickers from `geoMapStore`; + test). Hito `python
+  validate_shallow_water.py [--server …]` (~4 min local): lake at rest with dry island 1e-14; Stoker 0.30 % at nx 400
+  (order 0.76); standing M2 wave +0.21 % amplitude, 0.2° phase; Thacker bowl 1.36 % after one period at n 80 (order
+  1.6); Manning normal depth +0.01 %; wind set-up −0.16 %; inertial oscillation 4e-13; tide + river on a tidal flat
+  budget round-off. Server: bay (shapefile + GeoTIFF + harmonics CSV) → run 6 h (269 cells, 27 s) → level = tide
+  0.85 % of the range. Tests `tests/test_shallow_water.py`. Caveats: explicit (dt limited by the deepest smallest
+  cell), no Boussinesq / non-hydrostatic effects, no turbulence model beyond constant ν_t, Stoker has a 2-cell wide
+  channel (all wall cells) — the order is ~0.8 there, not 1; start-up seiches need friction or time to decay (the
+  frictionless standing-wave check starts from the exact state).
 - **Performance caveat (Windows, OpenBLAS numpy):** batched tiny `np.linalg.solve` in `tet_batch._jac` is ~60× slower
   with OpenBLAS threading on a loaded machine (0.54 s vs 0.009 s per 8000 elements); `OPENBLAS_NUM_THREADS=1` for the
   worker / scripts (backend suite 82 s → 45 s). Not changed in code.

@@ -113,6 +113,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             _transport_material(spec, mat_node)
         elif spec['material']['type'] == 'porous_medium':
             _porous_material(spec, mat_node)
+        elif spec['material']['type'] == 'shallow_water':
+            _sw_material(spec, mat_node)
         elif spec['material']['type'] == 'linear_magnetic':
             mu_r = props.get('mu_r')
             if mu_r in (None, '') or float(mu_r) <= 0:
@@ -151,8 +153,6 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 raise GraphSpecError('GEOMETRY dominio 2D: dibuje el polígono del dominio en el modo Mapa.')
             spec['mesh_source'] = 'domain_2d'
             spec['domain_2d'] = dom
-            raise GraphSpecError('Dominio 2D (modo Mapa): la malla se genera y se ve en el modo Mapa, pero el '
-                                 'solver hidrodinámico 2D (aguas someras, FASE 10.3) aún no existe.')
         elif props.get('shape') == 'beam':
             # FASE 9: parametric beam defined in the graph (no CAD). Dimensions in mm; faces
             # 'fixed' (x = 0) and 'tip' (x = L) are the default BC / LOAD sets. T10 by default.
@@ -443,9 +443,157 @@ def _porous_material(spec: dict, node) -> None:
     _probes(spec, p, label)
 
 
+# ── Shallow water (FASE 10.3) ────────────────────────────────────────────────
+
+SW_BC_TYPES = ('tide', 'river_inflow', 'open_boundary', 'coast')
+DISCHARGE_UNITS = {'m3/s': 1.0, 'L/s': 1e-3, 'm3/h': 1 / 3600.0}
+
+
+def _sw_material(spec: dict, node) -> None:
+    """MATERIAL ``shallow_water``: ρ, Manning n (+ zone attribute), Coriolis, ν_t, h_dry, initial level,
+    order, CFL, duration (``t_end`` + ``time_unit``, default h), ``n_output``, probes [{label, lon, lat}]."""
+    p = node.properties or {}
+    lab = node.label
+    m = {'type': 'shallow_water', 'rho': _num(p, 'rho', lab, 'ρ', default=1025.0, positive=True),
+         'manning': _num(p, 'manning_n', lab, 'el coeficiente de Manning n', default=0.025, nonneg=True),
+         'coriolis': bool(p.get('coriolis', True)),
+         'nu_t': _num(p, 'nu_t', lab, 'ν_t', default=0.0, nonneg=True),
+         'h_dry': _num(p, 'h_dry', lab, 'el calado de secado', default=0.01, positive=True),
+         'order': int(p.get('order') or 2)}
+    if m['order'] not in (1, 2):
+        raise GraphSpecError(f'"{lab}": orden 1 o 2.')
+    if p.get('manning_zone_key'):
+        m['manning_zone_key'] = str(p['manning_zone_key'])
+    if p.get('eta0') not in (None, ''):
+        m['eta0'] = _num(p, 'eta0', lab, 'el nivel inicial')
+    if p.get('cfl') not in (None, ''):
+        c = _num(p, 'cfl', lab, 'el CFL', positive=True)
+        if c > 1:
+            raise GraphSpecError(f'"{lab}": CFL ≤ 1.')
+        m['cfl'] = c
+    scale = TIME_UNITS.get(p.get('time_unit') or 'h')
+    if scale is None:
+        raise GraphSpecError(f'"{lab}": unidad de tiempo «{p.get("time_unit")}» no reconocida (s, min, h, d).')
+    spec['material'] = m
+    spec['time'] = {'t_end': _num(p, 't_end', lab, 'la duración de la simulación', positive=True) * scale,
+                    'n_output': int(p.get('n_output') or 48)}
+    probes = []
+    for i, pr in enumerate(p.get('probes') or []):
+        try:
+            probes.append({'label': pr.get('label') or f'P{i + 1}', 'lon': float(pr['lon']), 'lat': float(pr['lat'])})
+        except (KeyError, TypeError, ValueError):
+            raise GraphSpecError(f'"{lab}": punto de control {i + 1} sin lon/lat válidos.')
+    if probes:
+        spec['probes'] = probes
+
+
+def _ids(props) -> list:
+    b = props.get('boundaries')
+    if isinstance(b, str):
+        b = [b]
+    return [str(x) for x in (b or [])]
+
+
+def _sw_bc(node) -> dict:
+    p = node.properties or {}
+    lab = node.label
+    t = p.get('bc_type')
+    e = {'label': lab, 'boundaries': _ids(p)}
+    if p.get('ramp_h') not in (None, ''):
+        e['ramp_s'] = _num(p, 'ramp_h', lab, 'la rampa', nonneg=True) * 3600.0
+    if t == 'tide':
+        e['sw_bc'] = 'tide'
+        if p.get('forcing_dataset'):
+            e['forcing_dataset'] = str(p['forcing_dataset'])
+            if p.get('column'):
+                e['column'] = str(p['column'])
+        else:
+            from app.geodata.forcing import CONSTITUENTS
+            cons = []
+            for c in p.get('constituents') or []:
+                name = next((k for k in CONSTITUENTS if k.upper() == str(c.get('name', '')).upper()), None)
+                if name is None:
+                    raise GraphSpecError(f'"{lab}": constituyente «{c.get("name")}» desconocido.')
+                cons.append({'name': name, 'amplitude': float(c.get('amplitude') or 0),
+                             'phase': float(c.get('phase') or 0)})
+            if not cons:
+                raise GraphSpecError(f'"{lab}": la marea necesita al menos un constituyente (M2, S2…) o un '
+                                     'forzamiento.')
+            e['tide'] = {'constituents': cons, 'z0': float(p.get('z0') or 0)}
+    elif t == 'river_inflow':
+        e['sw_bc'] = 'river'
+        if p.get('forcing_dataset'):
+            e['forcing_dataset'] = str(p['forcing_dataset'])
+            if p.get('column'):
+                e['column'] = str(p['column'])
+        else:
+            q = _num(p, 'discharge', lab, 'el caudal (m³/s)', nonneg=True)
+            e['discharge'] = q * _unit(DISCHARGE_UNITS, p.get('unit'), node, 'm3/s')
+    elif t == 'open_boundary':
+        mode = p.get('mode') or 'free'
+        if mode == 'level':
+            e['sw_bc'] = 'level'
+            e['level'] = _num(p, 'level', lab, 'el nivel impuesto (m)')
+        elif mode == 'free':
+            e['sw_bc'] = 'free'
+        else:
+            raise GraphSpecError(f'"{lab}": mar abierto «{mode}» desconocido (free | level).')
+    else:
+        e['sw_bc'] = 'wall'
+    return e
+
+
+def _sw_wind(node) -> dict:
+    p = node.properties or {}
+    if p.get('forcing_dataset'):
+        w = {'forcing_dataset': str(p['forcing_dataset']), 'u_column': p.get('u_column') or 'u',
+             'v_column': p.get('v_column') or 'v'}
+    else:
+        w = {'speed': _num(p, 'speed', node.label, 'la velocidad del viento (m/s)', nonneg=True),
+             'direction': _num(p, 'direction', node.label, 'la dirección de procedencia (°)', default=0.0)}
+    return {'wind': w, 'label': node.label}
+
+
+SW_DEFAULT_SIDE = {'tide': 'open', 'level': 'open', 'free': 'open', 'river': 'river', 'wall': 'coast'}
+
+
+def _finalize_shallow_water(spec: dict) -> bool:
+    """True when the study is a 2D shallow-water one (physics set, default boundaries resolved)."""
+    is_sw = spec['material'].get('type') == 'shallow_water'
+    dom = spec.get('mesh_source') == 'domain_2d'
+    sw_cond = [e for e in spec['bcs'] if 'sw_bc' in e] + [e for e in spec['loads'] if 'wind' in e]
+    if not (is_sw or dom or sw_cond):
+        return False
+    if not dom:
+        raise GraphSpecError('Aguas someras: la GEOMETRY debe ser un dominio 2D dibujado en el modo Mapa.')
+    if not is_sw:
+        raise GraphSpecError('Dominio 2D: el material debe ser «Agua (aguas someras)».')
+    other = len(spec['bcs']) + len(spec['loads']) - len(sw_cond)
+    if other:
+        raise GraphSpecError(f'Aguas someras: solo admite marea, caudal de río, mar abierto, costa y viento; hay '
+                             f'{other} condiciones de otro tipo.')
+    segs = spec['domain_2d'].get('segments') or []
+    taken = {i for e in spec['bcs'] for i in e.get('boundaries') or []}
+    for e in spec['bcs']:                         # default sides by kind
+        if e['boundaries']:
+            continue
+        want = SW_DEFAULT_SIDE[e['sw_bc']]
+        e['boundaries'] = [f'edge{i}' for i, k in enumerate(segs) if k == want and f'edge{i}' not in taken]
+        if e['sw_bc'] == 'wall' and 'coast' not in taken:
+            e['boundaries'].append('coast')
+        if not e['boundaries']:
+            raise GraphSpecError(f'"{e["label"]}": no hay lados de tipo «{want}» libres en el dominio; elija los '
+                                 'contornos en el nodo.')
+        taken.update(e['boundaries'])
+    spec['physics'] = ['shallow_water']
+    return True
+
+
 def _finalize_physics(spec: dict) -> None:
     """Physics of the special material models (piezo, thermo-piezo, magnetic, fluid) and the checks that the
     conditions match the material."""
+    if _finalize_shallow_water(spec):
+        return
     if spec['material'].get('type') == 'piezoelectric':
         if 'thermal' in spec['physics']:
             raise GraphSpecError('Hay condiciones térmicas con un material piezoeléctrico: elija el modelo '
@@ -781,6 +929,8 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
         if geometry_id:
             entry['geometry_id'] = geometry_id
         return entry
+    if bc_type in SW_BC_TYPES:                    # shallow water (FASE 10.3): boundaries of the 2D domain
+        return _sw_bc(node)
     if bc_type == 'hydraulic_head':               # groundwater: fixed head [m] (lake, river, sea, far field)
         entry = {'hydraulic_head': _num(props, 'head', node.label, 'la carga hidráulica (m)'), 'label': node.label}
         hist = _history(props, node.label)
@@ -863,6 +1013,8 @@ def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) ->
     if norm > 1e-12:
         dx, dy, dz = dx / norm, dy / norm, dz / norm
 
+    if load_type == 'wind':                       # shallow water: wind stress over the 2D domain
+        return _sw_wind(node)
     entry = {'label': node.label}
     if load_type in THERMAL_LOAD_TYPES:
         faces = _faces(ctx, node)

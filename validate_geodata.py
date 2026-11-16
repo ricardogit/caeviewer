@@ -179,8 +179,9 @@ def server(check, base):
         requests.post(f'{G_}/{gid}/nodes', json={'node_type': 'GEOMETRY', 'label': 'Bahía', 'pos_x': 0, 'pos_y': 0,
                                                  'properties': {'shape': 'domain_2d', **spec}})
         pf = requests.get(f'{base}/api/design/solver/{gid}/preflight').json()
-        msg = next((i['message'] for i in pf.get('issues', []) if '10.3' in i['message']), '')
-        check(bool(msg), f'preflight del estudio: «{msg[:120]}»')
+        msgs = [i['message'] for i in pf.get('issues', [])]
+        check(msgs and not any('10.3' in m for m in msgs),
+              f'preflight del estudio (dominio 2D aceptado, falta el resto): «{(msgs or [""])[0][:120]}»')
     finally:
         if gid:
             requests.delete(f'{base}/api/design/graph/{gid}', params={'cascade': 1})

@@ -24,9 +24,13 @@ function FitOnce({ box, keyId }) {
     if (!box || done.current === keyId) return;
     done.current = keyId;
     const c = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3()).length() || 1;
+    const ext = box.getSize(new THREE.Vector3());
+    const size = ext.length() || 1;
     const dist = (size / (2 * Math.tan((camera.fov * Math.PI) / 360))) * 1.1;
-    camera.position.copy(c).add(new THREE.Vector3(0.6, 0.45, 1).normalize().multiplyScalar(dist));
+    // flat 2-D models (shallow water domains): plan view, north up
+    const flat = ext.z < 1e-6 * size;
+    camera.position.copy(c).add((flat ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0.6, 0.45, 1).normalize())
+      .multiplyScalar(dist));
     camera.near = size / 1000;
     camera.far = size * 100;
     camera.updateProjectionMatrix();
@@ -131,6 +135,25 @@ export function SummaryRows({ header }) {
         + ` · α_T ${fmt(s.transport.porous.alpha_T)} m`]] : []),
       ['Balance de masa', fmt(s.transport.mass_balance_error)],
     ] : []),
+    ...(s.shallow_water ? (() => {
+      const w = s.shallow_water;
+      const km2 = (a) => `${fmt(a / 1e6)} km²`;
+      return [
+        ['Modelo', `Aguas someras 2D · orden ${w.order} · ${w.n_cells?.toLocaleString()} celdas · ${w.n_steps?.toLocaleString()}`
+          + ` pasos (Δt ${fmt(w.dt_min_s)} … ${fmt(w.dt_max_s)} s)`],
+        ['Fricción / Coriolis', `Manning n ${fmt(w.manning_default)}${w.manning_zones?.length ? ` + ${w.manning_zones.length} zona(s)` : ''}`
+          + ` · ${w.coriolis ? `f a lat ${fmt(w.latitude_mean)}°` : 'sin Coriolis'}${w.wind ? ' · viento' : ''}`],
+        ...(w.boundaries || []).filter((b) => b.kind !== 'wall').map((b) => [`Contorno ${b.label}`,
+          `${b.kind} · entra ${fmt(b.volume_in_m3)} m³ · neto sale ${fmt(b.net_outflow_m3)} m³`]),
+        ['Velocidad máx. / Froude', `${fmt(w.max_speed_m_s)} m/s · Fr ${fmt(w.froude_max)}`],
+        ...(w.max_eta_m != null ? [['Nivel máx.', `${fmt(w.max_eta_m)} m`]] : []),
+        ['Área mojada final / total', `${km2(w.wet_area_final_m2)} / ${km2(w.area_m2)}`
+          + (w.flooded_area_m2 > 0 ? ` · inundada ${km2(w.flooded_area_m2)}` : '')],
+        ...(w.probes || []).map((p) => [`Punto ${p.label}`, `η ${fmt(p.min_eta_m)} … ${fmt(p.max_eta_m)} m · |u| máx. `
+          + `${fmt(p.max_speed_m_s)} m/s · prof. ${fmt(p.depth_m)} m`]),
+        ['Balance de agua', fmt(w.balance_error)],
+      ];
+    })() : []),
     ...(s.darcy ? [
       ['Modelo', `Darcy · ${s.darcy.steady ? 'estacionario'
         : `${s.darcy.time?.scheme?.toUpperCase()} · ${s.darcy.time?.n_steps} pasos (Δt ${fmt(s.darcy.time?.dt_first)} → `

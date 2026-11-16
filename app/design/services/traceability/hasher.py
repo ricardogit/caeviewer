@@ -113,6 +113,15 @@ def domain_2d_identity(dom: dict) -> dict:
     return out
 
 
+def _forcing_identity(dataset_id):
+    try:
+        from app.geodata.service import dataset_identity, get_datasets
+        return dataset_identity(get_datasets([dataset_id])[0])
+    except Exception as e:
+        logger.debug('forcing identity unavailable: %s', e)
+        return str(dataset_id)
+
+
 def _run_result_identity(run_id) -> dict:
     """Content identity of another run's result (e.g. the fluid run whose velocity a transport study uses)."""
     try:
@@ -150,6 +159,10 @@ def canonical_inputs(spec: dict) -> dict:
         s['cae_mesh'] = _cae_mesh_identity(s.pop('mesh_id'))
     if s.get('mesh_source') == 'domain_2d' and isinstance(s.get('domain_2d'), dict):
         s['domain_2d'] = domain_2d_identity(s['domain_2d'])
+    for e in (s.get('bcs') or []) + (s.get('loads') or []):     # forcings (tide, river, wind) by content
+        for holder in (e, e.get('wind') if isinstance(e.get('wind'), dict) else None):
+            if holder and holder.get('forcing_dataset'):
+                holder['forcing_dataset'] = _forcing_identity(holder['forcing_dataset'])
     if 'nodes' in s or 'elements' in s:              # inline mesh: hash the arrays, not their JSON
         import numpy as np
         s['inline_mesh_sha256'] = mesh_hash(np.asarray(s.pop('nodes', []), float),

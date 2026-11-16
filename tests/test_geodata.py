@@ -217,7 +217,7 @@ def test_api_upload_mesh_contract_and_graph(app, tmp_path):  # noqa: F811
     assert len(mj['tris']) == m.n_elements and {b['id'] for b in mj['boundary_info']} >= {'edge0', 'coast'}
     assert c.post('/api/geodata/mesh', json={'mesh': {}}).status_code == 400
 
-    # study GEOMETRY domain_2d: spec error until the 2D solver exists; hash by dataset content
+    # study GEOMETRY domain_2d without a water MATERIAL → spec error (FASE 10.3); hash by dataset content
     from app.design.models.graph import DesignGraph, DesignNode
     from app.design.services.graph_to_solver_spec import GraphSpecError, graph_to_solver_spec
     from app.design.services.traceability.hasher import domain_2d_identity
@@ -228,7 +228,7 @@ def test_api_upload_mesh_contract_and_graph(app, tmp_path):  # noqa: F811
         db.session.add(DesignNode(graph_id=g.id, node_type='GEOMETRY', label='Dominio', level=0,
                                   properties={'shape': 'domain_2d', **spec}))
         db.session.commit()
-        with pytest.raises(GraphSpecError, match='FASE 10.3'):
+        with pytest.raises(GraphSpecError, match='aguas someras'):
             graph_to_solver_spec(g.id)
         ident = domain_2d_identity(spec)
         assert ident['bathymetry_datasets'][0]['sha256'] == service.get_datasets([bat['id']])[0].sha256

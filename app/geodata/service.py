@@ -265,6 +265,29 @@ def mesh_inputs(spec: dict) -> dict:
     return {'land': land, 'depth_sampler': sampler, 'zones': zones, 'points': pts, 'key': mesh_key(spec, hashes)}
 
 
+def get_or_build_mesh(spec: dict, progress=None):
+    """Mesh2D of a domain_2d spec from the content-keyed cache, building (and caching) it when missing.
+    Imports Gmsh only when it has to mesh (worker processes)."""
+    from app.geodata.mesh2d import Mesh2D, build_mesh
+    inp = mesh_inputs(spec)
+    path = mesh_path(inp['key'])
+    if path.exists():
+        return Mesh2D.from_bytes(path.read_bytes()), True
+    m = build_mesh(spec, land=inp['land'], depth_sampler=inp['depth_sampler'], zones=inp['zones'],
+                   points=inp['points'], key=inp['key'], progress=progress)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp')
+    tmp.write_bytes(m.to_bytes())
+    tmp.replace(path)
+    return m, False
+
+
+def load_forcing(dataset_id) -> dict:
+    """Normalised forcing dataset (harmonics or series) by id."""
+    ds = get_datasets([dataset_id], 'forcing')[0]
+    return load(ds)
+
+
 def mesh_path(key: str) -> Path:
     return data_dir() / 'geodata' / 'meshes' / f'{key}.npz'
 

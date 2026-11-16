@@ -35,7 +35,7 @@ MODEL_GROUPS = {
     'elastoplastic_vonmises': 'plastic', 'hyperelastic_neohookean': 'hyperelastic',
     'viscoelastic_maxwell': 'viscoelastic', 'piezoelectric': 'piezoelectric', 'thermopiezoelectric': 'piezoelectric',
     'newtonian_fluid': 'fluid', 'linear_magnetic': 'magnetic', 'scalar_transport': 'transport',
-    'porous_medium': 'darcy',
+    'porous_medium': 'darcy', 'shallow_water': 'shallow_water',
 }
 GROUPS = sorted(set(MODEL_GROUPS.values()))
 # groups that share most of the mechanics (a plastic steel study is closer to an elastic one than to a fluid)
@@ -75,10 +75,11 @@ FAMILY_KIN = {('steel', 'stainless'): 0.7, ('steel', 'cast_iron'): 0.6, ('alumin
 
 LOAD_KINDS = ('force', 'pressure', 'gravity', 'force_per_node', 'heat_flux', 'convection', 'heat_source',
               'surface_charge', 'magnetic_flux', 'species_flux', 'exchange', 'species_source', 'point_source',
-              'recharge', 'well', 'leakage')
+              'recharge', 'well', 'leakage', 'wind')
 BC_KINDS = ('fixed', 'partial', 'symmetry', 'prescribed', 'temperature', 'voltage', 'velocity', 'magnetic_potential',
-            'concentration', 'hydraulic_head')
-PHYSICS = ('structural', 'thermal', 'piezoelectric', 'fluid', 'magnetic', 'nonlinear', 'transport', 'darcy')
+            'concentration', 'hydraulic_head', 'sw_bc')
+PHYSICS = ('structural', 'thermal', 'piezoelectric', 'fluid', 'magnetic', 'nonlinear', 'transport', 'darcy',
+           'shallow_water')
 
 
 # ── encoders ──────────────────────────────────────────────────────────────────
@@ -187,7 +188,7 @@ def _geometry_identity(spec: dict):
 def _bc_kinds(bcs: list) -> set:
     out = set()
     for b in bcs or []:
-        for k in ('temperature', 'voltage', 'magnetic_potential', 'concentration', 'hydraulic_head'):
+        for k in ('temperature', 'voltage', 'magnetic_potential', 'concentration', 'hydraulic_head', 'sw_bc'):
             if k in b:
                 out.add(k)
                 break
