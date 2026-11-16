@@ -132,7 +132,8 @@ class FEMMesh:
 
         try:
             with _gmsh_lock:
-                gmsh.initialize()
+                from app.gmsh_init import initialize as _gmsh_init
+                _gmsh_init()
                 try:
                     gmsh.option.setNumber("General.Terminal", 0)  # silent
                     gmsh.model.add("cantilever")
@@ -194,7 +195,8 @@ class FEMMesh:
         import gmsh
         sw = support_width or 0.05 * length
         with _gmsh_lock:
-            gmsh.initialize()
+            from app.gmsh_init import initialize as _gmsh_init
+            _gmsh_init()
             try:
                 gmsh.option.setNumber("General.Terminal", 0)
                 gmsh.option.setNumber("General.NumThreads", 1)
@@ -261,7 +263,8 @@ class FEMMesh:
         a, b = float(inner_radius), float(outer_radius)
         h = mesh_size or (b - a) / 8
         with _gmsh_lock:
-            gmsh.initialize()
+            from app.gmsh_init import initialize as _gmsh_init
+            _gmsh_init()
             try:
                 gmsh.option.setNumber("General.Terminal", 0)
                 gmsh.option.setNumber("General.NumThreads", 1)

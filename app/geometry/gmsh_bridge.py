@@ -40,7 +40,8 @@ def gmsh_session(name: str = "bridge", verbosity: int = 1, heal: bool = False):
     """Gmsh session. heal=False disables every OCC healing option (the default for
     the bridge); heal=True keeps Gmsh defaults (OCCAutoFix=1). Matching is done
     after import either way, so it stays valid as long as faces are preserved."""
-    gmsh.initialize(["-noenv"], readConfigFiles=False)
+    from app.gmsh_init import initialize as _gmsh_init
+    _gmsh_init(["-noenv"], read_config_files=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.option.setNumber("General.Verbosity", verbosity)

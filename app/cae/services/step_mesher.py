@@ -146,7 +146,8 @@ def mesh_step_file(
 
     with _gmsh_lock:
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
-        gmsh.initialize(["", "-nopopup"])
+        from app.gmsh_init import initialize as _gmsh_init
+        _gmsh_init(["", "-nopopup"])
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.option.setNumber("General.Verbosity", 1)
         gmsh.option.setNumber("General.NoPopup", 1)

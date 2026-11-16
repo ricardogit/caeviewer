@@ -279,7 +279,8 @@ def build_mesh(spec: dict, *, land: list | None = None, depth_sampler=None, zone
                      f'≈ {n_est:,.0f} triángulos')
 
     with _gmsh_lock:
-        gmsh.initialize()
+        from app.gmsh_init import initialize as _gmsh_init
+        _gmsh_init()
         try:
             gmsh.option.setNumber('General.Terminal', 0)
             gmsh.option.setNumber('General.NumThreads', 1)
