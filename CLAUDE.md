@@ -407,7 +407,20 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   5–5.5) but no strict convergence (2-cycle at a step-face node: residual 1e-4…1e-3 at mesh 0.4, 0.2 at 0.6, x_r
   unchanged; not cured by friction / wall-value / velocity relaxation (friction relaxation broke δ⁺ ≥ 100) or CFL — next step: true
   BDF2 time marching). Server: Gmsh duct 100×20×20 mm, water 1 m/s, converged in 53 it, y⁺ 133. Gmsh slab / duct
-  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: k-ω SST, stratified σ-layer model.
+  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: stratified σ-layer model.
+- **k-ω SST** (`turbulence.model 'k_omega_sst'`, graph `flow_model: 'rans_k_omega_sst'`, UI toggle «RANS k-ω SST»):
+  Menter–Kuntz–Langtry 2003 (F1/F2 blending, ν_t = a₁k/max(a₁ω, S F2), P̃ ≤ 10β*kω), same discretisation, wall
+  functions, URANS and outputs as k-ε (internally the `eps` slot holds ω; summary/fields give ε = β*kω plus field
+  `omega` [1/s]). F1/F2 need the distance to the physical wall: `rans.wall_distance_field` (KD-tree on subdivided
+  wall faces) + δ. Wall ω = u_τ/(√β* κ_ω δ), κ_ω = √((β₁/β* − α₁)√β*/σ_ω1) = 0.408 (own log layer; Menter's
+  automatic √(ω_log² + ω_vis²) made the step worse, 7.68). Cross diffusion **implicit in ω** as an advection with
+  −2(1 − F1)σ_ω2∇k/ω (explicit: k 2-cycles in the channel's outer layer). Steady iteration: SST only, the CFL cap ÷ 5
+  when the residual is not halved within `CFL_WINDOW` 25 it (step-face limit cycle at CFL 1000, gone at ≲ 20; a fixed
+  CFL 20 never ends the channel start-up, which goes through v ~ 500 from the Stokes start). Hito sections 4–5 of
+  `validate_rans.py [--sst-only]`: channel c_f −1.4 % vs Dean (k-ε −3.3 %), Reichardt 1.4 %, ω log law 4.3 %, U_b⁺
+  spread 0.9 % δ⁺ 30–200; backward step converges strictly (181 it, k-ε never does) but x_r/H 7.50 on the 4K mesh,
+  6.93 on 9.4K (URANS; steady 2-cycles there) vs 6.26: SST + wall functions overpredicts and improves with the
+  mesh. Server: duct with both models. Tests in `tests/test_rans.py`.
 - **Transient Navier–Stokes / URANS** (FASE 10.4, `fem/ns_transient.py` + `rans.solve_rans(time=)`): spec `time`
   {t_end, n_steps | dt, scheme bdf2 (BE first step) | be, n_output} on a Navier–Stokes material (Stokes + time → 422).
   Laminar: semi-implicit BDF2, convection linearised about v* = 2vⁿ − vⁿ⁻¹ (one saddle solve per step, 2nd order;

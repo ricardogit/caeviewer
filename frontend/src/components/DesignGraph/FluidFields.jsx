@@ -26,7 +26,7 @@ export function TurbulenceFields({ props, setProp }) {
   return (
     <Box data-testid="turbulence-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
       <Typography variant="caption" sx={{ color: '#888' }}>
-        k-ε estándar con funciones de pared (Reichardt): las BC «Empotrado» (sin deslizamiento) son paredes cuyo
+        {props.flow_model === 'rans_k_omega_sst' ? 'k-ω SST' : 'k-ε estándar'} con funciones de pared (Reichardt): las BC «Empotrado» (sin deslizamiento) son paredes cuyo
         contorno de malla está a la distancia δ de la pared real. Fiable con y⁺ entre ~30 y 300 (el resultado lo indica).
       </Typography>
       <NumField label="Distancia de pared δ [mm]" k="wall_distance_mm" props={props} setProp={setProp}
@@ -60,8 +60,10 @@ export function InletRampField({ props, setProp }) {
 }
 
 /** Transient settings of a Navier–Stokes / RANS fluid (``transient``, t_end + time_unit, steps, scheme, probes). */
+export const RANS_MODELS = ['rans_k_epsilon', 'rans_k_omega_sst'];
+
 export function FluidTransientFields({ props, setProp }) {
-  const rans = props.flow_model === 'rans_k_epsilon';
+  const rans = RANS_MODELS.includes(props.flow_model);
   return (
     <Box data-testid="fluid-transient-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
       <FormControlLabel
@@ -139,11 +141,14 @@ export default function FluidFields({ props, setProp }) {
         <ToggleButton value="stokes" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>Stokes (Re ≪ 1)</ToggleButton>
         <ToggleButton value="navier_stokes" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>Navier-Stokes laminar</ToggleButton>
         <ToggleButton value="rans_k_epsilon" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>RANS k-ε</ToggleButton>
+        <ToggleButton value="rans_k_omega_sst" sx={{ fontSize: 11, py: 0.3, color: '#aaa' }}>RANS k-ω SST</ToggleButton>
       </ToggleButtonGroup>
       <Typography variant="caption" sx={{ color: '#888' }}>
         {{
           navier_stokes: 'Incluye la inercia ρ(v·∇)v (Picard + Newton). Válido para flujo laminar estacionario (Re hasta ~10³).',
           rans_k_epsilon: 'Flujo turbulento medio (Reynolds alto): Navier-Stokes promediado + modelo k-ε.',
+          rans_k_omega_sst: 'Turbulento con k-ω SST (Menter): mejor que k-ε en separación y gradiente adverso de '
+            + 'presión (escalones, difusores); algo más lento.',
         }[props.flow_model] || 'Flujo lento: desprecia la inercia. Si el resultado avisa Re > 1, cambie a Navier-Stokes.'}
       </Typography>
       {props.flow_model === 'navier_stokes' && (
@@ -159,8 +164,8 @@ export default function FluidFields({ props, setProp }) {
           </Typography>
         </>
       )}
-      {props.flow_model === 'rans_k_epsilon' && <TurbulenceFields props={props} setProp={setProp} />}
-      {['navier_stokes', 'rans_k_epsilon'].includes(props.flow_model) && (
+      {RANS_MODELS.includes(props.flow_model) && <TurbulenceFields props={props} setProp={setProp} />}
+      {['navier_stokes', ...RANS_MODELS].includes(props.flow_model) && (
         <FluidTransientFields props={props} setProp={setProp} />
       )}
       {props.transient && props.flow_model === 'navier_stokes' && props.stabilization === 'supg' && (
@@ -168,7 +173,7 @@ export default function FluidFields({ props, setProp }) {
           SUPG no está disponible en transitorio laminar: desactívela.
         </Typography>
       )}
-      {['navier_stokes', 'rans_k_epsilon'].includes(props.flow_model) && !(props.rho > 0) && (
+      {['navier_stokes', ...RANS_MODELS].includes(props.flow_model) && !(props.rho > 0) && (
         <Typography variant="caption" sx={{ color: '#ef9a9a' }}>Navier-Stokes necesita la densidad ρ &gt; 0.</Typography>
       )}
       <TextField label="Viscosidad dinámica μ [Pa·s]" size="small" fullWidth type="number"

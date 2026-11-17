@@ -732,7 +732,9 @@ class FEMKernel:
             if fm.turbulence:                        # RANS k-ε with wall functions (FASE 10.4)
                 from app.design.services.fem import rans
                 ts = rans.TurbulenceSettings(fm.turbulence)
-                self._emit(socketio, run_id, 30, f'RANS k-ε: Picard segregado ({n_dof:,} incógnitas + k, ε)', t_start)
+                tname = 'k-ω SST' if ts.model == 'k_omega_sst' else 'k-ε'
+                self._emit(socketio, run_id, 30, f'RANS {tname}: Picard segregado ({n_dof:,} incógnitas + 2 '
+                           'turbulentas)', t_start)
 
                 def prog_t(it, msg):
                     self._emit(socketio, run_id, min(30 + it // 3, 90), msg, t_start)
@@ -797,7 +799,9 @@ class FEMKernel:
         warnings = []
         extra = {}
         if turb:
-            s['fluid']['model'] = 'rans_k_epsilon'
+            sst = turb['model'] == 'k_omega_sst'
+            mname = 'RANS k-ω SST' if sst else 'RANS k-ε'
+            s['fluid']['model'] = 'rans_' + turb['model']
             s['converged'] = bool(turb['converged'])
             nu = fm.mu / fm.rho
             yp = turb['wall']['y_plus']
@@ -812,13 +816,16 @@ class FEMKernel:
             s['extra_fields'] += [{'key': 'k', 'label': 'k energía turbulenta', 'unit': 'm²/s²'},
                                   {'key': 'eps', 'label': 'ε disipación', 'unit': 'm²/s³'},
                                   {'key': 'nut_ratio', 'label': 'ν_t/ν viscosidad turbulenta', 'unit': '—'}]
+            if sst:
+                extra['omega'] = turb['omega']
+                s['extra_fields'].append({'key': 'omega', 'label': 'ω disipación específica', 'unit': '1/s'})
             if not turb['converged']:
-                warnings.append(f'RANS k-ε no alcanzó la tolerancia en {turb["iterations"]} iteraciones (residuo '
+                warnings.append(f'{mname} no alcanzó la tolerancia en {turb["iterations"]} iteraciones (residuo '
                                 f'{resid:.2e}): el resultado es la última iteración.')
             if yp.mean() < 15 or yp.mean() > 300:
                 warnings.append(f'y⁺ medio en las paredes ≈ {yp.mean():.3g}: las funciones de pared son fiables con '
                                 '30 ≲ y⁺ ≲ 300; ajuste la distancia de pared δ (o la malla junto a las paredes).')
-            s['fluid']['pressure_note'] = 'p* = p + ⅔ρk (presión modificada del modelo k-ε)'
+            s['fluid']['pressure_note'] = f'p* = p + ⅔ρk (presión modificada del modelo {mname[5:]})'
         if fm.inertia and not turb and not time_spec:
             ns = info['navier_stokes']
             Re_h = st.element_reynolds_max(mesh, v, fm)

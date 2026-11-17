@@ -1,4 +1,5 @@
-"""RANS k-ε with wall functions (FASE 10.4): operators, wall law, fully developed turbulent channel, graph spec."""
+"""RANS k-ε / k-ω SST with wall functions (FASE 10.4): operators, wall law, fully developed turbulent channel, graph
+spec."""
 import numpy as np
 import pytest
 
@@ -43,7 +44,7 @@ def test_viscous_operator_rigid_motion_and_symmetry():
     assert np.abs(A @ rot.ravel()).max() < 1e-12 * abs(A).max()
 
 
-def _channel(Re_tau=2000.0, dplus=50.0, ny=16):
+def _channel(Re_tau=2000.0, dplus=50.0, ny=16, model='k_epsilon'):
     h, rho, ut = 1.0, 1.0, 1.0
     nu = ut * h / Re_tau
     delta = dplus * nu / ut
@@ -51,7 +52,7 @@ def _channel(Re_tau=2000.0, dplus=50.0, ny=16):
     ys = delta + (h - delta) * np.concatenate([[0], np.cumsum(w) / w.sum()])
     mesh = FEMMesh.generate_grid([0, 0.05], ys, [0, 0.05], order=2)
     f = rho * ut ** 2 / (h - delta)
-    mat = st.FluidMaterial({'mu': rho * nu, 'rho': rho, 'inertia': True, 'turbulence': {'model': 'k_epsilon'}})
+    mat = st.FluidMaterial({'mu': rho * nu, 'rho': rho, 'inertia': True, 'turbulence': {'model': model}})
     F = assemble_F(mesh, [{'body_force': [f, 0, 0]}], [])
     bcs = [{'dofs': [0, 1, 2], 'values': [0, 0, 0], 'face_set': 'y0'},
            {'dofs': [1], 'values': [0], 'face_set': 'y1'},
@@ -59,7 +60,7 @@ def _channel(Re_tau=2000.0, dplus=50.0, ny=16):
            {'dofs': [1, 2], 'values': [0, 0], 'face_set': 'x1'},
            {'dofs': [2], 'values': [0], 'face_set': 'z0'},
            {'dofs': [2], 'values': [0], 'face_set': 'z1'}]
-    turb = rans.TurbulenceSettings({'wall_distance': delta})
+    turb = rans.TurbulenceSettings({'model': model, 'wall_distance': delta})
     v, p, info = rans.solve_rans(mesh, mat, F, bcs, turb, body=[f, 0, 0])
     return mesh, v, info, nu, delta, f
 
@@ -131,11 +132,44 @@ def test_urans_from_rest_accelerates():
     assert np.all(np.diff(ub) > 0) and len(ub) == 5 and 0 < ub[-1] < 24.4
 
 
+def test_wall_distance_field():
+    m = _box()
+    tris = m.face_sets['y0']
+    d = rans.wall_distance_field(m, tris)
+    assert np.allclose(d, m.nodes[:, 1], atol=1e-12)                      # plane wall: exact
+    assert np.all(np.isinf(rans.wall_distance_field(m, tris[:0])))
+
+
+def test_sst_channel_wall_law_and_skin_friction():
+    """k-ω SST, Re_τ 2000: converges, u_τ = 1, log layer (k⁺ = 1/√β*, ω = u_τ/(√β* κ_ω y), ν_t = κ_ω u_τ y),
+    Reichardt within 1.5 %, c_f within 2 % of Dean (k-ε: −3.3 %)."""
+    mesh, v, info, nu, delta, f = _channel(model='k_omega_sst')
+    T = info['turbulence']
+    assert T['converged'] and T['model'] == 'k_omega_sst'
+    assert np.allclose(T['wall']['u_tau'], 1.0, atol=3e-3)
+    y = mesh.nodes[:, 1]
+    sel = (y / nu > 50) & (y / nu < 400)
+    assert np.abs(v[sel, 0] / rans.reichardt(y[sel] / nu) - 1).max() < 0.015
+    kw = T['k'][T['wall']['nodes']]
+    assert kw.mean() == pytest.approx(1 / np.sqrt(rans.CMU), rel=5e-3)
+    wlog = 1 / (np.sqrt(rans.CMU) * rans.KAPPA_W * y[sel])
+    assert np.abs(T['omega'][sel] / wlog - 1).max() < 0.05
+    assert np.allclose(T['eps'], rans.CMU * T['k'] * T['omega'])
+    yy, ii = np.unique(np.round(y, 12), return_index=True)
+    from scipy.integrate import quad
+    Ub = np.trapz(v[ii, 0], yy) + quad(lambda s_: rans.reichardt(s_ / nu), 0, delta)[0]
+    cf = 2 / Ub ** 2
+    assert cf / (0.073 * (2 * Ub / nu) ** -0.25) == pytest.approx(1.0, abs=0.02)
+
+
 def test_graph_spec_rans_material_and_inlet():
     from app.design.services.graph_to_solver_spec import _turbulence_settings
     t = _turbulence_settings({'wall_distance_mm': 0.5, 'inlet_intensity': 3, 'inlet_length_mm': 10}, 'agua')
     assert t == {'model': 'k_epsilon', 'wall_distance': 5e-4, 'inlet_intensity': 0.03, 'inlet_length_scale': 0.01}
     assert _turbulence_settings({}, 'agua') == {'model': 'k_epsilon'}
+    assert _turbulence_settings({}, 'agua', 'rans_k_omega_sst') == {'model': 'k_omega_sst'}
+    with pytest.raises(ValueError, match='k_omega_sst'):
+        rans.TurbulenceSettings({'model': 'spalart'})
     with pytest.raises(Exception):
         _turbulence_settings({'inlet_intensity': 150}, 'agua')
     with pytest.raises(ValueError):

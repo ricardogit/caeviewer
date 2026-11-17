@@ -100,15 +100,15 @@ def graph_to_solver_spec(graph_id: str) -> dict:
             spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
                                 'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
             flow_model = props.get('flow_model') or 'stokes'
-            if flow_model not in ('stokes', 'navier_stokes', 'rans_k_epsilon'):
+            if flow_model not in ('stokes', 'navier_stokes', *RANS_MODELS):
                 raise GraphSpecError(f'"{mat_node.label}": modelo de flujo desconocido «{flow_model}» '
-                                     '(stokes | navier_stokes | rans_k_epsilon).')
-            if flow_model in ('navier_stokes', 'rans_k_epsilon'):   # only when on: Stokes studies keep their hash
+                                     '(stokes | navier_stokes | rans_k_epsilon | rans_k_omega_sst).')
+            if flow_model != 'stokes':                       # only when on: Stokes studies keep their hash
                 if not spec['material']['rho'] > 0:
                     raise GraphSpecError(f'"{mat_node.label}": Navier-Stokes necesita la densidad ρ > 0.')
                 spec['material']['inertia'] = True
-                if flow_model == 'rans_k_epsilon':
-                    spec['material']['turbulence'] = _turbulence_settings(props, mat_node.label)
+                if flow_model in RANS_MODELS:
+                    spec['material']['turbulence'] = _turbulence_settings(props, mat_node.label, flow_model)
                 elif props.get('stabilization') == 'supg':   # opt-in: unstabilised studies keep their hash
                     spec['material']['stabilization'] = 'supg'
                 if props.get('transient'):                   # transient NS / URANS (FASE 10.4)
@@ -409,7 +409,7 @@ def _fluid_transient(spec: dict, p: dict, label: str, flow_model: str) -> None:
     if (p.get('scheme') or 'bdf2') not in ('bdf2', 'be'):
         raise GraphSpecError(f'"{label}": esquema temporal «{p.get("scheme")}» no disponible para fluidos (bdf2, be).')
     spec['fluid_time_scale'] = _transient_settings(spec, p, label)
-    if flow_model == 'rans_k_epsilon':
+    if flow_model in RANS_MODELS:
         if p.get('inner_iterations') not in (None, ''):
             spec['time']['inner_iterations'] = int(_num(p, 'inner_iterations', label, 'las sub-iteraciones',
                                                         positive=True))
@@ -1113,10 +1113,14 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
     return entry
 
 
-def _turbulence_settings(props: dict, label: str) -> dict:
-    """MATERIAL fluid with ``flow_model: 'rans_k_epsilon'`` → spec ``turbulence`` (SI). ``wall_distance_mm`` empty =
-    automatic (½ wall-element height); inlet intensity in %, length scale in mm (empty = 0.07 × smallest extent)."""
-    t = {'model': 'k_epsilon'}
+RANS_MODELS = {'rans_k_epsilon': 'k_epsilon', 'rans_k_omega_sst': 'k_omega_sst'}   # graph flow_model → spec model
+
+
+def _turbulence_settings(props: dict, label: str, flow_model: str = 'rans_k_epsilon') -> dict:
+    """MATERIAL fluid with ``flow_model: 'rans_k_epsilon' | 'rans_k_omega_sst'`` → spec ``turbulence`` (SI).
+    ``wall_distance_mm`` empty = automatic (½ wall-element height); inlet intensity in %, length scale in mm (empty =
+    0.07 × smallest extent)."""
+    t = {'model': RANS_MODELS[flow_model]}
     if props.get('wall_distance_mm') not in (None, ''):
         t['wall_distance'] = _num(props, 'wall_distance_mm', label, 'la distancia de pared δ') * 1e-3
         if not t['wall_distance'] > 0:

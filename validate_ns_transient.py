@@ -215,7 +215,7 @@ def cylinder(check, t_end=8.0, dt=0.01, h_cyl=0.012, h_far=0.05):
 
 # ── 4. URANS backward step ───────────────────────────────────────────────────
 
-def step_urans(check, fac=0.4, dt=2.5e-4, n_steps=240, inner=8, t_avg=0.02):
+def step_urans(check, fac=0.4, dt=2.5e-4, n_steps=240, inner=8, t_avg=0.02, model='k_epsilon'):
     import validate_rans as V
     from app.design.services.fem import rans
     from app.design.services.fem import stokes as st
@@ -235,8 +235,8 @@ def step_urans(check, fac=0.4, dt=2.5e-4, n_steps=240, inner=8, t_avg=0.02):
             bcs.append({'dofs': [0, 1, 2], 'values': [float(prof[sel][0]), 0, 0], 'node_set': f'in{j}'})
     mesh = FEMMesh(X, el, node_sets=node_sets, face_sets=face_sets, canonical=True)
     mat = st.FluidMaterial({'mu': rho * nu, 'rho': rho, 'inertia': True})
-    turb = rans.TurbulenceSettings({'wall_distance': 0.03 * H, 'inlet_intensity': 0.03, 'inlet_length_scale': 0.5 * H,
-                                    'max_iter': 150, 'cfl_max': 1000})
+    turb = rans.TurbulenceSettings({'model': model, 'wall_distance': 0.03 * H, 'inlet_intensity': 0.03,
+                                    'inlet_length_scale': 0.5 * H, 'max_iter': 150, 'cfl_max': 1000})
     t0 = time.perf_counter()
     v, p, inf = rans.solve_rans(mesh, mat, np.zeros(3 * mesh.n_nodes), bcs, turb,
                                 time={'t_end': dt * n_steps, 'n_steps': n_steps, 'inner_iterations': inner,

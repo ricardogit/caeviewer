@@ -1,4 +1,5 @@
-"""Reynolds-averaged turbulent flow (FASE 10.4): standard k-ε with wall functions on Taylor–Hood P2-P1 meshes.
+"""Reynolds-averaged turbulent flow (FASE 10.4): standard k-ε or k-ω SST with wall functions on Taylor–Hood P2-P1
+meshes.
 
     ρ(v·∇)v − ∇·[(μ + ρν_t)(∇v + ∇vᵀ)] + ∇p* = ρb,   ∇·v = 0,   ν_t = C_μ k²/ε,   p* = p + ⅔ρk
     v·∇k − ∇·[(ν + ν_t/σ_k)∇k] = P − ε,              P = ν_t · 2S:S
@@ -24,6 +25,18 @@ variable effective viscosity sampled at the degree-5 points; k and ε are P1 on 
 Segregated Picard: momentum (Oseen, lagged ν_t) → k → ε → ν_t (under-relaxed 0.3), until the steady
 momentum residual and the k, ε updates are small. The k-ε equations use a pseudo-time step for robustness; the
 converged state does not depend on it.
+
+**k-ω SST** (``model: 'k_omega_sst'``, Menter, Kuntz & Langtry 2003): same discretisation and wall functions with the
+second variable ω (the ``eps`` slot holds ω internally; outputs give both ω and ε = β*kω):
+
+    v·∇k − ∇·[(ν + σ_k ν_t)∇k] = P̃ − β*kω,                 P̃ = min(ν_t 2S:S, 10β*kω)
+    v·∇ω − ∇·[(ν + σ_ω ν_t)∇ω] = α P̃/ν_t − βω² + 2(1 − F1)σ_ω2 ∇k·∇ω/ω,   ν_t = a₁k / max(a₁ω, S F2)
+
+F1, F2 from the distance to the physical wall y = d + δ (``wall_distance_field``). Wall ω = u_τ/(√β* κ_ω δ) with
+κ_ω = √((β₁/β* − α₁)√β*/σ_ω1) = 0.408 (the model's own log layer). The cross-diffusion term is implicit in ω, as an
+advection with velocity −2(1 − F1)σ_ω2∇k/ω: explicit, it 2-cycles with k in the outer layer of a channel. The steady
+iteration caps the pseudo-time CFL ÷ 5 whenever the residual is not halved within 25 iterations (a limit cycle at
+the step face at CFL 1000 that disappears at CFL ≲ 20; a fixed small CFL never ends the channel's start-up).
 """
 from __future__ import annotations
 
@@ -43,7 +56,17 @@ CMU25, CMU75 = CMU ** 0.25, CMU ** 0.75
 KAPPA_EPS = math.sqrt((C2 - C1) * SIG_E * math.sqrt(CMU))
 DURBIN_ALPHA = 0.6        # realizability time-scale bound
 P_LIMIT = 10.0            # production limiter P_k ≤ 10 ε
-MODELS = ('k_epsilon',)
+CFL_WINDOW = 25           # SST: iterations per check of a stalled residual (pseudo-time CFL cap ÷ 5)
+MODELS = ('k_epsilon', 'k_omega_sst')
+
+# Menter k-ω SST (Menter, Kuntz & Langtry 2003): set 1 (k-ω, near walls) and set 2 (k-ε transformed, outer flow)
+# blended by F1; β* = C_μ.
+SST_SK1, SST_SW1, SST_B1, SST_A1 = 0.85, 0.5, 0.075, 5.0 / 9.0
+SST_SK2, SST_SW2, SST_B2, SST_A2 = 1.0, 0.856, 0.0828, 0.44
+SST_A1LIM = 0.31          # a₁ of the ν_t limiter (Bradshaw)
+# κ of the k-ω log layer (set 1, P = β*kω, k = u_τ²/√β*): κ² = (β₁/β* − α₁) √β*/σ_ω1 → 0.408. Used for the wall ω
+# so the near-wall state is the model's own equilibrium (as KAPPA_EPS for k-ε).
+KAPPA_W = math.sqrt((SST_B1 / CMU - SST_A1) * math.sqrt(CMU) / SST_SW1)
 
 # 8 sub-tetrahedra of a T10 (local node ids; mids 4:(0,1) 5:(1,2) 6:(0,2) 7:(0,3) 8:(1,3) 9:(2,3)): four corner
 # tets + the inner octahedron split along the 4–9 diagonal.
@@ -84,7 +107,7 @@ class TurbulenceSettings:
         spec = spec or {}
         self.model = spec.get('model') or 'k_epsilon'
         if self.model not in MODELS:
-            raise ValueError(f'Turbulencia: modelo desconocido {self.model!r} (k_epsilon).')
+            raise ValueError(f'Turbulencia: modelo desconocido {self.model!r} (k_epsilon, k_omega_sst).')
         wd = spec.get('wall_distance')
         self.wall_distance = None if wd in (None, '') else float(wd)       # δ [m]; None → from the mesh
         if self.wall_distance is not None and not self.wall_distance > 0:
@@ -404,6 +427,22 @@ def wall_projectors(mesh, tris, nodes):
     return P
 
 
+def wall_distance_field(mesh, tris, n_sub: int = 8) -> np.ndarray:
+    """Distance of every node to the wall faces (straight corner triangles), from a KD-tree of n_sub-subdivided
+    barycentric sample points (error ≲ (face size / 2n_sub)² / distance; exact 0 on the wall nodes). For the SST
+    blending functions, which only need it approximately."""
+    from scipy.spatial import cKDTree
+    if not len(tris):
+        return np.full(mesh.n_nodes, np.inf)
+    ij = [(i, j) for i in range(n_sub + 1) for j in range(n_sub + 1 - i)]
+    lam = np.array([(i / n_sub, j / n_sub, 1 - (i + j) / n_sub) for i, j in ij])
+    X = mesh.nodes[tris[:, :3]]                                   # (f,3,3)
+    pts = np.einsum('pc,fcd->fpd', lam, X).reshape(-1, 3)
+    d, _ = cKDTree(pts).query(mesh.nodes)
+    d[np.unique(tris)] = 0.0
+    return d
+
+
 def default_wall_distance(mesh, tris) -> float:
     """½ × mean height of the elements on the wall faces (the wall-adjacent layer)."""
     X = mesh.nodes[tris[:, :3]]
@@ -448,8 +487,10 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
     n = mesh.n_nodes
     n3 = 3 * n
     iso = IsoP1(mesh)
+    sst = turb.model == 'k_omega_sst'
     wtris, other = split_bcs(mesh, bcs)
     delta = turb.wall_distance or default_wall_distance(mesh, wtris)
+    y_wall = wall_distance_field(mesh, wtris) + delta if sst else None     # distance to the physical wall
     wnodes, wnorm = wall_normals(mesh, wtris)
     wproj = wall_projectors(mesh, wtris, wnodes)
 
@@ -491,7 +532,7 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         nodes = _entry_nodes(mesh, bc)
         inlet_nodes.append(nodes)
         inlet_k.append(np.full(len(nodes), kin))
-        inlet_e.append(np.full(len(nodes), CMU75 * kin ** 1.5 / ell))
+        inlet_e.append(np.full(len(nodes), CMU75 * kin ** 1.5 / ell / (CMU * kin if sst else 1.0)))
     bvec = np.zeros(3) if body is None else np.asarray(body, float)
     if speeds:
         U_ref = max(speeds)
@@ -503,6 +544,10 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
     k0 = 1.5 * (turb.intensity * U_ref) ** 2
     e0 = CMU75 * k0 ** 1.5 / ell0
     k_floor, e_floor = 1e-10 * U_ref ** 2, 1e-10 * CMU75 * U_ref ** 3 / L
+    if sst:                                              # second variable = ω
+        e0 = e0 / (CMU * k0)
+        e_floor = 1e-6 * U_ref / L
+        cd_floor = 1e-10 * (U_ref / L) ** 2
     if inlet_nodes:
         in_n = np.concatenate(inlet_nodes)
         in_k, in_e = np.concatenate(inlet_k), np.concatenate(inlet_e)
@@ -550,7 +595,7 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
     k = np.full(n, k0)
     eps = np.full(n, e0)
     k[in_n], eps[in_n] = in_k, in_e
-    nut = CMU * k ** 2 / eps
+    nut = k / eps if sst else CMU * k ** 2 / eps
 
     # constant operators
     _, B, corners, pidx = st.assemble(mesh, 1.0)
@@ -695,6 +740,11 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         G = iso.grad_v(v)
         S = 0.5 * (G + G.transpose(0, 2, 1))
         G2n = iso.lump(np.einsum('scd,scd->s', S, S)) / iso.ml
+        if sst:                                          # SST: ν_t = a₁k / max(a₁ω, S F2) (eps holds ω)
+            w = eps
+            arg2 = np.maximum(2 * np.sqrt(k) / (CMU * w * y_wall), 500 * nu / (y_wall ** 2 * w))
+            F2 = np.tanh(arg2 ** 2)
+            return SST_A1LIM * k / np.maximum(SST_A1LIM * w, np.sqrt(2 * G2n) * F2)
         T = np.minimum(k / eps, DURBIN_ALPHA / (math.sqrt(6.0) * CMU * np.sqrt(np.maximum(G2n, 1e-300))))
         return CMU * k * T
 
@@ -706,34 +756,56 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         G2 = 2.0 * np.einsum('scd,scd->s', S, S)
         nut_e = iso.mean(nut)
         Pk = iso.lump(nut_e * G2)
-        Pk = np.minimum(Pk, P_LIMIT * iso.ml * eps)                      # production limiter P ≤ 10 ε
-        Pe = C1 * (eps / k) * Pk                                         # C₁ (ε/k) P
         _, utw, _, _, _ = wall_state(v, k)
         utw = utw[wall_idx]
+        if sst:
+            w = eps
+            Pk_lim = np.minimum(Pk, P_LIMIT * iso.ml * CMU * k * w)       # P ≤ 10 β*kω
+            gk = np.einsum('si,sia->sa', k[iso.sub], iso.g)
+            gw = np.einsum('si,sia->sa', w[iso.sub], iso.g)
+            cd = iso.lump(2 * SST_SW2 * np.einsum('sa,sa->s', gk, gw) / iso.mean(w)) / iso.ml   # (2σω2/ω)∇k·∇ω
+            arg1 = np.minimum(np.maximum(np.sqrt(k) / (CMU * w * y_wall), 500 * nu / (y_wall ** 2 * w)),
+                              4 * SST_SW2 * k / (np.maximum(cd, cd_floor) * y_wall ** 2))
+            F1 = np.tanh(arg1 ** 4)
+            sk = F1 * SST_SK1 + (1 - F1) * SST_SK2
+            sw = F1 * SST_SW1 + (1 - F1) * SST_SW2
+            bet = F1 * SST_B1 + (1 - F1) * SST_B2
+            alp = F1 * SST_A1 + (1 - F1) * SST_A2
+            # cross diffusion 2(1 − F1)σω2/ω ∇k·∇ω = b·∇ω, implicit in ω as an advection with velocity −b (explicit,
+            # it 2-cycles with k in the outer layer of a channel)
+            b = (2 * SST_SW2 * (1 - iso.mean(F1)) / iso.mean(w))[:, None] * gk
+            conv_cd = (iso.V / 4.0)[:, None, None] * np.einsum('sa,sja->sj', -b, iso.g)[:, None, :]
+            Pw = alp * iso.lump(G2) * Pk_lim / np.maximum(Pk, 1e-300)
+            w_wall = np.maximum(np.maximum(utw, 0.0) / (math.sqrt(CMU) * KAPPA_W * delta), e_floor)
+            eqs = ((k, nut_e * iso.mean(sk), CMU * w, Pk_lim, k_floor, 0.0),
+                   (w, nut_e * iso.mean(sw), bet * w, Pw, e_floor, conv_cd))
+            e_wall = w_wall
+        else:
+            Pk = np.minimum(Pk, P_LIMIT * iso.ml * eps)                  # production limiter P ≤ 10 ε
+            Pe = C1 * (eps / k) * Pk                                     # C₁ (ε/k) P
+            e_wall = np.maximum(np.maximum(utw, 0.0) ** 3 / (KAPPA_EPS * delta), e_floor)
+            eqs = ((k, nut_e / SIG_K, eps / k, Pk, k_floor, 0.0), (eps, nut_e / SIG_E, C2 * eps / k, Pe, e_floor, 0.0))
         # Mohammadi–Pironneau wall values: k = u_τ²/√C_μ, ε = u_τ³/(κ_ε δ) (ν_t = κ_ε u_τ δ → 0 smoothly at separation
         # and reattachment). A zero-flux k with wall-law production was tried first: k⁺ 3.16 instead of 3.33 in the
         # channel and no convergence behind a step.
         k_dir = np.concatenate([in_n, wall_only])
         k_val = np.concatenate([in_k, np.maximum(utw ** 2 / math.sqrt(CMU), k_floor)])
-        e_wall = np.maximum(np.maximum(utw, 0.0) ** 3 / (KAPPA_EPS * delta), e_floor)
         conv = (iso.V / 20.0)[:, None, None] * np.einsum('sia,sja->sij', ve.sum(axis=1)[:, None, :] + ve, iso.g)
         vg = np.einsum('sa,sia->si', vbar, iso.g)                # v̄·∇N_i
         vm = np.linalg.norm(vbar, axis=1)
         h = np.where(np.abs(vg).sum(axis=1) > 0, 2.0 * vm / np.maximum(np.abs(vg).sum(axis=1), 1e-300), iso.h)
         out = []
-        for j, (phi, sig, gam, src, dir_idx, dir_val) in enumerate((
-                (k, SIG_K, eps / k, Pk, k_dir, k_val),
-                (eps, SIG_E, C2 * eps / k, Pe, None, None))):
-            D = nu + nut_e / sig
+        e_dir = np.concatenate([in_n, wall_only])
+        e_val = np.concatenate([in_e, e_wall])
+        dirs = ((k_dir, k_val), (e_dir, e_val))
+        for j, ((phi, nut_s, gam, src, floor, conv_x), (dir_idx, dir_val)) in enumerate(zip(eqs, dirs)):
+            D = nu + nut_s
             g_e = iso.mean(gam)
             tau = 1.0 / np.sqrt((2 * vm / h) ** 2 + 9 * (4 * D / h ** 2) ** 2 + g_e ** 2 + iso.mean(a0 / dtau) ** 2)
             tvg = (tau * iso.V)[:, None, None] * vg[:, :, None] * vg[:, None, :]
-            if dir_idx is None:                                  # ε: inlet + wall values
-                dir_idx = np.concatenate([in_n, wall_only])
-                dir_val = np.concatenate([in_e, e_wall])
-            res = scalar_solve(phi, conv, D, gam, src, dtau, dir_idx, dir_val, tvg, a0,
+            res = scalar_solve(phi, conv + conv_x, D, gam, src, dtau, dir_idx, dir_val, tvg, a0,
                                None if hist is None else hist[j])
-            out.append(np.maximum(res, k_floor if sig == SIG_K else e_floor))
+            out.append(np.maximum(res, floor))
         return out[0], out[1]
 
     def march(v, ph, k, eps, nut):
@@ -759,7 +831,10 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
                 pn[mesh.elements[:, 4 + e_]] = 0.5 * (ph_[pidx[mesh.elements[:, i]]] + ph_[pidx[mesh.elements[:, j]]])
             return pn
 
-        snaps = [(0.0, v.copy(), pnodal(ph), k.copy(), eps.copy())]
+        def eps_of(k_, s_):                                      # dissipation ε (SST: s_ = ω → β*kω)
+            return CMU * k_ * s_ if sst else s_.copy()
+
+        snaps = [(0.0, v.copy(), pnodal(ph), k.copy(), eps_of(k, eps))]
         curves = []
         v_prev, k_prev, e_prev = v, k, eps
         all_inner, step, t = True, 0, 0.0
@@ -804,11 +879,11 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
                 acc['v'] += v
                 acc['p'] += pn_
                 acc['k'] += k
-                acc['eps'] += eps
+                acc['eps'] += eps_of(k, eps)
                 acc['n'] += 1
             done = steady_tol > 0 and max(dvs, dks) < steady_tol
             if step in outs or done:
-                snaps.append((t, v.copy(), pnodal(ph), k.copy(), eps.copy()))
+                snaps.append((t, v.copy(), pnodal(ph), k.copy(), eps_of(k, eps)))
             if progress:
                 progress(step, f'URANS paso {step}/{tset.n_steps} t = {t:.4g} s: {sw} sub-it., Δv {dvs:.1e}')
             if done:
@@ -827,6 +902,7 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
     Kv = momentum_operator(v, nut, k)
     rel_prev = momentum_residual(Kv, v, ph)
     cfl0, cfl = turb.cfl, turb.cfl
+    cap, best_prev, best_win = turb.cfl_max, np.inf, np.inf
     converged = False
     it = 0
     t_init = (time or {}).get('initial') or 'rest'
@@ -851,15 +927,25 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
                         'dv_node': dv_node, 'k_at': float(k[dk_node]), 'eps_at': float(eps[dk_node]),
                         'v_at': v[dv_node].tolist()})
         if progress:
-            progress(it, f'RANS k-ε it {it}: residuo {rel:.2e}, Δk {dk:.1e}, CFL {cfl:.3g}')
+            progress(it, f'RANS {"k-ω SST" if sst else "k-ε"} it {it}: residuo {rel:.2e}, Δk {dk:.1e}, CFL {cfl:.3g}')
         if not np.isfinite(rel):
-            raise ValueError('RANS k-ε diverge (residuo no finito). Revise las condiciones de contorno y la malla.')
+            raise ValueError(f'RANS {"k-ω SST" if sst else "k-ε"} diverge (residuo no finito). Revise las '
+                             'condiciones de contorno y la malla.')
         if rel < turb.tol and max(dk, de, dv) < 10 * turb.tol:
             converged = True
             break
         # the pseudo-time step grows geometrically (plain Picard in the limit) and is halved when the residual jumps
         cfl = cfl * 0.5 if rel > 2.0 * rel_prev else cfl * 1.3
-        cfl = float(np.clip(cfl, cfl0, turb.cfl_max))
+        if sst:
+            # SST: a stalled residual (not halved within CFL_WINDOW iterations) is a limit cycle of the segregated
+            # iteration (backward step at CFL 1000); it goes away with smaller pseudo-time steps → cap ÷ 5. k-ε keeps
+            # the plain rule (its step-face 2-cycle is not cured by the CFL).
+            best_win = min(best_win, rel)
+            if it % CFL_WINDOW == 0:
+                if best_win > 0.5 * best_prev and cap > cfl0:
+                    cap = max(cfl0, cap / 5.0)
+                best_prev, best_win = min(best_prev, best_win), np.inf
+        cfl = float(np.clip(cfl, cfl0, cap))
         rel_prev = rel
 
     transient = None
@@ -901,10 +987,12 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         'residual': history[-1]['residual'] if history else 0.0, 'reaction': R,
         'turbulence': {
             'model': turb.model, 'converged': converged, 'iterations': it, 'history': history,
-            'k': k, 'eps': eps, 'nut': nut, 'wall_distance': delta,
+            'k': k, 'eps': CMU * k * eps if sst else eps, 'omega': eps if sst else None, 'nut': nut,
+            'wall_distance': delta,
             'wall': {'nodes': wnodes, 'normals': wnorm, 'u_tau': ut, 'u_star': us, 'y_plus': ut * delta / nu,
                      'tau_w': tau_w},
             'wall_tris': wtris, 'inlet': {'k': float(in_k.max()) if len(in_k) else None,
-                                          'eps': float(in_e.max()) if len(in_e) else None},
+                                          'eps': (float((CMU * in_k * in_e).max() if sst else in_e.max())
+                                                  if len(in_e) else None)},
             'U_ref': U_ref, 'wall_force': fw, 'transient': transient,
         }}

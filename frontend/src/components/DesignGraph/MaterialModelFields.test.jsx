@@ -139,6 +139,26 @@ describe('material model fields (item 8)', () => {
     expect(screen.queryByText(/⚠/)).toBeNull();                 // y⁺ 40 and Re 2e4 are fine for RANS
   });
 
+  it('fluid: RANS k-ω SST selector, turbulence fields and summary label', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon' }} setProp={setProp} />);
+    fireEvent.click(screen.getByText('RANS k-ω SST'));
+    expect(setProp).toHaveBeenCalledWith('flow_model', 'rans_k_omega_sst');
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_omega_sst', transient: true }}
+      setProp={setProp} />);
+    expect(screen.getByTestId('turbulence-fields')).toBeTruthy();
+    expect(screen.getByText(/k-ω SST con funciones de pared/)).toBeTruthy();
+    expect(screen.getByLabelText('Estado inicial URANS')).toBeTruthy();       // URANS options for SST too
+    cleanup();
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'rans_k_omega_sst', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 2e4,
+      flow_rates: [], turbulence: { iterations: 111, converged: true, y_plus_min: 20, y_plus_max: 60, y_plus_mean: 40,
+        wall_distance_m: 5e-4, u_tau_max_m_s: 0.05, nut_ratio_max: 120 } } } }} />);
+    expect(screen.getByText(/RANS k-ω SST \(funciones de pared\)/)).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();
+  });
+
   it('fluid: transient Navier-Stokes / URANS settings, inlet ramp and transient summary', () => {
     const setProp = vi.fn();
     render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'stokes' }} setProp={setProp} />);
