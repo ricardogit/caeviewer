@@ -6,7 +6,7 @@ import OrthotropicFields from './OrthotropicFields';
 import HyperelasticFields from './HyperelasticFields';
 import ViscoelasticFields from './ViscoelasticFields';
 import PiezoFields, { PZT5H } from './PiezoFields';
-import FluidFields, { InletTurbulenceFields } from './FluidFields';
+import FluidFields, { InletRampField, InletTurbulenceFields } from './FluidFields';
 import MagneticFields, { CoilFields, parseBH } from './MagneticFields';
 import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
 import { SummaryRows } from '../Results/ResultsViewer';
@@ -137,6 +137,33 @@ describe('material model fields (item 8)', () => {
     expect(screen.getByText(/RANS k-ε \(funciones de pared\)/)).toBeTruthy();
     expect(screen.getByText('Iteraciones RANS')).toBeTruthy();
     expect(screen.queryByText(/⚠/)).toBeNull();                 // y⁺ 40 and Re 2e4 are fine for RANS
+  });
+
+  it('fluid: transient Navier-Stokes / URANS settings, inlet ramp and transient summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'stokes' }} setProp={setProp} />);
+    expect(screen.queryByTestId('fluid-transient-fields')).toBeNull();          // Stokes is steady
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'navier_stokes', transient: true }} setProp={setProp} />);
+    expect(screen.getByText(/Fluido newtoniano transitorio/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Pasos'), { target: { value: '200' } });
+    expect(setProp).toHaveBeenCalledWith('time_steps', 200);
+    expect(screen.queryByLabelText('Sub-iteraciones')).toBeNull();
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon', transient: true }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Tol. estacionario'), { target: { value: '1e-5' } });
+    expect(setProp).toHaveBeenCalledWith('steady_tol', 1e-5);
+    render(<InletRampField props={{}} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Rampa de arranque'), { target: { value: '0.5' } });
+    expect(setProp).toHaveBeenCalledWith('t_ramp', 0.5);
+    cleanup();
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'navier_stokes', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 200,
+      flow_rates: [], transient: { scheme: 'bdf2', dt: 0.01, t_end: 2, courant_max: 0.8,
+        forces: [{ label: 'cilindro', final_N: [1.5, 0.2, 0] }] } } } }} />);
+    expect(screen.getByText('Transitorio')).toBeTruthy();
+    expect(screen.getByText('Courant máx.')).toBeTruthy();
+    expect(screen.getByText('Fuerza cilindro (final)')).toBeTruthy();
   });
 
   it('magnetic: NdFeB preset sets μr and Br; summary shows poles and permeance', () => {

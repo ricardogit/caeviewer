@@ -407,7 +407,35 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   5–5.5) but no strict convergence (2-cycle at a step-face node: residual 1e-4…1e-3 at mesh 0.4, 0.2 at 0.6, x_r
   unchanged; not cured by friction / wall-value / velocity relaxation (friction relaxation broke δ⁺ ≥ 100) or CFL — next step: true
   BDF2 time marching). Server: Gmsh duct 100×20×20 mm, water 1 m/s, converged in 53 it, y⁺ 133. Gmsh slab / duct
-  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: k-ω SST, transient, stratified σ-layer model.
+  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: k-ω SST, stratified σ-layer model.
+- **Transient Navier–Stokes / URANS** (FASE 10.4, `fem/ns_transient.py` + `rans.solve_rans(time=)`): spec `time`
+  {t_end, n_steps | dt, scheme bdf2 (BE first step) | be, n_output} on a Navier–Stokes material (Stokes + time → 422).
+  Laminar: semi-implicit BDF2, convection linearised about v* = 2vⁿ − vⁿ⁻¹ (one saddle solve per step, 2nd order;
+  `iterations` > 1 adds Picard sweeps), consistent P2 mass; linear solves = GMRES preconditioned with the LU of an
+  earlier step, refactorised past `REUSE_MAX_IT` 25 iterations (TG 16² 27 s → 10 s). BC / load `history` [[t, f]]
+  (cached as arrays: per-node BCs with long series were 70 % of the time); `initial` rest | (3,) | (N,3) |
+  'steady'; no SUPG (→ 422). Outputs: snapshots, probe curves (v, p every step), force history on every face-set BC
+  prescribing all 3 components (consistent reactions incl. inertia), kinetic energy, Courant. URANS: global Δt, BDF2
+  on momentum (consistent mass, SUPG residual with ρ(a0v − v_hist)/Δt and the (2a0/Δt)² τ term) and k, ε (lumped),
+  Picard sweeps per step (`inner_iterations` 8, `inner_tol` 1e-4), `steady_tol` stops at a steady state, `initial`
+  rest (default; the old Stokes start gave v 20× too large and took forever to decay) | steady (pseudo-time first),
+  `average_from` → time-mean fields; constant BCs only (histories → 422). Kernel: `_fluid_transient_summary` →
+  `fluid.transient` {scheme, dt, times, courant_max, kinetic_energy, forces [{label, curve, final_N}], probes
+  {columns t vx vy vz p [k]}, URANS steps_done, inner_converged, steady_reached, curve, mean}; series fields vmag/vx/
+  vy/vz/p (+ k, eps), URANS mean fields vmean, vxmean…, pmean, kmean. Graph: MATERIAL `transient` + `t_end`,
+  `time_unit` s|min|h, `time_steps`, `scheme`, `n_output`, `probes`; URANS `inner_iterations`, `steady_tol`,
+  `urans_initial`, `average_from`; velocity BC `t_ramp` (ramp 0 → 1) or `history` (steady studies drop them: hash
+  unchanged). UI `FluidFields.jsx` (`FluidTransientFields`, `InletRampField`), Results rows. Hito `python
+  validate_ns_transient.py [--server …] [--no-cylinder] [--no-step]` (~85 min local): start-up Poiseuille orders
+  BDF2 2.03 / BE 0.99, 1.4 % vs the series (4 P2 across); Taylor–Green Re 100 4.2 % → 0.58 %, order 2.85 (P2);
+  Schäfer–Turek 2D-2 cylinder (15.8K nodes, Δt 0.01, 8 s, ~43 min): c_D,max 3.2456 (ref 3.22–3.24), c_L,max 1.0203
+  (0.99–1.01), St 0.3065 (0.295–0.305) — checked within 3 % (coarse: 24 P2 edges on the cylinder); backward step
+  URANS from the steady iterate (Δt 2.5e-4, U Δt/H 0.87): reattachment moves 5.45 → **6.23** within ~40 steps (exp.
+  6.26; plausible with the Durbin bound) and stays (means over 0.01–0.02 / 0.02–0.06 s and the field at 0.1 s
+  agree), but ~1e-3 change per step remains, wandering along the lower wall downstream and at the outlet (not
+  shedding: shear-layer σ(v_x) 0.01 % U) — no strict steady convergence still; BE with Δt 1e-3 does not converge
+  the sub-iterations. Server: duct + 0.5 s ramp, 40 steps, probe, wall forces, `/surface?step=`. Tests
+  `tests/test_ns_transient.py`, URANS in `tests/test_rans.py`.
 - `LinearMagnetic` (`fem/magnetic.py`): linear **magnetostatics in current-free regions** with the total scalar
   potential ψ [A]: H = −∇ψ, B = μ₀μr H + Br, ∇·B = 0 → the conduction operators of `thermal` (scaled by 1/μ₀) with
   the magnet source ∫∇w·Br/μ₀. One material region (scalar μr, uniform remanence Br [T] in global axes); coils (MMF

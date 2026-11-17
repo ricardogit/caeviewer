@@ -86,6 +86,19 @@ export function SummaryRows({ header }) {
         ['u_τ máx.', `${fmt(s.fluid.turbulence.u_tau_max_m_s)} m/s`],
         ['ν_t/ν máx.', fmt(s.fluid.turbulence.nut_ratio_max)],
       ] : []),
+      ...(s.fluid.transient ? [
+        ['Transitorio', `${s.fluid.transient.scheme === 'be' ? 'Euler implícito' : 'BDF2'} · Δt = ${fmt(s.fluid.transient.dt)} s`
+          + ` · t = ${fmt(s.fluid.transient.t_final ?? s.fluid.transient.t_end)} s`
+          + (s.fluid.transient.steps_done != null ? ` (${s.fluid.transient.steps_done} pasos)` : '')],
+        ...(s.fluid.transient.courant_max != null ? [['Courant máx.', fmt(s.fluid.transient.courant_max)]] : []),
+        ...(s.fluid.transient.mean ? [['Promedio temporal', `${fmt(s.fluid.transient.mean.t0)} … `
+          + `${fmt(s.fluid.transient.mean.t1)} s (${s.fluid.transient.mean.n_steps} pasos): campos «media»`]] : []),
+        ...(s.fluid.transient.steady_reached != null ? [['URANS', (s.fluid.transient.steady_reached
+          ? 'estado estacionario alcanzado' : 'sin estado estacionario') + (s.fluid.transient.inner_converged
+          ? '' : ' ⚠ sub-iteraciones sin converger')]] : []),
+        ...(s.fluid.transient.forces || []).map(f => [`Fuerza ${f.label || f.face_set} (final)`,
+          `(${f.final_N.map(x => fmt(x)).join(', ')}) N`]),
+      ] : []),
       ...(s.fluid.navier_stokes ? [
         ['Iteraciones', `${s.fluid.navier_stokes.picard_iterations} Picard + ${s.fluid.navier_stokes.newton_iterations} Newton`
           + (s.fluid.navier_stokes.continuation_steps > 1 ? ` · ${s.fluid.navier_stokes.continuation_steps} pasos de Re` : '')],

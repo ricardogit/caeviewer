@@ -694,7 +694,30 @@ class FEMKernel:
         dofs, vals = dirichlet(mesh, all_bcs) if all_bcs else (np.zeros(0, np.int64), np.zeros(0))
         if not len(dofs):
             raise ValueError('Fluido: faltan condiciones de velocidad (paredes sin deslizamiento, entrada …).')
-        if fm.inertia:
+        time_spec = spec.get('time') or None
+        tinfo = None
+        if time_spec and not fm.inertia:
+            raise ValueError('Fluido transitorio: active Navier-Stokes (inercia) en el material; Stokes es '
+                             'estacionario.')
+        if time_spec and not fm.turbulence:          # transient laminar Navier–Stokes (FASE 10.4)
+            from app.design.services.fem import ns_transient as nst
+            if fm.stabilization:
+                raise ValueError('Navier-Stokes transitorio laminar: la estabilización SUPG no está disponible; '
+                                 'desactívela (o use RANS k-ε).')
+            self._emit(socketio, run_id, 20, f'Navier-Stokes transitorio (BDF2): {n_dof:,} incógnitas', t_start)
+
+            def prog_tr(k, total, t):
+                self._emit(socketio, run_id, 20 + int(70 * k / total), f'Navier-Stokes: paso {k}/{total} '
+                           f'(t = {t:.4g} s)', t_start)
+            snaps, tinfo = nst.solve_transient(mesh, fm, all_bcs, loads, time_spec,
+                                               initial=spec.get('initial_velocity'), probes=spec.get('probes'),
+                                               progress=prog_tr)
+            load_info = tinfo['load_info']
+            _, v, p = snaps[-1]
+            info = {'n_dof': tinfo['n_dof'], 'pressure_pinned': tinfo['pressure_pinned'], 'residual': 0.0,
+                    'reaction': tinfo['reaction']}
+            tinfo['snapshots'] = snaps
+        elif fm.inertia:
             self._emit(socketio, run_id, 30, f'Navier-Stokes: Stokes inicial + Picard/Newton ({n_dof:,} incógnitas)',
                        t_start)
 
@@ -713,7 +736,8 @@ class FEMKernel:
 
                 def prog_t(it, msg):
                     self._emit(socketio, run_id, min(30 + it // 3, 90), msg, t_start)
-                v, p, info = rans.solve_rans(mesh, fm, F, all_bcs, ts, body=body, progress=prog_t)
+                v, p, info = rans.solve_rans(mesh, fm, F, all_bcs, ts, body=body, progress=prog_t, time=time_spec,
+                                             probes=spec.get('probes'))
             else:
                 v, p, info = st.solve_ns(mesh, fm, F, dofs, vals, progress=prog, stabilization=fm.stabilization,
                                          body=body)
@@ -749,7 +773,8 @@ class FEMKernel:
             'physics': ['fluid'],
             'n_nodes': n, 'n_elements': mesh.n_elements, 'n_dof': info['n_dof'], 'element_type': mesh.element_type,
             'tier': tier, 'converged': bool(resid < 1e-8), 'final_residual': resid,
-            'n_iterations': (turb['iterations'] if turb else info['navier_stokes']['iterations']) if fm.inertia else 1,
+            'n_iterations': (turb['iterations'] if turb else info.get('navier_stokes', {}).get('iterations', 1)) if fm.inertia
+            else 1,
             'solver_method': ('rans_segregated_picard' if turb else 'newton_picard_saddle_point') if fm.inertia
             else 'direct_saddle_point',
             'wall_time_s': round(time.perf_counter() - t_start, 3),
@@ -794,7 +819,7 @@ class FEMKernel:
                 warnings.append(f'y⁺ medio en las paredes ≈ {yp.mean():.3g}: las funciones de pared son fiables con '
                                 '30 ≲ y⁺ ≲ 300; ajuste la distancia de pared δ (o la malla junto a las paredes).')
             s['fluid']['pressure_note'] = 'p* = p + ⅔ρk (presión modificada del modelo k-ε)'
-        if fm.inertia and not turb:
+        if fm.inertia and not turb and not time_spec:
             ns = info['navier_stokes']
             Re_h = st.element_reynolds_max(mesh, v, fm)
             s['fluid']['navier_stokes'] = {k: ns[k] for k in ('iterations', 'picard_iterations', 'newton_iterations',
@@ -809,21 +834,85 @@ class FEMKernel:
             if Re_h > 100 and not fm.stabilization:
                 warnings.append(f'Reynolds de elemento máx. ≈ {Re_h:.3g} (> 100): sin estabilización la solución puede '
                                 'oscilar entre nodos; active la estabilización SUPG o refine la malla donde la velocidad es alta.')
-        elif Re > 1.0:
+        elif Re > 1.0 and not fm.inertia:
             warnings.append(f'Re ≈ {Re:.3g} > 1: el modelo de Stokes (flujo lento) desprecia la inercia; '
                             'el resultado no es fiable a este Reynolds. Active Navier-Stokes en el material.')
+        series = None
+        if time_spec:
+            series = self._fluid_transient_summary(s, tinfo if tinfo is not None else turb['transient'], spec,
+                                                   turbulent=bool(turb), warnings=warnings)
+            mean = turb['transient'].get('mean') if turb else None
+            if mean:                                 # URANS time-mean fields (flows without a steady state)
+                vm = mean['v']
+                extra.update({'vmean': np.linalg.norm(vm, axis=1) * 1e3, 'vxmean': vm[:, 0] * 1e3,
+                              'vymean': vm[:, 1] * 1e3, 'vzmean': vm[:, 2] * 1e3, 'pmean': mean['p'],
+                              'kmean': mean['k']})
+                s['extra_fields'] += [{'key': 'vmean', 'label': '|v̄| velocidad media', 'unit': 'mm/s'},
+                                      {'key': 'vxmean', 'label': 'v̄x media', 'unit': 'mm/s'},
+                                      {'key': 'vymean', 'label': 'v̄y media', 'unit': 'mm/s'},
+                                      {'key': 'vzmean', 'label': 'v̄z media', 'unit': 'mm/s'},
+                                      {'key': 'pmean', 'label': 'Presión media', 'unit': 'Pa'},
+                                      {'key': 'kmean', 'label': 'k media', 'unit': 'm²/s²'}]
+                s['fluid']['transient']['mean'] = {'t0': mean['t0'], 't1': mean['t1'], 'n_steps': mean['n_steps']}
         if warnings:
             s['warnings'] = warnings
         if mesh_meta:
             s['mesh'] = {k: val for k, val in mesh_meta.items() if k not in ('attempts', 'bridge')}
         return {
-            'velocity': v, 'pressure': p,
+            'velocity': v, 'pressure': p, 'time_series': series,
             'extra_fields': {'vmag': vmag * 1e3, 'vx': v[:, 0] * 1e3, 'vy': v[:, 1] * 1e3, 'vz': v[:, 2] * 1e3,
                              'p': p, **extra},
             'solve_info': {'method': 'direct_saddle_point', 'converged': s['converged'], 'final_residual': resid},
             'surface_triangles': mesh.extract_surface_triangles(),
             'nodes': mesh.nodes.tolist(), 'elements': mesh.elements.tolist(), 'summary': s, 'mesh': mesh,
         }
+
+    @staticmethod
+    def _fluid_transient_summary(s, tr, spec, *, turbulent, warnings) -> dict:
+        """Transient fluid (laminar BDF2 or URANS): summary ``fluid.transient`` + time series of the fields."""
+        snaps = tr['snapshots']
+        times = [float(sn[0]) for sn in snaps]
+        V = np.stack([sn[1] for sn in snaps])                                  # (n_out, N, 3)
+        fields = {'vmag': np.linalg.norm(V, axis=2) * 1e3, 'vx': V[:, :, 0] * 1e3, 'vy': V[:, :, 1] * 1e3,
+                  'vz': V[:, :, 2] * 1e3, 'p': np.stack([sn[2] for sn in snaps])}
+        if turbulent:
+            fields['k'] = np.stack([sn[3] for sn in snaps])
+            fields['eps'] = np.stack([sn[4] for sn in snaps])
+        for f_ in s['extra_fields']:
+            if f_['key'] in fields:
+                f_['series'] = True
+        d = {'scheme': tr['time']['scheme'], 't_end': tr['time']['t_end'], 'dt': tr['time']['dt'],
+             'n_steps': tr['time']['n_steps'], 'times': times}
+        if turbulent:
+            d.update({'steps_done': tr['steps_done'], 't_final': tr['t_final'],
+                      'inner_converged': tr['inner_converged'], 'steady_reached': tr['steady_reached'],
+                      'max_sweeps': max([st_['sweeps'] for st_ in tr['steps']] or [0])})
+            rows = [[st_['t'], st_['dv'], st_['sweeps']] for st_ in tr['steps']]
+            d['curve'] = rows[::max(1, len(rows) // 500)]
+            if not tr['inner_converged']:
+                warnings.append('URANS: en algún paso las sub-iteraciones no alcanzaron la tolerancia; reduzca Δt o '
+                                'aumente las sub-iteraciones.')
+        else:
+            d['courant_max'] = tr['courant_max']
+            en = tr['energy']
+            d['kinetic_energy'] = en[::max(1, len(en) // 500)]
+            fh = tr['forces']['history']
+            if fh:
+                stride = max(1, len(fh) // 500)
+                d['forces'] = [{'label': fs['label'], 'face_set': fs['face_set'],
+                                'curve': [[row[0]] + row[1 + i] for row in fh[::stride]],
+                                'final_N': fh[-1][1 + i]} for i, fs in enumerate(tr['forces']['sets'])]
+        if tr.get('curves'):
+            names = ['vx', 'vy', 'vz', 'p'] + (['k'] if turbulent else [])
+            stride = max(1, len(tr['curves']) // 500)
+            d['probes'] = [{'label': p_.get('label') or f'P{i + 1}', 'point': list(map(float, p_['point'])),
+                            'inside': lc['inside'], 'columns': ['t'] + names,
+                            'curve': [[row[0]] + row[1 + i] for row in tr['curves'][::stride]]}
+                           for i, (p_, lc) in enumerate(zip(spec.get('probes') or [], tr['probe_locations']))]
+        s['fluid']['transient'] = d
+        s['n_iterations'] = int(tr.get('steps_done') or tr['time']['n_steps'])
+        s['solver_method'] = 'urans_bdf2_picard' if turbulent else 'navier_stokes_' + d['scheme'] + '_semi_implicit'
+        return {'times': times, 'fields': fields}
 
     # ── Species transport (FASE 10.1 + 10.2) ─────────────────────────────────
 

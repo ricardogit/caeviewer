@@ -93,6 +93,44 @@ def test_turbulent_channel_large_wall_distance():
     assert np.allclose(T['wall']['u_tau'], 1.0, atol=5e-3)
 
 
+def _channel_urans(time):
+    h, rho, ut, ny = 1.0, 1.0, 1.0, 16
+    nu = ut * h / 2000.0
+    delta = 50.0 * nu / ut
+    w = 1.15 ** np.arange(ny)
+    ys = delta + (h - delta) * np.concatenate([[0], np.cumsum(w) / w.sum()])
+    mesh = FEMMesh.generate_grid([0, 0.05], ys, [0, 0.05], order=2)
+    f = rho * ut ** 2 / (h - delta)
+    mat = st.FluidMaterial({'mu': rho * nu, 'rho': rho, 'inertia': True, 'turbulence': {'model': 'k_epsilon'}})
+    F = assemble_F(mesh, [{'body_force': [f, 0, 0]}], [])
+    bcs = [{'dofs': [0, 1, 2], 'values': [0, 0, 0], 'face_set': 'y0'}, {'dofs': [1], 'values': [0], 'face_set': 'y1'},
+           {'dofs': [1, 2], 'values': [0, 0], 'face_set': 'x0'}, {'dofs': [1, 2], 'values': [0, 0], 'face_set': 'x1'},
+           {'dofs': [2], 'values': [0], 'face_set': 'z0'}, {'dofs': [2], 'values': [0], 'face_set': 'z1'}]
+    return rans.solve_rans(mesh, mat, F, bcs, rans.TurbulenceSettings({'wall_distance': delta}), body=[f, 0, 0],
+                           time=time)
+
+
+def test_urans_from_steady_stays_steady():
+    """URANS started from the converged steady iteration: the march keeps it (time terms vanish, SUPG consistent)."""
+    _, v0, info0 = _channel()[:3]
+    v, _, info = _channel_urans({'t_end': 5.0, 'n_steps': 10, 'scheme': 'bdf2', 'initial': 'steady',
+                                 'steady_tol': 1e-6})
+    tr = info['turbulence']['transient']
+    assert tr['initial'] == 'steady' and tr['steady_iterations'] == info0['turbulence']['iterations']
+    assert tr['steady_reached'] and tr['steps_done'] < 10
+    assert np.abs(v - v0).max() < 1e-5 * np.abs(v0).max()
+
+
+def test_urans_from_rest_accelerates():
+    """Impulsive start from rest under the driving body force: the bulk velocity grows monotonically, the first
+    step is a small fraction of the steady velocity, snapshots start at v = 0."""
+    v, _, info = _channel_urans({'t_end': 4.0, 'n_steps': 8, 'scheme': 'bdf2', 'n_output': 4})
+    tr = info['turbulence']['transient']
+    assert tr['initial'] == 'rest' and np.abs(tr['snapshots'][0][1]).max() == 0.0
+    ub = [np.abs(sn[1][:, 0]).mean() for sn in tr['snapshots']]
+    assert np.all(np.diff(ub) > 0) and len(ub) == 5 and 0 < ub[-1] < 24.4
+
+
 def test_graph_spec_rans_material_and_inlet():
     from app.design.services.graph_to_solver_spec import _turbulence_settings
     t = _turbulence_settings({'wall_distance_mm': 0.5, 'inlet_intensity': 3, 'inlet_length_mm': 10}, 'agua')

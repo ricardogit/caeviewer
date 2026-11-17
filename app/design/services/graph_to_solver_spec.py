@@ -111,6 +111,8 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                     spec['material']['turbulence'] = _turbulence_settings(props, mat_node.label)
                 elif props.get('stabilization') == 'supg':   # opt-in: unstabilised studies keep their hash
                     spec['material']['stabilization'] = 'supg'
+                if props.get('transient'):                   # transient NS / URANS (FASE 10.4)
+                    _fluid_transient(spec, props, mat_node.label, flow_model)
         elif spec['material']['type'] == 'scalar_transport':
             _transport_material(spec, mat_node)
         elif spec['material']['type'] == 'porous_medium':
@@ -394,6 +396,32 @@ def _transient_settings(spec: dict, p: dict, label: str, growth: bool = False) -
         if growth and p.get('dt_growth') not in (None, '', 1, '1'):
             spec['time']['dt_growth'] = _num(p, 'dt_growth', label, 'la razón de crecimiento del paso', positive=True)
     return t_scale
+
+
+def _fluid_transient(spec: dict, p: dict, label: str, flow_model: str) -> None:
+    """MATERIAL fluid with ``transient``: spec['time'] (t_end + ``time_unit``, ``time_steps``, scheme bdf2 | be,
+    n_output; URANS also ``inner_iterations``, ``steady_tol``, ``urans_initial`` rest | steady, ``average_from``),
+    probes [{label, x, y, z mm}]. Velocity BC histories
+    (``t_ramp``, ``history``) are in the study time unit (scaled in ``_finalize_physics``)."""
+    if spec['material'].get('stabilization'):
+        raise GraphSpecError(f'"{label}": la estabilización SUPG no está disponible en Navier-Stokes transitorio '
+                             'laminar; desactívela o use RANS k-ε.')
+    if (p.get('scheme') or 'bdf2') not in ('bdf2', 'be'):
+        raise GraphSpecError(f'"{label}": esquema temporal «{p.get("scheme")}» no disponible para fluidos (bdf2, be).')
+    spec['fluid_time_scale'] = _transient_settings(spec, p, label)
+    if flow_model == 'rans_k_epsilon':
+        if p.get('inner_iterations') not in (None, ''):
+            spec['time']['inner_iterations'] = int(_num(p, 'inner_iterations', label, 'las sub-iteraciones',
+                                                        positive=True))
+        if p.get('steady_tol') not in (None, ''):
+            spec['time']['steady_tol'] = _num(p, 'steady_tol', label, 'la tolerancia de estacionario',
+                                              positive=True)
+        if p.get('urans_initial') == 'steady':      # pseudo-time iteration first, then the march
+            spec['time']['initial'] = 'steady'
+        if p.get('average_from') not in (None, ''):  # time-mean fields after this time (study time unit)
+            spec['time']['average_from'] = _num(p, 'average_from', label, 'el inicio del promedio') \
+                * spec['fluid_time_scale']
+    _probes(spec, p, label)
 
 
 def _probes(spec: dict, p: dict, label: str) -> None:
@@ -738,6 +766,17 @@ def _finalize_physics(spec: dict) -> None:
     elif spec['material'].get('type') == 'newtonian_fluid':
         if 'thermal' in spec['physics']:
             raise GraphSpecError('El fluido newtoniano no admite condiciones térmicas todavía.')
+        ft = spec.pop('fluid_time_scale', None)
+        for b in spec['bcs']:
+            if not b.get('history'):
+                continue
+            if ft is None:                       # steady study: time histories do not apply (hash unchanged)
+                b.pop('history')
+            elif spec['material'].get('turbulence'):
+                raise GraphSpecError(f'"{b.get("label")}": RANS transitorio con velocidad variable en el tiempo no '
+                                     'está disponible todavía (condiciones constantes).')
+            else:
+                b['history'] = [[t * ft, f] for t, f in b['history']]
         if any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
             raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material es un fluido.')
         spec['physics'] = ['fluid']               # T10 required: the kernel raises a clear error for T4
@@ -1041,6 +1080,12 @@ def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> d
             turb['length_scale'] = _num(props, 'turbulence_length_mm', node.label, 'la escala de longitud') * 1e-3
         if turb:
             entry['turbulence'] = turb
+        if props.get('t_ramp') not in (None, ''):    # transient studies: linear ramp 0 → 1 (study time unit)
+            entry['history'] = [[0.0, 0.0], [_num(props, 't_ramp', node.label, 'la rampa', positive=True), 1.0]]
+        else:
+            hist = _history(props, node.label)
+            if hist:
+                entry['history'] = hist
         _target(entry, faces, props, 'fixed')
         if geometry_id:
             entry['geometry_id'] = geometry_id

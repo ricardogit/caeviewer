@@ -2,12 +2,14 @@
  * FluidFields — Newtonian fluid MATERIAL node (model_type = newtonian_fluid): dynamic viscosity μ [Pa·s] and
  * flow model: Stokes (creeping, Re ≪ 1), steady laminar Navier–Stokes (convection, needs ρ > 0) or turbulent RANS
  * k-ε with wall functions (no-slip BCs become wall-function walls). T10 meshes only (Taylor-Hood P2-P1). ρ (above)
- * is used for gravity, inertia and the Reynolds-number check.
+ * is used for gravity, inertia and the Reynolds-number check. Navier–Stokes and RANS can be transient (BDF2 / implicit
+ * Euler, URANS with sub-iterations per step), with control points and a start-up ramp on the inlet velocity.
  */
 import React from 'react';
 import {
-  Box, Button, FormControlLabel, Switch, TextField, Typography, ToggleButton, ToggleButtonGroup,
+  Box, Button, FormControlLabel, MenuItem, Select, Switch, TextField, Typography, ToggleButton, ToggleButtonGroup,
 } from '@mui/material';
+import { ProbeList } from './TransportFields';
 
 const num = (v) => (v === '' ? null : parseFloat(v));
 
@@ -49,6 +51,75 @@ export function InletTurbulenceFields({ props, setProp }) {
   );
 }
 
+/** Velocity BC of a transient study: linear start-up ramp 0 → 1 over t_ramp (study time unit; laminar only). */
+export function InletRampField({ props, setProp }) {
+  return (
+    <NumField label="Rampa de arranque" k="t_ramp" props={props} setProp={setProp}
+      helper="Estudio transitorio laminar: la velocidad sube de 0 al valor en este tiempo (unidad del estudio)" />
+  );
+}
+
+/** Transient settings of a Navier–Stokes / RANS fluid (``transient``, t_end + time_unit, steps, scheme, probes). */
+export function FluidTransientFields({ props, setProp }) {
+  const rans = props.flow_model === 'rans_k_epsilon';
+  return (
+    <Box data-testid="fluid-transient-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <FormControlLabel
+        control={<Switch size="small" checked={!!props.transient} onChange={(e) => setProp('transient', e.target.checked)}
+          inputProps={{ 'aria-label': 'Transitorio' }} />}
+        label={<Typography variant="caption" sx={{ color: '#bbb' }}>
+          {rans ? 'Transitorio (URANS)' : 'Transitorio'} (si no: estado estacionario)</Typography>} />
+      {props.transient && (
+        <>
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            <NumField label="Tiempo final" k="t_end" props={props} setProp={setProp} />
+            <Select size="small" value={props.time_unit || 's'} onChange={(e) => setProp('time_unit', e.target.value)}
+              sx={{ color: '#fff', minWidth: 64 }} inputProps={{ 'aria-label': 'unidad de tiempo' }}>
+              {['s', 'min', 'h'].map((u) => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+            </Select>
+          </Box>
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            <NumField label="Pasos" k="time_steps" props={props} setProp={setProp} helper="Vacío = 50" />
+            <NumField label="Salidas" k="n_output" props={props} setProp={setProp} helper="Instantes guardados" />
+          </Box>
+          <Select size="small" fullWidth value={props.scheme || 'bdf2'} onChange={(e) => setProp('scheme', e.target.value)}
+            sx={{ color: '#fff' }} inputProps={{ 'aria-label': 'Esquema temporal' }}>
+            <MenuItem value="bdf2">BDF2 (2.º orden, recomendado)</MenuItem>
+            <MenuItem value="be">Euler implícito (1.er orden, amortigua)</MenuItem>
+          </Select>
+          {rans && (
+            <Select size="small" fullWidth value={props.urans_initial || 'rest'}
+              onChange={(e) => setProp('urans_initial', e.target.value)}
+              sx={{ color: '#fff' }} inputProps={{ 'aria-label': 'Estado inicial URANS' }}>
+              <MenuItem value="rest">Arranque desde el reposo</MenuItem>
+              <MenuItem value="steady">Desde el cálculo estacionario (si no converge del todo)</MenuItem>
+            </Select>
+          )}
+          {rans && (
+            <Box sx={{ display: 'flex', gap: 0.5 }}>
+              <NumField label="Sub-iteraciones" k="inner_iterations" props={props} setProp={setProp}
+                helper="Por paso; vacío = 8" />
+              <NumField label="Tol. estacionario" k="steady_tol" props={props} setProp={setProp}
+                helper="Para al alcanzar el estado estacionario (p. ej. 1e-5)" />
+            </Box>
+          )}
+          {rans && (
+            <NumField label="Promediar desde" k="average_from" props={props} setProp={setProp}
+              helper="Campos medios en el tiempo a partir de este instante (flujo que no se estabiliza)" />
+          )}
+          <Typography variant="caption" sx={{ color: '#777' }}>
+            {rans ? 'Paso de tiempo global; con «Tol. estacionario» la marcha en el tiempo para al estabilizarse '
+              + '(útil cuando el cálculo estacionario no converge, p. ej. tras un escalón).'
+              : 'El resultado guarda la velocidad y la presión en las salidas, las fuerzas sobre las paredes en el '
+              + 'tiempo y las curvas de los puntos de control. Courant |v|Δt/h ≲ 1 para seguir bien los vórtices.'}
+          </Typography>
+          <ProbeList props={props} setProp={setProp} title="Puntos de control (velocidad y presión en el tiempo)" />
+        </>
+      )}
+    </Box>
+  );
+}
+
 export const FLUID_PRESETS = [
   ['Agua 20 °C', { mu: 1.002e-3, rho: 998 }],
   ['Glicerina 20 °C', { mu: 1.41, rho: 1261 }],
@@ -60,7 +131,8 @@ export default function FluidFields({ props, setProp }) {
     <Box data-testid="fluid-fields" sx={{ display: 'flex', flexDirection: 'column', gap: 1,
       border: '1px solid #1a3b5a', borderRadius: 1, p: 1 }}>
       <Typography variant="caption" sx={{ color: '#90caf9' }}>
-        Fluido newtoniano estacionario · requiere malla T10
+        Fluido newtoniano{props.transient && props.flow_model !== 'stokes' ? ' transitorio' : ' estacionario'} · requiere
+        malla T10
       </Typography>
       <ToggleButtonGroup size="small" exclusive value={props.flow_model || 'stokes'} aria-label="Modelo de flujo"
         onChange={(_, v) => { if (v) setProp('flow_model', v); }}>
@@ -88,6 +160,14 @@ export default function FluidFields({ props, setProp }) {
         </>
       )}
       {props.flow_model === 'rans_k_epsilon' && <TurbulenceFields props={props} setProp={setProp} />}
+      {['navier_stokes', 'rans_k_epsilon'].includes(props.flow_model) && (
+        <FluidTransientFields props={props} setProp={setProp} />
+      )}
+      {props.transient && props.flow_model === 'navier_stokes' && props.stabilization === 'supg' && (
+        <Typography variant="caption" sx={{ color: '#ef9a9a' }}>
+          SUPG no está disponible en transitorio laminar: desactívela.
+        </Typography>
+      )}
       {['navier_stokes', 'rans_k_epsilon'].includes(props.flow_model) && !(props.rho > 0) && (
         <Typography variant="caption" sx={{ color: '#ef9a9a' }}>Navier-Stokes necesita la densidad ρ &gt; 0.</Typography>
       )}

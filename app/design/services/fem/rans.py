@@ -195,7 +195,7 @@ def viscous(mesh, mu: float, rho: float, nut: np.ndarray) -> sp.csr_matrix:
     return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(3 * n, 3 * n))
 
 
-def supg_picard(mesh, a: np.ndarray, mu: float, rho: float, nut: np.ndarray, body=None):
+def supg_picard(mesh, a: np.ndarray, mu: float, rho: float, nut: np.ndarray, body=None, time=None):
     """Residual-based SUPG of the momentum equation, Oseen-linearised (advecting velocity a and τ frozen):
 
         Σ_e ∫ τ (a·∇w) · [ρ(a·∇)v + ∇p − μ_eff Δv − (∇v + ∇vᵀ)∇μ_eff − f] dV,
@@ -204,7 +204,8 @@ def supg_picard(mesh, a: np.ndarray, mu: float, rho: float, nut: np.ndarray, bod
     (h̃ = h/2 for P2; Δv from the straight corner geometry; ∇μ_eff from the P2 interpolation of the nodal ν_t —
     without that term the residual of a fully developed turbulent channel is not zero and SUPG drives a spurious
     secondary flow, −2 % wall shear). Returns
-    (Jvv 3N×3N, Jvp 3N×Np, rhs 3N) to add to the momentum rows: Jvv v + Jvp p = rhs."""
+    (Jvv 3N×3N, Jvp 3N×Np, rhs 3N) to add to the momentum rows: Jvv v + Jvp p = rhs.
+    ``time`` = (a0, Δt, v_hist (N,3)): transient residual + ρ(a0 v − v_hist)/Δt (BDF), τ gets the (2a0/Δt)² term."""
     n = mesh.n_nodes
     corners, pidx = st.pressure_index(mesh)
     Ns, geo = st._geometry(mesh)
@@ -227,6 +228,11 @@ def supg_picard(mesh, a: np.ndarray, mu: float, rho: float, nut: np.ndarray, bod
         ht = 0.5 * h
         ae = a[el]
         nue = nut[el]
+        if time is not None:
+            t_a0, t_dt, hve = time[0], time[1], time[2][el]
+            st2 = (2.0 * t_a0 / t_dt) ** 2
+        else:
+            st2 = 0.0
         Jv = np.zeros((m, 10, 3, 10, 3))
         Jp = np.zeros((m, 10, 3, 4))
         Fe = np.zeros((m, 10, 3))
@@ -236,10 +242,13 @@ def supg_picard(mesh, a: np.ndarray, mu: float, rho: float, nut: np.ndarray, bod
             adv = np.einsum('md,mdj->mj', aq, dN)                               # a·∇N_j
             mu_q = mu + rho * (nue @ W[q])
             tau = 1.0 / (rho * np.sqrt((2 * np.linalg.norm(aq, axis=1) / ht) ** 2
-                                       + (12.0 * mu_q / (rho * ht ** 2)) ** 2))
+                                       + (12.0 * mu_q / (rho * ht ** 2)) ** 2 + st2))
             wt = w * tau
             gnu = rho * np.einsum('mdn,mn->md', dN, nue)                       # ∇μ_t at the point
             base = rho * adv - mu_q[:, None] * lap - np.einsum('mdj,md->mj', dN, gnu)
+            if time is not None:
+                base = base + (rho * t_a0 / t_dt) * N[None, :]
+                Fe += (wt * rho / t_dt)[:, None, None] * adv[:, :, None] * np.einsum('n,mnc->mc', N, hve)[:, None, :]
             Jv += ((wt[:, None, None] * adv[:, :, None] * base[:, None, :])[:, :, None, :, None]
                    * eye[None, None, :, None, :])
             Jv -= (wt[:, None, None, None, None] * adv[:, :, None, None, None]
@@ -413,9 +422,22 @@ def default_wall_distance(mesh, tris) -> float:
 
 # ── Solver ───────────────────────────────────────────────────────────────────
 
-def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *, body=None, progress=None):
+def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *, body=None, progress=None,
+               time: dict | None = None, probes: list | None = None):
     """Steady RANS k-ε. ``mat`` = stokes.FluidMaterial (μ, ρ). Returns (v, p*, info) with info['turbulence']
-    {k, eps, nut (nodal), wall (per wall node), history, ...}."""
+    {k, eps, nut (nodal), wall (per wall node), history, ...}.
+
+    ``time`` {t_end, n_steps | dt, scheme bdf2 | be, n_output, inner_iterations 8, inner_tol 1e-4, steady_tol,
+    initial rest | steady, average_from}:
+    unsteady RANS instead of the pseudo-time iteration. Global Δt, BDF2 (BE first step) on the momentum (consistent
+    mass, SUPG residual with the time term) and on k, ε (lumped mass); per step, segregated Picard sweeps (momentum →
+    k, ε → ν_t) until the change is below ``inner_tol``. With ``steady_tol`` the march stops once the change per step
+    |Δv|/|v| falls below it (time marching to a steady state). ``initial`` rest (default: impulsive start, v = 0,
+    k and ε of the inlet) or steady (the pseudo-time iteration first, then the march: removes a limit cycle of the
+    steady iteration). With ``average_from`` [s] the fields are also averaged over the steps after that time
+    (URANS of a flow without a steady state: the time-mean is the result). info['transient'] = {snapshots
+    [(t, v, p*, k, ε)], mean {v, p, k, eps, t0, t1, n_steps} | None,
+    steps, times, curves (probes), …}."""
     from app.design.services.fem.assembler import dirichlet
     if mesh.element_type != 'T10':
         raise ValueError('Turbulencia: hace falta malla cuadrática T10 (Taylor-Hood P2-P1).')
@@ -594,7 +616,7 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         vv = (gam[:, None, None] * pen_P).ravel()
         return sp.csr_matrix((vv, (rr, cc)), shape=(n3, n3))
 
-    def momentum_operator(v, nut_, kk):
+    def momentum_operator(v, nut_, kk, tm=None):
         """(Kv, P, g): momentum rows Kv v + (Bᵀ + P) p = F + g, linearised at v (SUPG when v is given)."""
         if v is None:
             A = viscous(mesh, mu, rho, nut_) + friction(v, kk)
@@ -606,13 +628,17 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         A = viscous(mesh, mu, rho, nut_) + Ft
         A = A + penalty(A)
         C, _ = st.convection(mesh, v, newton=False)                 # Picard (Newton on C diverges far from the
-        Jvv, Jvp, g = supg_picard(mesh, v, mu, rho, nut_, bvec)     # solution, behind a step)
+        Jvv, Jvp, g = supg_picard(mesh, v, mu, rho, nut_, bvec, tm)  # solution, behind a step)
         return A + rho * C + Jvv, Jvp, g + (Ft - Fs) @ v.ravel()
 
-    def solve_momentum(op, nut_, v_old=None, dt3=None):
-        """Saddle solve with the momentum operator; with v_old/dt3 the local pseudo-time term ρ M_d/Δτ is added."""
+    def solve_momentum(op, nut_, v_old=None, dt3=None, tm=None):
+        """Saddle solve with the momentum operator; with v_old/dt3 the local pseudo-time term ρ M_d/Δτ is added,
+        with ``tm`` = (a0, Δt, v_hist) the BDF time term ρ M (a0 v − v_hist)/Δt (consistent mass)."""
         Kv, P, g = op
         f_v = F + g
+        if tm is not None:
+            Kv = Kv + (rho * tm[0] / tm[1]) * Mc
+            f_v = f_v + (rho / tm[1]) * (Mc @ tm[2].ravel())
         if dt3 is not None:
             m_t = rho * md3 / dt3
             Kv = Kv + sp.diags(m_t)
@@ -636,7 +662,8 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         return float(np.linalg.norm(r[fr])) / ref
 
     # positive diagonal mass for the pseudo-time terms (diagonal of the consistent P2 mass, rescaled to the volume)
-    Md = mass(mesh).diagonal()
+    Mc = mass(mesh)
+    Md = Mc.diagonal()
     md3 = Md * (3 * iso.V.sum() / Md.sum())
     h_node = np.full(n, np.inf)
     np.minimum.at(h_node, iso.sub.ravel(), np.repeat(iso.h, 4))
@@ -646,11 +673,12 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         return cfl * h_node / (np.linalg.norm(v, axis=1) + (nu + nut_) / h_node)
 
     # ── turbulence step ──
-    def scalar_solve(phi_old, conv_loc, diff_e, gamma, src, dtau, dir_idx, dir_val, tau_vg):
-        """(ml/dτ + C + K_D + SUPG + diag(ml γ)) φ = ml φ_old/dτ + src, Dirichlet by elimination."""
+    def scalar_solve(phi_old, conv_loc, diff_e, gamma, src, dtau, dir_idx, dir_val, tau_vg, a0=1.0, phi_hist=None):
+        """(a0 ml/dτ + C + K_D + SUPG + diag(ml γ)) φ = ml φ_hist/dτ + src (φ_hist = φ_old: pseudo-time / BE),
+        Dirichlet by elimination."""
         Kloc = conv_loc + diff_e[:, None, None] * iso.Kloc + tau_vg
-        Kmat = iso.mat(Kloc) + sp.diags(iso.ml * (1.0 / dtau + gamma))       # dtau: per node
-        rhs = iso.ml * phi_old / dtau + src
+        Kmat = iso.mat(Kloc) + sp.diags(iso.ml * (a0 / dtau + gamma))       # dtau: per node
+        rhs = iso.ml * (phi_old if phi_hist is None else phi_hist) / dtau + src
         phi = phi_old.copy()
         phi[dir_idx] = dir_val
         mk = np.ones(n, bool)
@@ -670,7 +698,7 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         T = np.minimum(k / eps, DURBIN_ALPHA / (math.sqrt(6.0) * CMU * np.sqrt(np.maximum(G2n, 1e-300))))
         return CMU * k * T
 
-    def turbulence(v, k, eps, nut, dtau):
+    def turbulence(v, k, eps, nut, dtau, a0=1.0, hist=None):
         ve = v[iso.sub]                                          # (s,4,3)
         vbar = ve.mean(axis=1)
         G = iso.grad_v(v)
@@ -693,19 +721,106 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         vm = np.linalg.norm(vbar, axis=1)
         h = np.where(np.abs(vg).sum(axis=1) > 0, 2.0 * vm / np.maximum(np.abs(vg).sum(axis=1), 1e-300), iso.h)
         out = []
-        for phi, sig, gam, src, dir_idx, dir_val in (
+        for j, (phi, sig, gam, src, dir_idx, dir_val) in enumerate((
                 (k, SIG_K, eps / k, Pk, k_dir, k_val),
-                (eps, SIG_E, C2 * eps / k, Pe, None, None)):
+                (eps, SIG_E, C2 * eps / k, Pe, None, None))):
             D = nu + nut_e / sig
             g_e = iso.mean(gam)
-            tau = 1.0 / np.sqrt((2 * vm / h) ** 2 + 9 * (4 * D / h ** 2) ** 2 + g_e ** 2 + iso.mean(1.0 / dtau) ** 2)
+            tau = 1.0 / np.sqrt((2 * vm / h) ** 2 + 9 * (4 * D / h ** 2) ** 2 + g_e ** 2 + iso.mean(a0 / dtau) ** 2)
             tvg = (tau * iso.V)[:, None, None] * vg[:, :, None] * vg[:, None, :]
             if dir_idx is None:                                  # ε: inlet + wall values
                 dir_idx = np.concatenate([in_n, wall_only])
                 dir_val = np.concatenate([in_e, e_wall])
-            res = scalar_solve(phi, conv, D, gam, src, dtau, dir_idx, dir_val, tvg)
+            res = scalar_solve(phi, conv, D, gam, src, dtau, dir_idx, dir_val, tvg, a0,
+                               None if hist is None else hist[j])
             out.append(np.maximum(res, k_floor if sig == SIG_K else e_floor))
         return out[0], out[1]
+
+    def march(v, ph, k, eps, nut):
+        """Unsteady RANS: BDF2 in time with Picard sweeps per step."""
+        from app.design.services.fem.ns_transient import TimeSettings, output_steps
+        from app.design.services.fem.transport import interpolate, locate
+        tset = TimeSettings(time)
+        inner = int(time.get('inner_iterations') or 8)
+        itol = float(time.get('inner_tol') or 1e-4)
+        steady_tol = float(time.get('steady_tol') or 0.0)
+        t_avg = time.get('average_from')
+        t_avg = None if t_avg in (None, '') else float(t_avg)
+        acc = None                                               # time average (rectangle rule per step)
+        dt = tset.dt
+        dtn = np.full(n, dt)
+        locs = locate(mesh, [p_['point'] for p_ in probes]) if probes else []
+        outs = output_steps(tset.n_steps, tset.n_output)
+
+        def pnodal(ph_):
+            pn = np.zeros(n)
+            pn[corners] = ph_
+            for e_, (i, j) in enumerate(tb.T10_EDGES):
+                pn[mesh.elements[:, 4 + e_]] = 0.5 * (ph_[pidx[mesh.elements[:, i]]] + ph_[pidx[mesh.elements[:, j]]])
+            return pn
+
+        snaps = [(0.0, v.copy(), pnodal(ph), k.copy(), eps.copy())]
+        curves = []
+        v_prev, k_prev, e_prev = v, k, eps
+        all_inner, step, t = True, 0, 0.0
+        steps = []
+        for step in range(1, tset.n_steps + 1):
+            t = step * dt
+            v_n, k_n, e_n = v, k, eps
+            if tset.scheme == 'bdf2' and step > 1:
+                a0, hv, hk, he = 1.5, 2 * v_n - 0.5 * v_prev, 2 * k_n - 0.5 * k_prev, 2 * e_n - 0.5 * e_prev
+                v = 2 * v_n - v_prev                                     # extrapolated start of the sweeps
+            else:
+                a0, hv, hk, he = 1.0, v_n, k_n, e_n
+            tm = (a0, dt, hv)
+            ch = np.inf
+            for sw in range(1, inner + 1):
+                v_new, ph = solve_momentum(momentum_operator(v, nut, k, tm), nut, tm=tm)
+                k_new, e_new = turbulence(v_new, k, eps, nut, dtn, a0, (hk, he))
+                ch = max(float(np.abs(v_new - v).max() / max(np.abs(v_new).max(), 1e-300)),
+                         float(np.abs(k_new - k).max() / max(k_new.max(), 1e-300)),
+                         float(np.abs(e_new - eps).max() / max(e_new.max(), 1e-300)))
+                v, k, eps = v_new, k_new, e_new
+                nut = eddy_viscosity(v, k, eps)
+                if not np.isfinite(ch):
+                    raise ValueError(f'RANS transitorio diverge en t = {t:.4g} s: reduzca el paso de tiempo Δt.')
+                if ch < itol:
+                    break
+            all_inner &= bool(ch < itol)
+            v_prev, k_prev, e_prev = v_n, k_n, e_n
+            dvs = float(np.abs(v - v_n).max() / max(np.abs(v).max(), 1e-300))
+            dks = float(np.abs(k - k_n).max() / max(k.max(), 1e-300))
+            steps.append({'step': step, 't': t, 'sweeps': sw, 'inner_change': ch, 'dv': dvs, 'dk': dks,
+                          'dv_node': int(np.argmax(np.abs(v - v_n).max(axis=1)))})
+            if locs:
+                pn = pnodal(ph)
+                curves.append([t] + [[interpolate(mesh, v[:, c], lc) for c in range(3)]
+                                     + [interpolate(mesh, pn, lc), interpolate(mesh, k, lc)] for lc in locs])
+            if t_avg is not None and t > t_avg:
+                pn_ = pnodal(ph)
+                if acc is None:
+                    acc = {'v': np.zeros_like(v), 'p': np.zeros(n), 'k': np.zeros(n), 'eps': np.zeros(n), 'n': 0,
+                           't0': t - dt}
+                acc['v'] += v
+                acc['p'] += pn_
+                acc['k'] += k
+                acc['eps'] += eps
+                acc['n'] += 1
+            done = steady_tol > 0 and max(dvs, dks) < steady_tol
+            if step in outs or done:
+                snaps.append((t, v.copy(), pnodal(ph), k.copy(), eps.copy()))
+            if progress:
+                progress(step, f'URANS paso {step}/{tset.n_steps} t = {t:.4g} s: {sw} sub-it., Δv {dvs:.1e}')
+            if done:
+                break
+        mean = None
+        if acc is not None:
+            mean = {key: acc[key] / acc['n'] for key in ('v', 'p', 'k', 'eps')}
+            mean.update({'t0': acc['t0'], 't1': t, 'n_steps': acc['n']})
+        tr = {'time': tset.to_dict(), 'snapshots': snaps, 'steps': steps, 'inner_converged': all_inner, 'mean': mean,
+              'steps_done': step, 't_final': t, 'curves': curves, 'probe_locations': locs,
+              'steady_reached': bool(steady_tol > 0 and steps and max(steps[-1]['dv'], steps[-1]['dk']) < steady_tol)}
+        return v, ph, k, eps, nut, tr
 
     history = []
     v, ph = solve_momentum(momentum_operator(None, nut, k), nut)          # Stokes start with the initial ν_t
@@ -714,7 +829,10 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
     cfl0, cfl = turb.cfl, turb.cfl
     converged = False
     it = 0
-    for it in range(1, turb.max_iter + 1):
+    t_init = (time or {}).get('initial') or 'rest'
+    if time is not None and t_init not in ('rest', 'steady'):
+        raise ValueError(f'URANS: estado inicial «{t_init}» desconocido (rest, steady).')
+    for it in range(1, (turb.max_iter if time is None or t_init == 'steady' else 0) + 1):
         dt = local_dt(v, nut, cfl)
         v_old = v
         v, ph = solve_momentum(Kv, nut, v_old, np.repeat(dt, 3))
@@ -744,6 +862,19 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
         cfl = float(np.clip(cfl, cfl0, turb.cfl_max))
         rel_prev = rel
 
+    transient = None
+    if time is not None:
+        n_steady = it
+        if t_init == 'rest':                                     # impulsive start from rest (BCs switch on at 0⁺)
+            v, ph = np.zeros_like(v), np.zeros_like(ph)
+        v, ph, k, eps, nut, transient = march(v, ph, k, eps, nut)
+        transient['initial'] = t_init
+        transient['steady_iterations'] = n_steady
+        it = transient['steps_done']
+        Kv = momentum_operator(v, nut, k)
+        history.append({'it': it, 'residual': momentum_residual(Kv, v, ph), 'dv': transient['steps'][-1]['dv'],
+                        'dk': transient['steps'][-1]['dk'], 'deps': 0.0, 'cfl': 0.0})
+        converged = transient['inner_converged']
     nut = eddy_viscosity(v, k, eps)
     beta, ut, us, _, _ = wall_state(v, k)
     vw = v[wnodes]
@@ -775,5 +906,5 @@ def solve_rans(mesh, mat, F: np.ndarray, bcs: list, turb: TurbulenceSettings, *,
                      'tau_w': tau_w},
             'wall_tris': wtris, 'inlet': {'k': float(in_k.max()) if len(in_k) else None,
                                           'eps': float(in_e.max()) if len(in_e) else None},
-            'U_ref': U_ref, 'wall_force': fw,
+            'U_ref': U_ref, 'wall_force': fw, 'transient': transient,
         }}
