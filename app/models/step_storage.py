@@ -41,7 +41,9 @@ class STEPFileHeader(BaseModel):
     legacy_file_id = db.Column(UUID(as_uuid=True), db.ForeignKey('step_view_files.id', ondelete='SET NULL'), nullable=True)
 
     entities = db.relationship('STEPEntity', backref='header', lazy='dynamic', cascade='all, delete-orphan')
-    part = db.relationship('Part', backref='step_header', uselist=False)
+    # passive_deletes: deleting a Part lets the DB cascade (part_id ON DELETE CASCADE) remove its headers;
+    # without it the ORM tried to set part_id = NULL (NOT NULL) and every STEP delete failed
+    part = db.relationship('Part', backref=db.backref('step_header', passive_deletes=True), uselist=False)
 
     __table_args__ = (
         db.Index('idx_step_headers_part', 'part_id'),

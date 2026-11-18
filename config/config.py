@@ -11,14 +11,22 @@ if _local.exists():
 BASE_DIR = Path(__file__).parent.parent
 
 
+def _pg_url(url: str) -> str:
+    """Pin the psycopg2 driver: SQLAlchemy >= 2.1 maps bare postgresql:// to psycopg 3."""
+    for prefix in ('postgresql://', 'postgres://'):
+        if url.startswith(prefix):
+            return 'postgresql+psycopg2://' + url[len(prefix):]
+    return url
+
+
 class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'cae-viewer-dev-key')
     APPLICATION_ROOT = os.getenv('APPLICATION_ROOT', '/')
 
-    SQLALCHEMY_DATABASE_URI = os.getenv(
+    SQLALCHEMY_DATABASE_URI = _pg_url(os.getenv(
         'DATABASE_URL',
         'postgresql://postgres:postgres@localhost:5432/caedb'
-    )
+    ))
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
 
@@ -57,9 +65,16 @@ class Config:
     ADAPTIVE_ERROR_TOLERANCE   = float(os.getenv('ADAPTIVE_ERROR_TOLERANCE', 0.05))
     ADAPTIVE_MAX_CYCLES        = int(os.getenv('ADAPTIVE_MAX_CYCLES', 5))
 
+    # Engineering Hub — Fase 0
+    AUTH_REQUIRED          = os.getenv('AUTH_REQUIRED', 'false').lower() in ('1', 'true', 'yes')
+    JOBS_LISTENER_ENABLED  = os.getenv('JOBS_LISTENER_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+    JOBS_DATA_DIR          = BASE_DIR / 'data' / 'jobs'
+    SESSION_COOKIE_SAMESITE = 'Lax'
+    SESSION_COOKIE_HTTPONLY = True
+
     @classmethod
     def init_app(cls, app):
-        for d in [cls.UPLOAD_FOLDER, cls.DATA_DIR, cls.LOGS_DIR,
+        for d in [cls.JOBS_DATA_DIR, cls.UPLOAD_FOLDER, cls.DATA_DIR, cls.LOGS_DIR,
                   cls.DESIGN_DATA_DIR, cls.SOLVER_DATA_DIR, cls.ROM_DATA_DIR]:
             d.mkdir(parents=True, exist_ok=True)
 
@@ -92,10 +107,10 @@ class ProductionConfig(Config):
 class TestingConfig(Config):
     TESTING = True
     DEBUG = True
-    SQLALCHEMY_DATABASE_URI = os.getenv(
+    SQLALCHEMY_DATABASE_URI = _pg_url(os.getenv(
         'TEST_DATABASE_URL',
         'postgresql://postgres:postgres@localhost:5432/caedb_test'
-    )
+    ))
 
 
 config = {

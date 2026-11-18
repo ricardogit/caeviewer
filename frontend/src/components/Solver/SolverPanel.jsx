@@ -2,7 +2,7 @@
  * SolverPanel — FEM solver configuration and launcher.
  * FASE 2: structural linear elastic + cantilever validation.
  */
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
 import {
   Box, Typography, TextField, Select, MenuItem, FormControl,
   InputLabel, Button, Chip, Divider, CircularProgress, Alert,
@@ -10,14 +10,19 @@ import {
   Accordion, AccordionSummary, AccordionDetails, IconButton,
 } from '@mui/material';
 import {
-  PlayArrow, Stop, ExpandMore, Science, CheckCircle,
-  Warning, Close, Refresh,
+  PlayArrow, Stop, ExpandMore, Science,
+  Warning, Close, Refresh, History, ViewInAr,
 } from '@mui/icons-material';
 
-import useDesignStore from '../../stores/designStore';
-import useSolverStore from '../../stores/solverStore';
+import useDesignStore, { useStudy } from '../../stores/designStore';
 import ConvergenceMonitor from './ConvergenceMonitor';
 import AdaptiveMonitor from './AdaptiveMonitor';
+import SimHistory from './SimHistory';
+import TopologyPanel from './TopologyPanel';
+import ROMPanel from './ROMPanel';
+import UncertaintyPanel from './UncertaintyPanel';
+import ValidationPanel from '../Validation/ValidationPanel';
+import useResultsStore from '../../stores/resultsStore';
 
 const STATUS_COLOR = {
   idle: 'default', queued: 'info', running: 'warning',
@@ -29,17 +34,33 @@ const STATUS_LABEL = {
 };
 
 export default function SolverPanel({ onClose }) {
-  const { activeGraphId } = useDesignStore();
+  const { activeGraphId } = useStudy('activeGraphId');
   const {
     runStatus, activePhysics, tier, tolerance,
     currentIter, currentResidual, percentComplete, currentStatus,
-    convergenceLog, resultSummary, error, adaptiveLog,
+    convergenceLog, resultSummary, runError: error, adaptiveLog,
     cantileverParams, cantileverResult, cantileverLoading,
-    setActivePhysics, setTier, setCantileverParam, setAdaptiveLog,
-    startRun, cancelRun, runCantileverTest, resetRun, clearError,
-  } = useSolverStore();
+    setActivePhysics, setTier, setCantileverParam,
+    adaptiveSettings, setAdaptiveSetting, startAdaptiveRun,
+    startRun, cancelRun, runCantileverTest, resetRun, clearRunError: clearError,
+  } = useStudy(
+    'runStatus', 'activePhysics', 'tier', 'tolerance', 'currentIter', 'currentResidual', 'percentComplete',
+    'currentStatus', 'convergenceLog', 'resultSummary', 'runError', 'adaptiveLog', 'cantileverParams',
+    'cantileverResult', 'cantileverLoading', 'setActivePhysics', 'setTier', 'setCantileverParam',
+    'adaptiveSettings', 'setAdaptiveSetting', 'startAdaptiveRun', 'startRun', 'cancelRun', 'runCantileverTest',
+    'resetRun', 'clearRunError'
+  );
 
-  const [mode, setMode] = useState('graph');   // 'graph' | 'cantilever'
+  // section and history dialog live in the workspace store (FASE 9) so TopBar actions can drive them
+  const mode = useDesignStore((st) => st.solverMode);
+  const setMode = useDesignStore((st) => st.setSolverMode);
+  const historyOpen = useDesignStore((st) => st.historyOpen);
+  const setHistoryOpen = useDesignStore((st) => st.setHistoryOpen);
+  const activeRunId = useDesignStore((st) => st.activeRunId);
+  const loadPreflight = useDesignStore((st) => st.loadPreflight);
+  useEffect(() => {
+    if (runStatus === 'done' && activeGraphId) loadPreflight(activeGraphId);
+  }, [runStatus, activeGraphId, loadPreflight]);
 
   const isRunning = runStatus === 'running' || runStatus === 'queued';
 
@@ -71,6 +92,14 @@ export default function SolverPanel({ onClose }) {
           color={STATUS_COLOR[runStatus] || 'default'}
           sx={{ mr: 1, height: 20, fontSize: 10 }}
         />
+        <Tooltip title={activeGraphId ? 'Historial de simulaciones' : 'Selecciona un grafo'}>
+          <span>
+            <IconButton size="small" onClick={() => setHistoryOpen(true)} disabled={!activeGraphId}
+              sx={{ color: '#90caf9', mr: 0.5 }}>
+              <History fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
         {onClose && (
           <IconButton size="small" onClick={onClose} sx={{ color: '#888' }}>
             <Close fontSize="small" />
@@ -91,14 +120,32 @@ export default function SolverPanel({ onClose }) {
         <ToggleButtonGroup
           value={mode} exclusive onChange={(_, v) => v && setMode(v)}
           size="small" fullWidth
+          sx={{ '& .MuiToggleButton-root': { px: 0.5, fontSize: '10.5px !important', textTransform: 'none' } }}
         >
           <ToggleButton value="graph" sx={{ fontSize: 11 }}>
-            Desde grafo
+            Grafo
           </ToggleButton>
           <ToggleButton value="cantilever" sx={{ fontSize: 11 }}>
-            Viga voladizo
+            Viga
+          </ToggleButton>
+          <ToggleButton value="topology" sx={{ fontSize: 11 }}>
+            Topología
+          </ToggleButton>
+          <ToggleButton value="rom" sx={{ fontSize: 11 }}>
+            ROM
+          </ToggleButton>
+          <ToggleButton value="uncertainty" sx={{ fontSize: 11 }}>
+            Incertidumbre
+          </ToggleButton>
+          <ToggleButton value="validation" sx={{ fontSize: 11 }}>
+            Validación
           </ToggleButton>
         </ToggleButtonGroup>
+
+        {mode === 'topology' && <TopologyPanel graphId={activeGraphId} />}
+        {mode === 'rom' && <ROMPanel graphId={activeGraphId} />}
+        {mode === 'uncertainty' && <UncertaintyPanel graphId={activeGraphId} />}
+        {mode === 'validation' && <ValidationPanel graphId={activeGraphId} />}
 
         {/* ── Graph mode ───────────────────────────────────────────────── */}
         {mode === 'graph' && (
@@ -160,40 +207,36 @@ export default function SolverPanel({ onClose }) {
               >
                 {isRunning ? 'Cancelar' : 'Simular'}
               </Button>
-              <Tooltip title="FASE 3: Refinamiento adaptativo automático">
+              <Tooltip title="FASE 3: resolver, estimar el error (ZZ/SPR) y refinar donde hace falta hasta el error objetivo">
                 <Button
                   variant="outlined" fullWidth
                   startIcon={<Warning sx={{ fontSize: 16 }} />}
-                  onClick={async () => {
-                    if (!activeGraphId) return;
-                    try {
-                      const resp = await fetch(`/api/design/solver/${activeGraphId}/run-adaptive/`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          physics: ['structural'],
-                          max_cycles: 5,
-                          target_error: 0.05,
-                          refinement_fraction: 0.2,
-                        }),
-                      });
-                      const data = await resp.json();
-                      if (resp.ok && data.adaptive_log) {
-                        setAdaptiveLog(data.adaptive_log);
-                        alert(`✓ Adaptativo completado: ${data.adaptive_log.length} ciclos`);
-                      } else {
-                        alert(`Error: ${data.error || 'Error desconocido'}`);
-                      }
-                    } catch (e) {
-                      alert(`Error: ${e.message}`);
-                    }
-                  }}
-                  disabled={!activeGraphId || isRunning}
+                  onClick={() => activeGraphId && startAdaptiveRun(activeGraphId)}
+                  disabled={!activeGraphId || isRunning || runStatus === 'queued'}
                   sx={{ fontWeight: 700, flex: 1, color: '#ff9800', borderColor: '#ff9800', fontSize: 11 }}
                 >
                   h-Refinar
                 </Button>
               </Tooltip>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#888', fontSize: 10, flexShrink: 0 }}>
+                Adaptativo:
+              </Typography>
+              <TextField
+                label="Error objetivo %" type="number" size="small"
+                value={+(adaptiveSettings.target_error * 100).toFixed(2)}
+                onChange={e => setAdaptiveSetting('target_error', Math.max(0.1, Number(e.target.value) || 5) / 100)}
+                inputProps={{ min: 0.1, max: 50, step: 0.5, style: { color: '#fff', fontSize: 11 } }}
+                InputLabelProps={{ style: { color: '#888', fontSize: 11 } }}
+              />
+              <TextField
+                label="Ciclos máx." type="number" size="small"
+                value={adaptiveSettings.max_cycles}
+                onChange={e => setAdaptiveSetting('max_cycles', Math.min(12, Math.max(1, parseInt(e.target.value, 10) || 5)))}
+                inputProps={{ min: 1, max: 12, style: { color: '#fff', fontSize: 11 } }}
+                InputLabelProps={{ style: { color: '#888', fontSize: 11 } }}
+              />
             </Box>
           </>
         )}
@@ -202,7 +245,8 @@ export default function SolverPanel({ onClose }) {
         {mode === 'cantilever' && (
           <>
             <Typography variant="caption" sx={{ color: '#888' }}>
-              Viga voladizo (validación FASE 2) — compara con solución analítica Euler-Bernoulli
+              Viga en voladizo (hito FASE 2): flecha media de la cara de punta contra Timoshenko.
+              Usa L/h ≥ 10; en vigas cortas el empotramiento 3D rigidiza ~1-2 %.
             </Typography>
 
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1 }}>
@@ -222,6 +266,15 @@ export default function SolverPanel({ onClose }) {
                 />
               ))}
             </Box>
+
+            <ToggleButtonGroup
+              size="small" exclusive fullWidth
+              value={cantileverParams.order ?? 2}
+              onChange={(_, v) => v && setCantileverParam('order', v)}
+            >
+              <ToggleButton value={1} sx={{ fontSize: 11 }}>T4 lineal</ToggleButton>
+              <ToggleButton value={2} sx={{ fontSize: 11 }}>T10 cuadrático</ToggleButton>
+            </ToggleButtonGroup>
 
             <Button
               variant="contained" fullWidth color="secondary"
@@ -260,7 +313,7 @@ export default function SolverPanel({ onClose }) {
             )}
 
             {runStatus === 'done' && resultSummary && (
-              <ResultSummary summary={resultSummary} />
+              <ResultSummary summary={resultSummary} runId={activeRunId} />
             )}
           </>
         )}
@@ -268,7 +321,7 @@ export default function SolverPanel({ onClose }) {
         {/* ── Adaptive results ─────────────────────────────────────────────── */}
         {adaptiveLog && adaptiveLog.length > 0 && (
           <>
-            <AdaptiveMonitor adaptiveLog={adaptiveLog} />
+            <AdaptiveMonitor adaptiveLog={adaptiveLog} target={adaptiveSettings.target_error} />
           </>
         )}
       </Box>
@@ -284,11 +337,19 @@ export default function SolverPanel({ onClose }) {
           </Button>
         </Box>
       )}
+
+      <SimHistory open={historyOpen} graphId={activeGraphId} onClose={() => setHistoryOpen(false)} />
     </Box>
   );
 }
 
-function ResultSummary({ summary }) {
+function ResultSummary({ summary, runId }) {
+  const setAppMode = useDesignStore((st) => st.setAppMode);
+  const openRun = useResultsStore((st) => st.open);
+  const showResults = () => {
+    openRun(runId);
+    setAppMode('results');
+  };
   const rows = [
     ['Despl. máx', `${summary.max_displacement_mm?.toFixed(4)} mm`],
     ['σ_vm máx', `${summary.max_von_mises_mpa?.toFixed(2)} MPa`],
@@ -308,13 +369,19 @@ function ResultSummary({ summary }) {
           <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', fontSize: 10 }}>{val}</Typography>
         </Box>
       ))}
+      {runId && (
+        <Button size="small" fullWidth variant="outlined" startIcon={<ViewInAr />} onClick={showResults}
+          sx={{ mt: 1, fontSize: 11, color: '#a5d6a7', borderColor: '#2e7d32' }}>
+          Ver resultados 3D
+        </Button>
+      )}
     </Box>
   );
 }
 
 function CantileverResult({ result }) {
   const { fem, analytical, validation } = result;
-  const pass = validation.pass_5pct;
+  const pass = validation.pass_1pct;
   const color = pass ? '#2e7d32' : '#c62828';
   const bgColor = pass ? '#0d1b0d' : '#1b0d0d';
   const chipColor = pass ? '#81c784' : '#ef9a9a';
@@ -323,7 +390,7 @@ function CantileverResult({ result }) {
     <Box sx={{ bgcolor: bgColor, border: `1px solid ${color}`, borderRadius: 1, p: 1 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
         <Typography variant="caption" sx={{ color: chipColor, fontWeight: 700 }}>
-          {pass ? '✓ Validación OK' : '⚠ Error > 5%'}
+          {pass ? '✓ Hito ±1 % cumplido' : '⚠ Error > 1 %'}
         </Typography>
         <Chip
           label={`Error: ${validation.relative_error_pct?.toFixed(2)}%`}
@@ -333,8 +400,10 @@ function CantileverResult({ result }) {
       </Box>
 
       {[
-        ['FEM tip deflexión', `${fem.tip_deflection_mm?.toFixed(4)} mm`],
-        ['Analítico (EB)', `${analytical.tip_deflection_mm?.toFixed(4)} mm`],
+        ['FEM flecha (' + (fem.element_type || '') + ')', `${fem.tip_deflection_mm?.toFixed(4)} mm`],
+        ['Timoshenko', `${analytical.timoshenko_tip_deflection_mm?.toFixed(4)} mm`],
+        ['Euler-Bernoulli', `${analytical.tip_deflection_mm?.toFixed(4)} mm (${validation.relative_error_eb_pct?.toFixed(2)} %)`],
+        ['L/h', analytical.slenderness],
         ['FEM σ_vm máx', `${fem.max_von_mises_mpa?.toFixed(2)} MPa`],
         ['Nodos / Elem.', `${fem.n_nodes?.toLocaleString()} / ${fem.n_elements?.toLocaleString()}`],
         ['Solver', fem.solver],

@@ -97,7 +97,10 @@ def mesh_from_step():
             gmsh_extra=gmsh_extra,
         )
     except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 503     # GMSH not installed
+        msg = str(exc)
+        if "every algorithm" in msg:                 # geometry problem, not a missing Gmsh
+            return jsonify({"error": msg}), 422
+        return jsonify({"error": msg}), 503          # GMSH not installed
     except Exception as exc:
         logger.exception(f"Meshing failed for {step_path}")
         return jsonify({"error": f"Meshing failed: {exc}"}), 500
@@ -105,7 +108,18 @@ def mesh_from_step():
     if result["node_count"] == 0:
         return jsonify({"error": "Meshing produced an empty mesh — check STEP geometry."}), 422
 
-    # Register as CAEMesh with source_step_id provenance
+    # Register as CAEMesh with source_step_id provenance. The FK points at step_view_files, but the STEP
+    # list hands out Part ids (files registered since the STEP graph was removed have no step_view_files
+    # row): only link when the row exists, the description keeps the origin anyway.
+    algorithm = result.get("algorithm_used", algorithm)
+    source_step_id = None
+    try:
+        from app.step_view_pro.models.step_graph import STEPFile
+        if STEPFile.query.filter_by(id=part_id).first() is not None:
+            source_step_id = part_id
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        logger.debug(f"STEPFile lookup failed: {exc}")
     mesh_record = CAEMesh(
         filename=out_filename,
         original_filename=f"{original_name} (malla {mesh_family}, r={refinement})",
@@ -119,7 +133,7 @@ def mesh_from_step():
             f"Generado desde STEP: {original_name} · "
             f"type={mesh_type} · refinement={refinement} · algorithm={algorithm}"
         ),
-        source_step_id=part_id,  # Store the origin STEP file ID for traceability
+        source_step_id=source_step_id,  # origin STEP file (only when it has a step_view_files row)
     )
     db.session.add(mesh_record)
     db.session.commit()

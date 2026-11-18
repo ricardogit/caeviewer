@@ -60,12 +60,14 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY app/         /app/app/
 COPY config/      /app/config/
 COPY run.py       /app/run.py
+COPY migrations/  /app/migrations/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 # Copy the built React SPA from stage 1
 COPY --from=frontend-builder /frontend/dist /app/frontend/dist
 
-RUN mkdir -p /app/data/uploads /app/data/processed /app/logs
+RUN mkdir -p /app/data/uploads /app/data/processed /app/data/solver /app/data/design \
+             /app/data/rom /app/data/jobs /app/logs
 
 RUN chmod +x /app/docker-entrypoint.sh
 
@@ -78,7 +80,8 @@ EXPOSE 8080
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["gunicorn", \
      "--bind", "0.0.0.0:8080", \
-     "--workers", "2", \
+     "--workers", "1", \
+     "--threads", "16", \
      "--timeout", "1200", \
-     "--worker-class", "sync", \
+     "--worker-class", "gthread", \
      "run:app"]

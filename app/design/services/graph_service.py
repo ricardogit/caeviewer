@@ -268,6 +268,54 @@ class DesignGraphService:
             errors.append({'severity': 'error', 'node_id': None,
                            'message': 'Faltan nodos LOAD o BC. Agrega al menos una carga o condición de frontera.'})
 
+        # Fase 1b: GEOMETRY nodes may point at a versioned CAD geometry
+        for gnode in domain['geometry_nodes']:
+            gid = (gnode.properties or {}).get('geometry_id')
+            if not gid:
+                continue
+            from app.extensions import db
+            from app.geometry.models import Geometry
+            try:
+                geo = db.session.get(Geometry, gid)
+            except Exception:
+                db.session.rollback()
+                geo = None
+            if geo is None:
+                errors.append({'severity': 'error', 'node_id': str(gnode.id),
+                               'message': f'La geometría {gid} no existe.'})
+            elif geo.status != 'ready':
+                errors.append({'severity': 'warning', 'node_id': str(gnode.id),
+                               'message': f'La geometría "{geo.name}" v{geo.version} aún no está lista ({geo.status}).'})
+
+        # FASE 2: BC/LOAD on CAD faces (persistent entity UUIDs)
+        study_geo = next(((g.properties or {}).get('geometry_id') for g in domain['geometry_nodes']
+                          if (g.properties or {}).get('geometry_id')), None)
+        for n in domain['bc_nodes'] + domain['load_nodes']:
+            ids = (n.properties or {}).get('entity_ids') or []
+            if not ids:
+                continue
+            if not study_geo:
+                errors.append({'severity': 'error', 'node_id': str(n.id),
+                               'message': f'"{n.label}" tiene caras seleccionadas pero ningún GEOMETRY '
+                                          'tiene geometría CAD asignada.'})
+                continue
+            try:
+                from app.geometry.resolve import resolve_faces
+                res = resolve_faces(study_geo, ids)
+            except Exception as e:
+                errors.append({'severity': 'error', 'node_id': str(n.id), 'message': str(e)})
+                continue
+            missing = sum(1 for r in res.values() if r['index'] is None)
+            carried = sum(1 for r in res.values() if r['status'] == 'carried')
+            if missing:
+                errors.append({'severity': 'error', 'node_id': str(n.id),
+                               'message': f'"{n.label}": {missing} de {len(ids)} caras no existen en la '
+                                          'versión actual de la geometría. Vuelve a seleccionarlas.'})
+            elif carried:
+                errors.append({'severity': 'warning', 'node_id': str(n.id),
+                               'message': f'"{n.label}": {carried} caras trasladadas desde otra versión '
+                                          'de la geometría (revísalas).'})
+
         if domain['material_nodes'] and domain['geometry_nodes']:
             if not connected(mat_ids, geom_ids):
                 errors.append({'severity': 'warning', 'node_id': None,
@@ -365,3 +413,184 @@ class DesignGraphService:
         if graph:
             graph.hash = self.compute_graph_hash(graph_id)
             db.session.commit()
+
+
+def graph_dependents(graph_id) -> dict:
+    """Rows that keep a study alive besides its nodes/edges (none of the FKs cascade)."""
+    from app.design.models.simulation import SimulationRun
+    from app.design.models.validation import ExperimentalRecord
+    return {'runs': SimulationRun.query.filter_by(graph_id=graph_id).count(),
+            'experiments': ExperimentalRecord.query.filter_by(graph_id=graph_id).count()}
+
+
+def delete_graph_cascade(graph_id) -> dict:
+    """Delete a study with its simulation history: runs (+ result files), field results,
+    correlations, experiments (+ files), physics configs. Library materials are kept (their
+    graph_id is cleared), jobs keep their log (simulation_run_id → NULL), later versions are
+    re-attached to this version's parent. Commits."""
+    import os
+    import shutil
+    from flask import current_app
+    from app.extensions import db
+    from app.design.models.graph import DesignGraph
+    from app.design.models.simulation import SimulationRun
+    from app.design.models.validation import ExperimentalRecord, SimExperimentCorrelation
+    from app.design.models.result import FieldResult
+    from app.design.models.physics import PhysicsConfig
+    from app.design.models.material import MaterialModel
+    from app.jobs.models import Job
+
+    g = db.session.get(DesignGraph, graph_id)
+    if g is None:
+        raise ValueError('Graph not found')
+    run_ids = [r.id for r in SimulationRun.query.with_entities(SimulationRun.id).filter_by(graph_id=g.id)]
+    exp_ids = [e.id for e in ExperimentalRecord.query.with_entities(ExperimentalRecord.id).filter_by(graph_id=g.id)]
+    if run_ids:
+        SimExperimentCorrelation.query.filter(SimExperimentCorrelation.run_id.in_(run_ids)).delete(synchronize_session=False)
+        FieldResult.query.filter(FieldResult.run_id.in_(run_ids)).delete(synchronize_session=False)
+        Job.query.filter(Job.simulation_run_id.in_(run_ids)).update({'simulation_run_id': None}, synchronize_session=False)
+        SimulationRun.query.filter(SimulationRun.parent_run_id.in_(run_ids)).update(
+            {'parent_run_id': None}, synchronize_session=False)
+    cond = SimExperimentCorrelation.graph_id == g.id
+    if exp_ids:
+        cond = cond | SimExperimentCorrelation.experiment_id.in_(exp_ids)
+    SimExperimentCorrelation.query.filter(cond).delete(synchronize_session=False)
+    ExperimentalRecord.query.filter(ExperimentalRecord.graph_id == g.id).delete(synchronize_session=False)
+    if run_ids:
+        SimulationRun.query.filter(SimulationRun.id.in_(run_ids)).delete(synchronize_session=False)
+    PhysicsConfig.query.filter_by(graph_id=g.id).delete(synchronize_session=False)
+    MaterialModel.query.filter_by(graph_id=g.id).update({'graph_id': None}, synchronize_session=False)
+    # later versions hang from this one's parent (the tree stays connected)
+    DesignGraph.query.filter_by(parent_id=g.id).update({'parent_id': g.parent_id}, synchronize_session=False)
+    db.session.flush()
+    db.session.expire_all()
+    db.session.delete(db.session.get(DesignGraph, graph_id))
+    db.session.commit()
+
+    solver_dir = str(current_app.config.get('SOLVER_DATA_DIR', 'data/solver'))
+    data_dir = str(current_app.config.get('DATA_DIR', 'data'))
+    for rid in run_ids:
+        try:
+            os.remove(os.path.join(solver_dir, f'{rid}.h5'))
+        except OSError:
+            pass
+        for sub in ('topology', 'rom', 'uncertainty'):
+            shutil.rmtree(os.path.join(solver_dir, sub, str(rid)), ignore_errors=True)
+    for eid in exp_ids:
+        shutil.rmtree(os.path.join(data_dir, 'experiments', str(eid)), ignore_errors=True)
+    return {'runs': len(run_ids), 'experiments': len(exp_ids)}
+
+
+# ── Versions (FASE 9: project tree v1 → v2 → v3) ─────────────────────────────
+
+def lineage(graph_id) -> list:
+    """All graphs of the version tree that contains ``graph_id`` (root first, then by version)."""
+    from app.design.models.graph import DesignGraph
+    g = DesignGraph.query.filter_by(id=graph_id).first()
+    if g is None:
+        return []
+    seen = set()
+    root = g
+    while root.parent_id and root.parent_id not in seen:
+        seen.add(root.id)
+        parent = DesignGraph.query.filter_by(id=root.parent_id).first()
+        if parent is None:
+            break
+        root = parent
+    out, frontier = [root], [root.id]
+    while frontier:
+        kids = DesignGraph.query.filter(DesignGraph.parent_id.in_(frontier)).all()
+        kids = [k for k in kids if k.id not in {x.id for x in out}]
+        out += kids
+        frontier = [k.id for k in kids]
+    return sorted(out, key=lambda x: (x.version, x.created_at))
+
+
+def create_version(graph_id, note: str = '', name: str | None = None):
+    """Copy a study into a new version: same nodes/edges (new ids, same creation order, so the
+    'first MATERIAL' etc. stay the same), parent_id → source, version = max of the tree + 1.
+    The copy records ``meta.version_of`` = {new node id: source node id} for diffs. Commits."""
+    import uuid
+    from datetime import datetime, timedelta
+    from app.extensions import db
+    from app.design.models.graph import DesignGraph, DesignNode, DesignEdge
+    src = DesignGraph.query.filter_by(id=graph_id).first()
+    if src is None:
+        raise ValueError('Graph not found')
+    version = max(x.version for x in lineage(src.id)) + 1
+    g = DesignGraph(id=uuid.uuid4(), name=name or src.name, description=src.description, version=version,
+                    parent_id=src.id, tier=src.tier, status='draft', project_id=src.project_id,
+                    meta={**(src.meta or {}), 'version_note': note or '', 'version_of': {}})
+    db.session.add(g)
+    db.session.flush()
+    nodes = DesignNode.query.filter_by(graph_id=src.id).order_by(DesignNode.created_at, DesignNode.id).all()
+    t0 = datetime.utcnow()
+    idmap = {}
+    for i, n in enumerate(nodes):
+        nn = DesignNode(id=uuid.uuid4(), graph_id=g.id, node_type=n.node_type, label=n.label, level=n.level,
+                        properties=dict(n.properties or {}), level_set=n.level_set, result_ref=n.result_ref,
+                        tier=n.tier, pos_x=n.pos_x, pos_y=n.pos_y, created_at=t0 + timedelta(microseconds=i))
+        db.session.add(nn)
+        idmap[n.id] = nn.id
+    edges = DesignEdge.query.filter_by(graph_id=src.id).order_by(DesignEdge.created_at, DesignEdge.id).all()
+    for i, e in enumerate(edges):
+        db.session.add(DesignEdge(id=uuid.uuid4(), graph_id=g.id, source_id=idmap[e.source_id],
+                                  target_id=idmap[e.target_id], edge_type=e.edge_type, weight=e.weight,
+                                  properties=dict(e.properties or {}),
+                                  created_at=t0 + timedelta(microseconds=len(nodes) + i)))
+    g.meta = {**g.meta, 'version_of': {str(k): str(v) for v, k in idmap.items()}}
+    db.session.flush()
+    g.hash = DesignGraphService().compute_graph_hash(str(g.id))
+    db.session.commit()
+    return g
+
+
+def _node_map_to(new_graph, old_graph_id) -> dict | None:
+    """{node id in new_graph: node id in old_graph} composing version_of maps up the tree, or None
+    when old_graph is not an ancestor."""
+    from app.design.models.graph import DesignGraph
+    m = None
+    g = new_graph
+    while g is not None and g.parent_id is not None:
+        step = (g.meta or {}).get('version_of') or {}
+        m = dict(step) if m is None else {k: step.get(v) for k, v in m.items() if step.get(v)}
+        if str(g.parent_id) == str(old_graph_id):
+            return m
+        g = DesignGraph.query.filter_by(id=g.parent_id).first()
+    return None
+
+
+def diff_graphs(new_id, old_id) -> dict:
+    """What changed from version ``old_id`` (an ancestor) to ``new_id``: nodes added / removed /
+    changed (label, properties: old → new) and edges added / removed."""
+    from app.design.models.graph import DesignGraph, DesignNode, DesignEdge
+    new = DesignGraph.query.filter_by(id=new_id).first()
+    old = DesignGraph.query.filter_by(id=old_id).first()
+    if new is None or old is None:
+        raise ValueError('Graph not found')
+    m = _node_map_to(new, old.id)
+    if m is None:
+        raise ValueError('Solo se comparan versiones de la misma línea (la otra debe ser un ancestro).')
+    nn = {str(n.id): n for n in DesignNode.query.filter_by(graph_id=new.id)}
+    on = {str(n.id): n for n in DesignNode.query.filter_by(graph_id=old.id)}
+    desc = lambda n: {'id': str(n.id), 'type': n.node_type, 'label': n.label}
+    added = [desc(n) for k, n in nn.items() if m.get(k) not in on]
+    matched = {k: m[k] for k in nn if m.get(k) in on}
+    removed = [desc(n) for k, n in on.items() if k not in set(matched.values())]
+    changed = []
+    for k, ok in matched.items():
+        a, b = on[ok], nn[k]
+        pa, pb = a.properties or {}, b.properties or {}
+        props = {p: [pa.get(p), pb.get(p)] for p in sorted(set(pa) | set(pb)) if pa.get(p) != pb.get(p)}
+        if props or a.label != b.label:
+            changed.append({**desc(b), 'old_label': a.label, 'properties': props})
+    inv = {v: k for k, v in matched.items()}
+    ekey = lambda e, tr: (tr.get(str(e.source_id), str(e.source_id)), tr.get(str(e.target_id), str(e.target_id)),
+                          e.edge_type)
+    labels = {**{k: n.label for k, n in nn.items()}, **{inv.get(k, k): n.label for k, n in on.items()}}
+    ne = {ekey(e, {}) for e in DesignEdge.query.filter_by(graph_id=new.id)}
+    oe = {ekey(e, inv) for e in DesignEdge.query.filter_by(graph_id=old.id)}
+    fmt = lambda s: {'source': labels.get(s[0], s[0]), 'target': labels.get(s[1], s[1]), 'type': s[2]}
+    return {'graph_id': str(new.id), 'against': str(old.id), 'version': new.version, 'against_version': old.version,
+            'nodes_added': added, 'nodes_removed': removed, 'nodes_changed': changed,
+            'edges_added': [fmt(e) for e in sorted(ne - oe)], 'edges_removed': [fmt(e) for e in sorted(oe - ne)]}

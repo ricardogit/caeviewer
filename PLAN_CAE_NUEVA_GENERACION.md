@@ -1223,6 +1223,145 @@ En el editor, overlay contextual no intrusivo:
 ℹ Factor de confianza: 0.72 (3 simulaciones similares encontradas)
 ```
 
+## FASE 10 — Módulo Ambiental: Hidrodinámica y Transporte de Contaminantes (añadida 2026-11-14)
+
+Objetivo: un **módulo completo propio** para contaminación marina y de aguas naturales (vertidos y emisarios en
+costa, estuarios, ríos y lagos, plumas en canales, contaminación de acuíferos), dentro del mismo DesignGraph, con
+trazabilidad (FASE 7), validación contra muestreos (FASE 8) e incertidumbre (FASE 6). Cubre las cuatro carencias
+que hoy impiden el caso marino real:
+
+1. transporte advección–difusión–reacción de un escalar arrastrado por el flujo, con estabilización SUPG;
+2. régimen transitorio (hidrodinámica y transporte);
+3. turbulencia, superficie libre y mareas (aguas someras 2D y modelo 3D con turbulencia);
+4. geometría y datos geográficos (costa, batimetría, viento, corrientes, caudales de ríos) en lugar de un STEP.
+
+Estrategia por escala:
+
+- **Local (m – cientos de m):** tanque, canal, campo cercano de un emisario, acuífero pequeño → transporte 3D sobre
+  el campo de velocidad de Stokes / Navier–Stokes (FASE 2), de Navier–Stokes con turbulencia (10.4) o de Darcy (10.6).
+- **Costera / estuarina / fluvial (km – decenas de km):** **aguas someras 2D promediadas en profundidad** (10.3)
+  + transporte 2D promediado (10.1 en 2D). Navier–Stokes laminar 3D es inviable a esta escala (y no cabe en los tiers).
+- **Regional / validación cruzada:** adaptadores a solvers externos (10.8), no como sustituto del módulo propio sino
+  para casos fuera de su alcance y para contrastar resultados.
+
+### 10.1 Transporte advección–difusión–reacción (`app/design/services/fem/transport.py`)
+
+```
+∂c/∂t + v·∇c − ∇·(D∇c) + λc = S          (3D)
+∂(Hc)/∂t + ∇·(Hūc) − ∇·(H D_h ∇c) + λHc = S   (2D promediado en profundidad, H = calado)
+```
+- c = concentración [kg/m³ o mg/L]; v = velocidad (constante, de un run de fluido del estudio, de 10.3/10.4 o de
+  Darcy); D = difusión molecular + turbulenta (ν_t/Sc_t de 10.4) + dispersión (Elder en 2D; Bear–Scheidegger αL, αT
+  en medio poroso); λ = decaimiento de primer orden (T90 de bacterias, radioisótopos, biodegradación); S = fuente.
+- Varias especies a la vez; reacciones acopladas sencillas (DBO–OD de Streeter–Phelps, decaimiento en cadena).
+- Elementos T4/T10 (3D) y triángulos P1/P2 (2D). **Estabilización SUPG** (misma implementación que la SUPG/PSPG de
+  Navier–Stokes); limitador / captura de discontinuidades para frentes abruptos (sin concentraciones negativas);
+  aviso con Péclet de elemento alto.
+- Condiciones: concentración impuesta en entradas, salida libre (∂c/∂n = 0), flujo impuesto, vertido (caudal
+  másico puntual / superficial / volumétrico, continuo o por series temporales), intercambio con la atmósfera o el
+  fondo (como la convección térmica), deposición/resuspensión de sedimento (extensión).
+- Resultados: c(x, t), masa total y balance de masa (entradas, salidas, decaimiento, error), área/volumen sobre un
+  umbral normativo, concentración máxima y curvas de llegada en puntos de control, tiempo de residencia / renovación.
+
+### 10.2 Integración temporal (común a todo el módulo)
+
+- θ-método (Euler implícito, Crank–Nicolson) y BDF2; paso fijo o adaptativo por error local / CFL.
+- Series temporales como entrada (caudales, mareas, viento, vertidos) y como salida: el resultado de un run es una
+  secuencia de pasos en HDF5 (`fields/<f>/step_<n>`, ya previsto en el formato), con submuestreo de salida.
+- Arranque en caliente desde un run anterior (spin-up hidrodinámico reutilizado por varios escenarios de vertido).
+- El transporte puede ir acoplado paso a paso con la hidrodinámica o leer un campo de velocidad guardado
+  (desacoplado: mismo flujo, muchos escenarios de vertido, ideal para Monte Carlo).
+
+### 10.3 Aguas someras 2D (`app/design/services/fem/shallow_water.py`)
+
+```
+∂η/∂t + ∇·(H ū) = 0
+∂(Hū)/∂t + ∇·(Hū⊗ū) + gH∇η = −τ_b/ρ + τ_w/ρ − f k×(Hū) + ∇·(H ν_t ∇ū) + fuentes
+```
+- η = elevación de la superficie libre, H = h + η (h = batimetría), ū = velocidad promediada en profundidad.
+- Fricción de fondo Manning / Chézy (n por zona), tensión de viento (coeficiente de arrastre, campo o serie
+  temporal), Coriolis (latitud del dominio), viscosidad turbulenta horizontal (Smagorinsky o constante).
+- Discretización estable para superficie libre: elementos de Galerkin discontinuo o volúmenes finitos sobre
+  triángulos con flujo numérico de Riemann (HLL / Roe) — conservan masa y manejan frentes; **secado y mojado**
+  (zonas intermareales, H → 0) con umbral de calado y reconstrucción positiva.
+- Contornos: costa (impermeable / deslizamiento), mar abierto con **marea** (constituyentes armónicos M2, S2, K1,
+  O1… o serie de nivel) y condición radiativa / Flather, ríos (caudal o hidrograma), vertederos y emisarios.
+- Resultados: η, ū, H, velocidades máximas, zonas inundadas, prisma de marea, caudales por sección.
+
+### 10.4 Turbulencia y 3D con superficie libre
+
+- Navier–Stokes transitorio (extiende el estacionario de FASE 2) con **RANS k-ε / k-ω SST** y funciones de pared;
+  SUPG/PSPG obligatoria. Escala local: chorro de un emisario, mezcla en un canal, recirculación en una dársena.
+- 3D hidrostático estratificado (capas σ) para estuarios y bahías con estratificación salina / térmica: densidad
+  ρ(T, S), transporte de T y S como escalares activos, mezcla vertical (k-ε 1D o Mellor–Yamada).
+- Opcional (más adelante): superficie libre 3D no hidrostática (VOF / level set, reutilizando la experiencia del
+  level set de FASE 4) solo para casos locales con oleaje o rompientes.
+
+### 10.5 Datos geográficos y malla
+
+- Importadores: línea de costa (shapefile / GeoJSON / KML), batimetría (GeoTIFF, XYZ, NetCDF tipo GEBCO /
+  cartas náuticas), máscaras de zonas (Manning, áreas protegidas, zonas de baño), puntos de vertido y de muestreo.
+- Sistemas de coordenadas: reproyección a UTM local (pyproj); el estudio guarda el CRS (trazabilidad).
+- Malla 2D no estructurada con Gmsh a partir de la línea de costa, con tamaño de elemento graduado por
+  profundidad (√(gh)), pendiente de la batimetría y distancia a puntos de interés (vertido, playas); extrusión en
+  capas σ para 3D.
+- Forzamientos: series de marea (armónicos o mareógrafo), viento (estación o campo de reanálisis), caudales de ríos
+  (estaciones hidrométricas), temperatura / salinidad iniciales. Formatos CSV y NetCDF; versionados como la
+  geometría (hash de contenido → hash de la simulación).
+- Nuevo modo **Mapa** (o pestaña en Geometría): mapa base (OpenStreetMap / teselas), dibujo de dominio y contornos
+  sobre el mapa, selección de contornos de marea / río / costa como hoy se seleccionan caras CAD.
+
+### 10.6 Flujo en medio poroso (`app/design/services/fem/darcy.py`)
+
+- Darcy estacionario/transitorio: S_s ∂h/∂t = ∇·(K∇h) + Q, K tensorial por región (acuífero heterogéneo), carga
+  impuesta (ríos, lagos, mar con intrusión salina como extensión), pozos, recarga. q = −K∇h, v = q/n_e → 10.1.
+- Material `porous_medium` (K o permeabilidad, porosidad efectiva, almacenamiento específico, αL, αT, retardo por
+  adsorción R).
+
+### 10.7 Grafo, resultados e integración con las demás fases
+
+- Nodos: GEOMETRY `domain_2d` (costa + batimetría) o sólido 3D; MATERIAL `water` (ρ, μ, o ρ(T, S)) y
+  `porous_medium`; nodo **SPECIES** (nombre, D, λ / T90, umbral normativo, reacciones); BC `tide`, `river_inflow`,
+  `coast`, `open_boundary`, `concentration`, `hydraulic_head`; LOAD `wind`, `discharge` (vertido), `source`.
+- Un estudio de transporte puede referenciar el run hidrodinámico que provee la velocidad (arista `USES_FLOW`);
+  su hash entra en el hash del transporte (FASE 7).
+- Visor: mapa 2D con animación temporal (η, |ū| con flechas/líneas de corriente, c con escala logarítmica),
+  isolínea / isosuperficie del umbral, series temporales en puntos de control, exportación GeoTIFF / NetCDF / KML.
+- FASE 8: correlación con muestreos de campo (CSV/Excel de concentraciones por punto y fecha, mareógrafos,
+  correntímetros) y recalibración de Manning, D, λ.
+- FASE 6: incertidumbre en caudal de vertido, T90, D, viento → probabilidad de superar el umbral en una playa.
+- FASE 5: ROM de escenarios (caudal de vertido, posición del emisario) para exploración rápida.
+- Tiers: el 2D de aguas someras cabe en Tier 0–1 para bahías y estuarios típicos; el 3D estratificado en Tier 2–3.
+
+### 10.8 Adaptadores externos (validación cruzada y casos fuera de alcance)
+
+- TELEMAC-2D/3D + WAQTEL, Delft3D FM / D-Water Quality, OpenFOAM (scalarTransportFoam, interFoam), MODFLOW 6 +
+  GWT / MT3D-USGS. Plantilla de entrada generada desde el grafo, job en la cola (worker Docker), lectura de
+  resultados a campos del visor, entrada en `solver_catalog`. Sirven para contrastar el módulo propio en los hitos.
+
+### 10.9 Orden de implementación
+
+1. 10.1 + 10.2 en 3D sobre velocidad dada (reutiliza el kernel; la SUPG compartida cierra el pendiente de
+   Navier–Stokes).
+2. 10.6 Darcy + transporte en acuífero.
+3. 10.5 datos geográficos y malla 2D; 10.3 aguas someras con marea, fricción, viento, secado/mojado.
+4. 10.1 en 2D promediado acoplado a 10.3 (vertidos costeros: el caso marino completo).
+5. 10.4 turbulencia RANS y 3D estratificado.
+6. 10.7 integración con FASE 5/6/8 y 10.8 adaptadores.
+
+### 10.10 Hitos
+
+- Transporte: Ogata–Banks 1D (entrada continua) y pulso gaussiano con decaimiento, error < 1 % y masa < 1e-6 con
+  Péclet de malla > 10 (SUPG); pluma 3D de fuente puntual en flujo uniforme vs solución gaussiana analítica;
+  Streeter–Phelps (curva de oxígeno disuelto) exacta.
+- Darcy: pozo en acuífero confinado vs Thiem (estacionario) y Theis (transitorio).
+- Aguas someras: rotura de presa de Stoker / Ritter (con y sin lecho seco), lago en reposo sobre batimetría
+  irregular (*well-balanced*: velocidad ~ 0 a precisión de máquina), onda de marea en canal vs solución lineal,
+  oscilación de Thacker en cuenco parabólico (secado y mojado), seiche en un lago rectangular.
+- Turbulencia: canal turbulento vs ley de pared y perfil de Reichardt; escalón descendente vs Driver–Seegmiller.
+- Caso marino de punta a punta: bahía real con línea de costa y batimetría públicas, marea M2, emisario con T90
+  bacteriano → mapa de probabilidad de superar el umbral de baño; contraste con TELEMAC sobre la misma malla.
+
 ---
 
 ## Secuencia de implementación y dependencias entre fases
@@ -1238,6 +1377,7 @@ Semana 12-17:  FASE 6  → Materiales activos (paralelo con FASE 5)
 Semana 15-18:  FASE 7  → Trazabilidad (puede ir en paralelo con cualquier fase)
 Semana 17-21:  FASE 8  → Validación (requiere FASE 6 + FASE 7)
 Semana 18-24:  FASE 9  → UI final (integración continua desde FASE 1)
+Tras FASE 9:   FASE 10 → Módulo ambiental: transporte, aguas someras, turbulencia, datos geográficos (orden en §10.9)
 ```
 
 ---
@@ -1256,6 +1396,7 @@ Semana 18-24:  FASE 9  → UI final (integración continua desde FASE 1)
 | FASE 7 | Dos ejecuciones con los mismos parámetros producen el mismo hash SHA-256 |
 | FASE 8 | Subir datos de un ensayo de tracción simple recalibra el módulo E con error < 2% |
 | FASE 9 | Flujo completo conceptual → grafo → simulación → resultado en UI unificada |
+| FASE 10 | Ogata–Banks < 1 % con masa < 1e-6; Thiem/Theis; rotura de presa y Thacker (secado/mojado); bahía con marea y emisario de punta a punta |
 
 ---
 
@@ -1306,3 +1447,4 @@ En frontend, `SolverPanel.jsx` muestra el tier estimado antes de lanzar y bloque
 | Materiales como tabla de valores fijos | FASE 6 (modelos paramétricos + incertidumbre propagada) |
 | No trazabilidad ni reproducibilidad | FASE 7 (hash SHA-256 + versionado + JSON-LD) |
 | Sin aprendizaje de ensayos experimentales | FASE 8 (validación continua + recalibración automática) |
+| Sin simulación ambiental (contaminación marina, fluvial y de acuíferos) | FASE 10 (transporte ADR + aguas someras + turbulencia + datos geográficos) |

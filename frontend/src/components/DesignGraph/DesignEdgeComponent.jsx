@@ -3,7 +3,7 @@
  * Visual style (color, dash pattern) depends on edge_type.
  */
 import React, { memo } from 'react';
-import { BaseEdge, EdgeLabelRenderer, getBezierPath, getStraightPath } from 'reactflow';
+import { BaseEdge, EdgeLabelRenderer, getBezierPath } from 'reactflow';
 
 const EDGE_STYLES = {
   FUNCTIONAL:      { color: '#2196f3', dash: 'none',     label: 'FUNCIONAL' },

@@ -1,108 +1,85 @@
-"""FASE 2 FEM Validation — two tests.
+"""FASE 2 FEM validation (no database needed; requires gmsh).
 
-Test 1: Axial tension bar (T4 is exact, no locking)
-Test 2: Cantilever beam with progressively finer meshes (locking convergence study)
+Test 1: axial bar — uniaxial stress is reproduced exactly by T4 and T10.
+Test 2: cantilever T4 vs T10 against Timoshenko (shear-corrected beam theory).
+        Hito FASE 2: T10 within ±1 % on a slender beam (L/h = 20).
+Test 3: stubby beam (L/h = 5): shows the 3D clamp effect (~1-2 % stiffer than
+        either beam theory) so the hito is not judged on a case where the
+        reference itself is off.
+
+Run: python validate_fem.py
 """
-import sys, os
-sys.path.insert(0, r'C:\cae-viewer')
-os.environ['FLASK_ENV'] = 'development'
+import sys
+import time
 
-from app import create_app
-app = create_app('development')
+import numpy as np
+import scipy.sparse.linalg as spla
 
-with app.app_context():
-    from app.design.services.fem.kernel import FEMKernel
+sys.path.insert(0, '.')
+from app.design.services.fem.assembler import assemble_F, assemble_K, dirichlet, reduce_system  # noqa: E402
+from app.design.services.fem.constitutive import LinearElasticIsotropic  # noqa: E402
+from app.design.services.fem.mesh import FEMMesh  # noqa: E402
 
-    kernel = FEMKernel()
+E, NU, H, P = 210e9, 0.3, 0.010, 1000.0
+D = LinearElasticIsotropic(E, NU).get_D_matrix()
 
-    # ===========================================================================
-    # TEST 1 — Axial Tension Bar  (T4 should be EXACT — no bending, no locking)
-    # Bar: 50x10x10 mm, E=210 GPa, nu=0.3, tip axial force F_x = 10 000 N
-    # Analytical: delta_x = F*L/(E*A) = 10000*0.05/(210e9*1e-4) = 2.381e-6 m
-    # ===========================================================================
-    print("\n=== TEST 1: Barra en Tension Axial (debe ser exacta para T4) ===")
 
-    L, W, H = 0.050, 0.010, 0.010
-    E, nu   = 210e9, 0.3
-    Fx      = 10_000.0     # N in +X direction
+def solve(mesh, loads, bcs=None):
+    K = assemble_K(mesh, D)
+    F = assemble_F(mesh, loads)
+    dofs, vals = dirichlet(mesh, bcs or [{'face_set': 'fixed', 'dofs': [0, 1, 2]}])
+    Kf, rhs, free = reduce_system(K, F, dofs, vals)
+    u = np.zeros(K.shape[0])
+    u[free] = spla.spsolve(Kf.tocsc(), rhs)
+    return u
 
-    spec_tension = {
-        'physics': ['structural'],
-        'mesh_source': 'cantilever',
-        'mesh_params': {'length': L, 'width': W, 'height': H, 'n_along_length': 5},
-        'material': {'type': 'linear_elastic_isotropic', 'E': E, 'nu': nu, 'rho': 7800.0},
-        'bcs':  [{'node_set': 'fixed', 'dofs': [0,1,2], 'values': [0,0,0]}],
-        'loads': [{'node_set': 'tip',   'force': [Fx, 0, 0]}],   # axial only
-    }
 
-    A = W * H
-    delta_analytical = Fx * L / (E * A)
-    r1 = kernel.solve_sync(spec_tension)
-    s1 = r1['summary']
-    delta_fem_m = s1['max_displacement_mm'] / 1000.0
-    err1 = abs(delta_fem_m - delta_analytical) / delta_analytical * 100.0
+def tip_mean(mesh, u, comp):
+    return u[comp::3][np.unique(mesh.face_sets['tip'])].mean()
 
-    print(f"  FEM delta_x:    {delta_fem_m:.6e} m")
-    print(f"  Analitico:      {delta_analytical:.6e} m")
-    print(f"  Error:          {err1:.4f} %  (debe ser < 0.1%)")
-    print(f"  Convergio:      {s1['converged']}")
-    print(f"  Solver:         {s1['solver_method']}")
-    print(f"  Nodos/Elem:     {s1['n_nodes']} / {s1['n_elements']}")
-    print(f"  OK exactitud:   {err1 < 0.5}")
 
-    # ===========================================================================
-    # TEST 2 — Cantilever Beam Convergence Study (locking problem — needs fine mesh)
-    # F_y = 1000 N, EB analytical: 0.23810 mm
-    # ===========================================================================
-    print("\n=== TEST 2: Viga Voladizo — Estudio de Convergencia (locking T4) ===")
-    print(f"  Analitico EB:  0.23810 mm")
-    print(f"  {'n_div':>6} | {'nodos':>6} | {'elem':>6} | {'FEM [mm]':>10} | {'error %':>8} | {'pass 5%':>8}")
-    print(f"  {'-'*62}")
+def refs(L):
+    I = H ** 4 / 12
+    G = E / (2 * (1 + NU))
+    k = 10 * (1 + NU) / (12 + 11 * NU)
+    eb = P * L ** 3 / (3 * E * I)
+    return eb, eb + P * L / (k * G * H * H)
 
-    Fy = 1000.0
-    best_err = 999.0
 
-    for n_div in [10, 20, 35]:
-        spec_c = {
-            'physics': ['structural'],
-            'mesh_source': 'cantilever',
-            'mesh_params': {'length': L, 'width': W, 'height': H, 'n_along_length': n_div},
-            'material': {'type': 'linear_elastic_isotropic', 'E': E, 'nu': nu, 'rho': 7800.0},
-            'bcs':  [{'node_set': 'fixed', 'dofs': [0,1,2], 'values': [0,0,0]}],
-            'loads': [{'node_set': 'tip',   'force': [0, -Fy, 0]}],
-        }
-        rc = kernel.solve_sync(spec_c)
-        sc = rc['summary']
+print('\n=== TEST 1: barra a tensión, apoyo isostático (debe ser exacta) ===')
+L = 0.05
+exact = 1e4 * L / (E * H * H)
+for order in (1, 2):
+    m = FEMMesh.generate_cantilever(L, H, H, 5, order=order)
+    # ux = 0 on the face, plus the minimum to stop rigid motion: no Poisson restraint
+    x0 = np.unique(m.face_sets['fixed'])
+    m.node_sets['n0'] = x0[[np.argmin(np.linalg.norm(m.nodes[x0], axis=1))]]
+    m.node_sets['n1'] = x0[[np.argmax(m.nodes[x0, 1] - m.nodes[x0, 2])]]
+    u = solve(m, [{'face_set': 'tip', 'force': [1e4, 0, 0]}],
+              [{'face_set': 'fixed', 'dofs': [0]}, {'node_set': 'n0', 'dofs': [1, 2]},
+               {'node_set': 'n1', 'dofs': [2]}])
+    ux = tip_mean(m, u, 0)
+    print(f'  {m.element_type:>3}: ux = {ux:.6e} m  analítico {exact:.6e}  error {abs(ux - exact) / exact * 100:.4f} %')
 
-        ana = KFEMKernel_analytical_mm = FEMKernel.cantilever_analytical(E, nu, L, W, H, Fy)['tip_deflection_mm']
-        err = abs(sc['max_displacement_mm'] - ana) / ana * 100.0
-        if err < best_err:
-            best_err = err
+ok = True
+for title, L, nds in (('TEST 2: viga esbelta L/h = 20 (hito FASE 2: T10 dentro de ±1 % de Timoshenko)', 0.2, (10, 20, 40)),
+                      ('TEST 3: viga corta L/h = 5 (efecto 3D del empotramiento)', 0.05, (5, 10, 20))):
+    eb, timo = refs(L)
+    print(f'\n=== {title} ===')
+    print(f'  Euler-Bernoulli {eb * 1e3:.5f} mm   Timoshenko {timo * 1e3:.5f} mm')
+    print(f"  {'elem':>4} {'n_div':>5} {'nodos':>7} {'uy [mm]':>10} {'vs EB':>8} {'vs Timo':>8} {'t [s]':>6}")
+    for order in (1, 2):
+        for nd in nds:
+            t0 = time.perf_counter()
+            m = FEMMesh.generate_cantilever(L, H, H, nd, order=order)
+            uy = -tip_mean(m, solve(m, [{'face_set': 'tip', 'force': [0, -P, 0]}]), 1)
+            e_eb, e_ti = (uy - eb) / eb * 100, (uy - timo) / timo * 100
+            print(f'  {m.element_type:>4} {nd:>5} {m.n_nodes:>7} {uy * 1e3:>10.5f} {e_eb:>+7.2f}% {e_ti:>+7.2f}% '
+                  f'{time.perf_counter() - t0:>6.2f}')
+            if L == 0.2 and order == 2 and nd == 20:
+                ok = abs(e_ti) < 1.0
 
-        mark = "<-- MEJOR" if n_div == 35 else ""
-        print(f"  {n_div:>6} | {sc['n_nodes']:>6} | {sc['n_elements']:>6} | "
-              f"{sc['max_displacement_mm']:>10.5f} | {err:>8.3f} | "
-              f"{'SI':>8} {mark}" if err <= 5.0 else
-              f"  {n_div:>6} | {sc['n_nodes']:>6} | {sc['n_elements']:>6} | "
-              f"{sc['max_displacement_mm']:>10.5f} | {err:>8.3f} | "
-              f"{'NO':>8} {mark}")
-
-    print()
-    print("  NOTA: T4 lineal tiene shear locking en problemas de flexion.")
-    print("  Convergencia lenta pero MONOTONA (FEM es correcto matematicamente).")
-    print("  T10 cuadratico (FASE 2+) corregira el locking.")
-    print()
-
-    # ===========================================================================
-    # RESUMEN
-    # ===========================================================================
-    print("=== RESUMEN FASE 2 ===")
-    print(f"  Test 1 (tension axial):  error = {err1:.4f}%  -> {'VERIFICADO' if err1 < 0.5 else 'FALLO'}")
-    print(f"  Test 2 (convergencia):   FEM converge monotonamente con refinamiento")
-    print(f"  Kernel FEM:              ensamblaje + BC + spsolve -> OK")
-    print(f"  WebSocket:               OK (flask-socketio + start_background_task)")
-    print(f"  API endpoints:           /run, /status, /results, /test/cantilever -> OK")
-    print()
-    if err1 < 0.5:
-        print("  HITO FASE 2: FEM matematicamente correcto (tension axial exacta)")
-        print("  Para ±1% en flexion -> implementar T10 en FASE 2 extension")
+print('\n=== RESUMEN FASE 2 ===')
+print(f"  Hito (T10, L/h=20, n_div=20, ±1 % vs Timoshenko): {'CUMPLIDO' if ok else 'NO CUMPLIDO'}")
+print('  T4 bloquea por cortante en flexión; T10 es el elemento por defecto para geometría CAD.')
+sys.exit(0 if ok else 1)

@@ -1,6 +1,6 @@
 /**
  * AdaptiveMonitor — visualize adaptive mesh refinement cycles.
- * FASE 3: shows error reduction and mesh growth across iterations.
+ * FASE 3: estimated relative energy-norm error (ZZ/SPR) and mesh growth per cycle.
  */
 import React from 'react';
 import { Box, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
@@ -8,7 +8,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
 
-export default function AdaptiveMonitor({ adaptiveLog = [] }) {
+export default function AdaptiveMonitor({ adaptiveLog = [], target = 0.05 }) {
   if (!adaptiveLog || adaptiveLog.length === 0) return null;
 
   const data = adaptiveLog.map(entry => ({
@@ -32,8 +32,8 @@ export default function AdaptiveMonitor({ adaptiveLog = [] }) {
           <XAxis dataKey="cycle" tick={{ fontSize: 9, fill: '#666' }} />
           <YAxis tick={{ fontSize: 9, fill: '#666' }} label={{ value: 'Error %', angle: -90, position: 'insideLeft' }} />
           <Tooltip contentStyle={{ backgroundColor: '#1e1e1e', border: '1px solid #333', fontSize: 10 }} />
-          <ReferenceLine y={5} stroke="#f44336" strokeDasharray="4 2" label={{ value: '5%', fill: '#f44336', fontSize: 8 }} />
-          <Line type="monotone" dataKey="global_error" stroke="#ff9800" dot={{ r: 3 }} strokeWidth={2} name="Global error %" />
+          <ReferenceLine y={target * 100} stroke="#f44336" strokeDasharray="4 2" label={{ value: `${+(target * 100).toFixed(2)}%`, fill: '#f44336', fontSize: 8 }} />
+          <Line type="monotone" dataKey="global_error" stroke="#ff9800" dot={{ r: 3 }} strokeWidth={2} name="Error estimado %" />
         </LineChart>
       </ResponsiveContainer>
 
@@ -72,7 +72,7 @@ export default function AdaptiveMonitor({ adaptiveLog = [] }) {
                 <TableCell sx={{ color: '#aaa', fontSize: 9, p: 0.5 }}>{entry.cycle}</TableCell>
                 <TableCell sx={{ color: '#aaa', fontSize: 9, p: 0.5 }}>{entry.n_nodes?.toLocaleString()}</TableCell>
                 <TableCell sx={{ color: '#aaa', fontSize: 9, p: 0.5 }}>{entry.n_elements?.toLocaleString()}</TableCell>
-                <TableCell sx={{ color: entry.global_error < 0.05 ? '#81c784' : '#ffa726', fontSize: 9, p: 0.5, fontWeight: entry.global_error < 0.05 ? 700 : 400 }}>
+                <TableCell sx={{ color: entry.global_error < target ? '#81c784' : '#ffa726', fontSize: 9, p: 0.5, fontWeight: entry.global_error < target ? 700 : 400 }}>
                   {(entry.global_error * 100).toFixed(2)}%
                 </TableCell>
                 <TableCell sx={{ color: '#aaa', fontSize: 9, p: 0.5 }}>{entry.max_displacement_mm?.toFixed(4)}</TableCell>

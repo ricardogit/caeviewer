@@ -4,7 +4,7 @@
 import React from 'react';
 import { Box, Typography, IconButton, Chip, Button } from '@mui/material';
 import { Close, Delete } from '@mui/icons-material';
-import useDesignStore from '../../stores/designStore';
+import { useStudy } from '../../stores/designStore';
 
 const EDGE_COLORS = {
   FUNCTIONAL: '#2196f3', PHYSICAL: '#9e9e9e', DEPENDS_ON: '#607d8b',
@@ -20,8 +20,8 @@ const EDGE_DESCRIPTIONS = {
   PRODUCES:        'A genera o produce B como salida',
 };
 
-export default function EdgePanel({ edge, graphId, onClose }) {
-  const { deleteEdge } = useDesignStore();
+export default function EdgePanel({ edge, onClose }) {
+  const { deleteEdge } = useStudy('deleteEdge');
   const edgeType = edge.data?.edge_type || 'PHYSICAL';
   const color = EDGE_COLORS[edgeType] || '#888';
 

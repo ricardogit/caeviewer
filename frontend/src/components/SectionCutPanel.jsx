@@ -40,6 +40,7 @@ export default function SectionCutPanel({ onPlaneChange }) {
     // plane equation: n·x + d = 0 → d = -position along axis
     const plane = new THREE.Plane(normal, -position);
     onPlaneChange?.(plane);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- parent callback is not memoized; plane depends only on these
   }, [enabled, axis, position, flipped]);
 
   return (
@@ -126,7 +127,7 @@ export default function SectionCutPanel({ onPlaneChange }) {
         <Box>
           <Typography variant="caption" color="text.secondary">
             The cut removes everything on one side of the selected plane.
-            Use "Flip" to switch which side is removed.
+            Use &quot;Flip&quot; to switch which side is removed.
           </Typography>
         </Box>
       </Box>

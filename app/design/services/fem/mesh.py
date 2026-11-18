@@ -25,15 +25,26 @@ except ImportError:
 class FEMMesh:
     """Stores a volumetric FEM mesh with node sets for BCs and loads."""
 
-    def __init__(self, nodes, elements, element_type: str = 'T4',
-                 node_sets: dict = None, element_sets: dict = None):
+    def __init__(self, nodes, elements, element_type: str = None,
+                 node_sets: dict = None, element_sets: dict = None,
+                 face_sets: dict = None, canonical: bool = False, mids_known: bool = False):
+        from app.design.services.fem.tet_batch import canonicalize, etype_of
         self.nodes = np.asarray(nodes, dtype=np.float64)         # (n, 3)
-        self.elements = np.asarray(elements, dtype=np.int32)     # (m, n_nodes_per_el)
-        self.element_type = element_type
+        el = np.asarray(elements, dtype=np.int64)                # (m, n_nodes_per_el)
+        if el.ndim == 2 and el.shape[1] in (4, 10):
+            # internal node order + positive orientation (see tet_batch); idempotent
+            el = el if canonical else canonicalize(self.nodes, el, reorder_mids=not mids_known)
+            element_type = etype_of(el)
+        self.elements = el
+        self.element_type = element_type or 'T4'
         self.n_nodes = len(self.nodes)
         self.n_elements = len(self.elements)
-        self.node_sets = node_sets or {}
+        self.node_sets = {k: np.asarray(v, dtype=np.int64) for k, v in (node_sets or {}).items()}
         self.element_sets = element_sets or {}
+        # name -> (k, 3|6) boundary triangles (global node ids); used for surface loads
+        self.face_sets = {k: np.asarray(v, dtype=np.int64) for k, v in (face_sets or {}).items()}
+        for name, tris in self.face_sets.items():
+            self.node_sets.setdefault(name, np.unique(tris))
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -67,6 +78,7 @@ class FEMMesh:
             'tier': self.estimate_tier(),
             'n_dof': self.n_dof_structural,
             'node_sets': {k: len(v) for k, v in self.node_sets.items()},
+            'face_sets': len(self.face_sets),
             'bounding_box': self.bounding_box,
         }
 
@@ -78,37 +90,27 @@ class FEMMesh:
         For T4 each element has 4 faces.  Interior faces are shared by 2
         elements and cancel; boundary faces appear once.
         """
-        if self.element_type not in ('T4',):
+        if self.element_type not in ('T4', 'T10'):
             return []
-
-        TET_LOCAL_FACES = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
-
-        face_count: dict = defaultdict(int)
-        face_ori: dict = {}
-
-        for el in self.elements:
-            for lf in TET_LOCAL_FACES:
-                global_nodes = [int(el[i]) for i in lf]
-                key = tuple(sorted(global_nodes))
-                face_count[key] += 1
-                face_ori[key] = global_nodes  # one orientation (consistent winding handled in renderer)
-
-        return [face_ori[k] for k, cnt in face_count.items() if cnt == 1]
+        from app.design.services.fem.tet_batch import boundary_faces, split_t6
+        # outward winding; T6 faces are split into 4 display triangles
+        return split_t6(boundary_faces(self.elements)).tolist()
 
     # ── Constructors ──────────────────────────────────────────────────────────
 
     @classmethod
-    def from_inline(cls, nodes, elements, element_type='T4',
-                    node_sets=None, element_sets=None) -> FEMMesh:
-        return cls(nodes, elements, element_type, node_sets, element_sets)
+    def from_inline(cls, nodes, elements, element_type=None,
+                    node_sets=None, element_sets=None, face_sets=None) -> FEMMesh:
+        return cls(nodes, elements, element_type, node_sets, element_sets, face_sets)
 
     @classmethod
     def generate_cantilever(cls,
                             length: float = 0.050,
                             width:  float = 0.010,
                             height: float = 0.010,
-                            n_along_length: int = 12) -> FEMMesh:
-        """Generate a T4 tetrahedral mesh of a box using GMSH.
+                            n_along_length: int = 12,
+                            order: int = 1) -> FEMMesh:
+        """Generate a T4 (order=1) or T10 (order=2) tetrahedral mesh of a box using GMSH.
 
         Args:
             length: dimension along X [m]
@@ -116,9 +118,10 @@ class FEMMesh:
             height: dimension along Z [m]
             n_along_length: number of elements along the beam axis (controls density)
 
-        Node sets:
-            'fixed': nodes at x ≈ 0 (clamped face)
-            'tip':   nodes at x ≈ length (free tip, for tip load)
+        Node sets and face sets (boundary triangles, for consistent surface loads):
+            'fixed': face x = 0 (clamped)
+            'tip':   face x = length (free tip, for tip load)
+            'y0' / 'y1', 'z0' / 'z1': side faces y = 0 / width and z = 0 / height
         """
         try:
             import gmsh
@@ -129,7 +132,8 @@ class FEMMesh:
 
         try:
             with _gmsh_lock:
-                gmsh.initialize()
+                from app.gmsh_init import initialize as _gmsh_init
+                _gmsh_init()
                 try:
                     gmsh.option.setNumber("General.Terminal", 0)  # silent
                     gmsh.model.add("cantilever")
@@ -142,44 +146,195 @@ class FEMMesh:
                     gmsh.option.setNumber("Mesh.Algorithm", 5)     # Delaunay 2D
                     gmsh.option.setNumber("Mesh.Optimize", 1)      # Netgen smoothing
                     gmsh.model.mesh.generate(3)
+                    if order == 2:
+                        gmsh.model.mesh.setOrder(2)
 
-                    # ── Nodes ──────────────────────────────────────────────────
-                    node_tags, coord_flat, _ = gmsh.model.mesh.getNodes()
-                    node_arr = coord_flat.reshape(-1, 3)
-                    tag_to_idx = {int(t): i for i, t in enumerate(node_tags)}
+                    surf = {}
+                    eps = 1e-4 * length   # OCC bboxes are inflated by the shape tolerance
+                    for _, tag in gmsh.model.getEntities(2):
+                        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(2, tag)
+                        if xmax < eps:
+                            surf['fixed'] = tag
+                        elif xmin > length - eps:
+                            surf['tip'] = tag
+                        elif ymax < eps:                 # side faces (electrodes, walls, …)
+                            surf['y0'] = tag
+                        elif ymin > width - eps:
+                            surf['y1'] = tag
+                        elif zmax < eps:
+                            surf['z0'] = tag
+                        elif zmin > height - eps:
+                            surf['z1'] = tag
+                    nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
 
-                    # ── T4 elements (GMSH type id = 4) ─────────────────────────
-                    etypes, _, enodes_list = gmsh.model.mesh.getElements(dim=3)
-                    elements = []
-                    for etype, enodes_flat in zip(etypes, enodes_list):
-                        if etype == 4:
-                            en_mat = enodes_flat.reshape(-1, 4)
-                            for el in en_mat:
-                                elements.append([tag_to_idx[int(n)] for n in el])
-
-                    if not elements:
-                        raise RuntimeError("GMSH produced no T4 elements.")
-
-                    # ── Node sets ───────────────────────────────────────────────
-                    tol = lc * 0.6
-                    fixed_nodes = [tag_to_idx[int(t)] for t in node_tags
-                                   if node_arr[tag_to_idx[int(t)], 0] < tol]
-                    tip_nodes = [tag_to_idx[int(t)] for t in node_tags
-                                 if node_arr[tag_to_idx[int(t)], 0] > length - tol]
-
-                    logger.info(f"Cantilever mesh: {len(node_arr)} nodes, "
-                                f"{len(elements)} T4 elements, "
-                                f"fixed={len(fixed_nodes)}, tip={len(tip_nodes)}")
-
-                    return cls(node_arr, elements, 'T4',
-                               node_sets={'fixed': fixed_nodes, 'tip': tip_nodes})
+                    logger.info(f"Cantilever mesh: {len(nodes_)} nodes, "
+                                f"{len(elements_)} {'T10' if order == 2 else 'T4'} elements, "
+                                f"fixed={len(np.unique(faces_['fixed']))}, tip={len(np.unique(faces_['tip']))}")
+                    return cls(nodes_, elements_, face_sets=faces_, mids_known=True)
                 finally:
                     gmsh.finalize()
         except Exception as e:
             if "signal only works in main thread" in str(e):
                 logger.warning(f"GMSH signal error in thread: {e}. Using fallback mesh generation.")
+                if order != 1:
+                    raise RuntimeError("GMSH unavailable in this thread; T10 cantilever needs GMSH") from e
                 return cls._generate_fallback_cantilever(length, width, height, n_along_length)
             raise
+
+    @classmethod
+    def generate_plate(cls, length: float = 0.2, height: float = 0.1, thickness: float = 0.01,
+                       mesh_size: float = 0.005, support_width: float = None,
+                       hole_radius: float = 0.0, hole_center: tuple = None, order: int = 1) -> FEMMesh:
+        """Thick plate in the XY plane (x: length, y: height, z: thickness), split in three
+        blocks along x so the bottom support patches are separate faces (FASE 4 bridge hito).
+
+        Face sets: 'top' (y = height), 'bottom' (y = 0), 'support_left' / 'support_right'
+        (bottom patches of width ``support_width`` at both ends), 'left', 'right', 'hole',
+        'back' (z = 0) and 'front' (z = thickness).
+        """
+        import gmsh
+        sw = support_width or 0.05 * length
+        with _gmsh_lock:
+            from app.gmsh_init import initialize as _gmsh_init
+            _gmsh_init()
+            try:
+                gmsh.option.setNumber("General.Terminal", 0)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.model.add("plate")
+                occ = gmsh.model.occ
+                b = [occ.addBox(0, 0, 0, sw, height, thickness),
+                     occ.addBox(sw, 0, 0, length - 2 * sw, height, thickness),
+                     occ.addBox(length - sw, 0, 0, sw, height, thickness)]
+                vols = [(3, t) for t in b]
+                if hole_radius and hole_radius > 0:
+                    cx, cy = hole_center or (length / 2, height / 2)
+                    cyl = occ.addCylinder(cx, cy, -thickness, 0, 0, 3 * thickness, hole_radius)
+                    vols, _ = occ.cut([(3, b[1])], [(3, cyl)])
+                    vols = [(3, b[0])] + vols + [(3, b[2])]
+                occ.fragment(vols, [])
+                occ.synchronize()
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+                gmsh.option.setNumber("Mesh.Optimize", 1)
+                gmsh.model.mesh.generate(3)
+                if order == 2:
+                    gmsh.model.mesh.setOrder(2)
+                eps = 1e-4 * length
+                groups: dict = {}
+                for _, tag in gmsh.model.getEntities(2):
+                    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
+                    if y1 - y0 < eps and y0 > height - eps:
+                        name = 'top'
+                    elif y1 - y0 < eps and y1 < eps:
+                        name = 'support_left' if x1 < sw + eps else 'support_right' if x0 > length - sw - eps                             else 'bottom'
+                    elif x1 - x0 < eps and x1 < eps:
+                        name = 'left'
+                    elif x1 - x0 < eps and x0 > length - eps:
+                        name = 'right'
+                    elif z1 - z0 < eps:
+                        name = 'back' if z1 < eps else 'front'
+                    elif (x1 - x0 < eps) or (y1 - y0 < eps):
+                        continue                       # internal block walls
+                    else:
+                        name = 'hole'
+                    groups.setdefault(name, []).append(tag)
+                surf = {f'{n}#{i}': t for n, tags in groups.items() for i, t in enumerate(tags)}
+                nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
+            finally:
+                gmsh.finalize()
+        merged: dict = {}
+        for k, tris in faces_.items():
+            merged.setdefault(k.split('#')[0], []).append(tris)
+        faces = {k: np.concatenate(v) for k, v in merged.items()}
+        faces['bottom'] = np.concatenate([faces[k] for k in ('bottom', 'support_left', 'support_right')
+                                          if k in faces])
+        return cls(nodes_, elements_, face_sets=faces, mids_known=True)
+
+    @classmethod
+    def generate_ring(cls, inner_radius: float = 0.01, outer_radius: float = 0.02, thickness: float = 0.002,
+                      mesh_size: float = None, order: int = 2) -> FEMMesh:
+        """Quarter of a thick-walled cylinder (x, y ≥ 0, axis z) for pressure-vessel studies.
+
+        Face sets: 'inner', 'outer' (curved), 'x0' (x = 0), 'y0' (y = 0) — symmetry planes —
+        and 'z0' / 'z1' (end faces; uz = 0 on both = plane strain).
+        """
+        import gmsh
+        a, b = float(inner_radius), float(outer_radius)
+        h = mesh_size or (b - a) / 8
+        with _gmsh_lock:
+            from app.gmsh_init import initialize as _gmsh_init
+            _gmsh_init()
+            try:
+                gmsh.option.setNumber("General.Terminal", 0)
+                gmsh.option.setNumber("General.NumThreads", 1)
+                gmsh.model.add("ring")
+                occ = gmsh.model.occ
+                outer = occ.addCylinder(0, 0, 0, 0, 0, thickness, b, angle=np.pi / 2)
+                hole = occ.addCylinder(0, 0, -thickness, 0, 0, 3 * thickness, a)
+                occ.cut([(3, outer)], [(3, hole)])
+                occ.synchronize()
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMin", h)
+                gmsh.option.setNumber("Mesh.CharacteristicLengthMax", h)
+                gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+                gmsh.option.setNumber("Mesh.Optimize", 1)
+                gmsh.model.mesh.generate(3)
+                if order == 2:
+                    gmsh.model.mesh.setOrder(2)
+                eps = 1e-4 * b
+                surf = {}
+                for _, tag in gmsh.model.getEntities(2):
+                    x0, y0, z0, x1, y1, z1 = gmsh.model.getBoundingBox(2, tag)
+                    if z1 - z0 < eps:
+                        name = 'z0' if z1 < eps else 'z1'
+                    elif x1 - x0 < eps and x1 < eps:
+                        name = 'x0'
+                    elif y1 - y0 < eps and y1 < eps:
+                        name = 'y0'
+                    else:
+                        name = 'inner' if max(x1, y1) < (a + b) / 2 else 'outer'
+                    surf[name] = tag
+                nodes_, elements_, faces_ = gmsh_extract(gmsh, surf)
+            finally:
+                gmsh.finalize()
+        return cls(nodes_, elements_, face_sets=faces_, mids_known=True)
+
+    @classmethod
+    def generate_grid(cls, xs, ys, zs, order: int = 2, transform=None) -> FEMMesh:
+        """Structured tet mesh of the box xs × ys × zs (coordinate arrays, any grading): every hex cell split into
+        the 6 Kuhn tets around its main diagonal (conforming). ``transform(P) → X`` maps the parameter points
+        (k,3) to physical space (e.g. a graded radial sector for well problems); T10 mid nodes are placed at the
+        mapped parameter mid-points, so curved boundaries are followed. Face sets ``x0 x1 y0 y1 z0 z1`` = the six
+        parameter faces (with a sector map: x0 = inner radius, x1 = outer, y0/y1 = the two radial planes)."""
+        from app.design.services.fem import tet_batch as tb
+        xs, ys, zs = (np.asarray(a, float) for a in (xs, ys, zs))
+        nx, ny, nz = len(xs), len(ys), len(zs)
+        if min(nx, ny, nz) < 2 or any(np.any(np.diff(a) <= 0) for a in (xs, ys, zs)):
+            raise ValueError('generate_grid: coordenadas estrictamente crecientes, al menos 2 por eje.')
+        P = np.stack(np.meshgrid(xs, ys, zs, indexing='ij'), axis=-1).reshape(-1, 3)
+        idx = np.arange(nx * ny * nz).reshape(nx, ny, nz)
+        c = [idx[:-1, :-1, :-1], idx[1:, :-1, :-1], idx[1:, 1:, :-1], idx[:-1, 1:, :-1],
+             idx[:-1, :-1, 1:], idx[1:, :-1, 1:], idx[1:, 1:, 1:], idx[:-1, 1:, 1:]]
+        c = [a.ravel() for a in c]
+        kuhn = [(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)]
+        el = np.concatenate([np.column_stack([c[a], c[b], c[d], c[e]]) for a, b, d, e in kuhn])
+        if order == 2:
+            pairs = np.sort(el[:, tb.T10_EDGES].reshape(-1, 2), axis=1)
+            uniq, inv = np.unique(pairs, axis=0, return_inverse=True)
+            mids = len(P) + inv.reshape(len(el), 6)
+            P = np.vstack([P, 0.5 * (P[uniq[:, 0]] + P[uniq[:, 1]])])
+            el = np.hstack([el, mids])
+        X = P if transform is None else np.asarray(transform(P), float)
+        el = tb.canonicalize(X, el, reorder_mids=False)
+        bf = tb.boundary_faces(el)
+        Pc = P[bf[:, :3]]
+        faces = {}
+        for ax, (lo, hi) in enumerate(((xs[0], xs[-1]), (ys[0], ys[-1]), (zs[0], zs[-1]))):
+            tol = 1e-9 * max(1.0, abs(hi - lo))
+            for name, val in (('01'[0], lo), ('01'[1], hi)):
+                on = np.all(np.abs(Pc[:, :, ax] - val) < tol, axis=1)
+                faces['xyz'[ax] + name] = bf[on]
+        return cls(X, el, face_sets=faces, canonical=True)
 
     @classmethod
     def _generate_fallback_cantilever(cls,
@@ -251,11 +406,11 @@ class FEMMesh:
 
         elements = []
         for cb in raw.cells:
-            if cb.type in ('tetra', 'tetra4'):
-                elements = cb.data.tolist()
+            if cb.type in ('tetra', 'tetra4', 'tetra10'):
+                elements = cb.data
                 break
 
-        if not elements:
+        if len(elements) == 0:
             avail = [cb.type for cb in raw.cells]
             raise ValueError(f"No tetra/tetra4 cells in mesh {mesh_id}. "
                              f"Available: {avail}. Use a tet mesh.")
@@ -265,4 +420,52 @@ class FEMMesh:
             for name, ids in raw.point_sets.items():
                 node_sets[name] = ids.tolist()
 
-        return cls(nodes, elements, 'T4', node_sets=node_sets)
+        return cls(nodes, elements, node_sets=node_sets)
+
+
+def gmsh_extract(gmsh, surfaces: dict) -> tuple[np.ndarray, np.ndarray, dict]:
+    """Read the current Gmsh mesh: compact nodes, tets (4 or 10 nodes) and the
+    boundary triangles (3 or 6 nodes) of each named surface tag in ``surfaces``.
+    T10 connectivity is returned in the internal mid-node order (tet_batch).
+
+    Only nodes used by volume elements are kept (Gmsh also returns geometry-only
+    nodes); indices are 0-based into the returned node array.
+    """
+    tags, coords, _ = gmsh.model.mesh.getNodes()
+    coords = coords.reshape(-1, 3)
+    lookup = np.full(int(tags.max()) + 1, -1, dtype=np.int64)
+    lookup[tags.astype(np.int64)] = np.arange(len(tags))
+
+    from app.design.services.fem.tet_batch import GMSH_TET10_TO_INTERNAL
+    tets = []
+    for et, n in ((4, 4), (11, 10)):
+        _, en = gmsh.model.mesh.getElementsByType(et)
+        if len(en):
+            t = lookup[en.astype(np.int64)].reshape(-1, n)
+            tets.append(t[:, GMSH_TET10_TO_INTERNAL] if n == 10 else t)
+    if not tets:
+        raise RuntimeError("GMSH produced no tetrahedra.")
+    if len(tets) > 1:
+        raise RuntimeError("Mixed linear/quadratic tetrahedra in one mesh.")
+    tets = tets[0]
+
+    used = np.unique(tets)
+    remap = np.full(len(coords), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    nodes = coords[used]
+    tets = remap[tets]
+
+    faces = {}
+    for name, stag in surfaces.items():
+        tris = []
+        for et, n in ((2, 3), (9, 6)):
+            _, en = gmsh.model.mesh.getElementsByType(et, stag)
+            if len(en):
+                tris.append(lookup[en.astype(np.int64)].reshape(-1, n))
+        if not tris:
+            raise RuntimeError(f"Surface {name} (tag {stag}) has no triangles.")
+        t = remap[tris[0]]
+        if (t < 0).any():
+            raise RuntimeError(f"Surface {name} uses nodes outside the volume mesh.")
+        faces[name] = t
+    return nodes, tets, faces

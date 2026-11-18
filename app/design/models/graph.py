@@ -20,6 +20,9 @@ class DesignGraph(BaseModel):
     # draft | simulating | optimizing | validated
     status      = Column(String(50), default='draft', nullable=False)
     meta        = Column('metadata', JSONB, default=dict)
+    # Engineering Hub: owning project (nullable until projects are enforced)
+    project_id  = Column(UUID(as_uuid=True), ForeignKey('projects.id', ondelete='SET NULL'),
+                         nullable=True, index=True)
 
     nodes = db.relationship('DesignNode', backref='graph',
                             lazy='dynamic', cascade='all, delete-orphan',

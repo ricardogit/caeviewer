@@ -7,28 +7,101 @@ import {
   Box, Typography, TextField, Select, MenuItem, FormControl, InputLabel,
   Divider, IconButton, Chip, Button, Slider, Tooltip,
 } from '@mui/material';
-import { Close, Delete } from '@mui/icons-material';
-import useDesignStore from '../../stores/designStore';
+import { Close, Delete, LibraryBooks } from '@mui/icons-material';
+import MaterialEditor from '../Material/MaterialEditor';
+import useDesignStore, { useStudy } from '../../stores/designStore';
 import { NODE_COLORS } from './GraphEditor';
+import FaceSelector, { useStudyGeometryId } from './FaceSelector';
+import CadGeometryFields from './CadGeometryFields';
+import PlasticityFields from './PlasticityFields';
+import OrthotropicFields from './OrthotropicFields';
+import HyperelasticFields from './HyperelasticFields';
+import ViscoelasticFields from './ViscoelasticFields';
+import PiezoFields from './PiezoFields';
+import FluidFields, { InletRampField, InletTurbulenceFields } from './FluidFields';
+import MagneticFields, { CoilFields } from './MagneticFields';
+import TransportFields, { ConcentrationBCFields, SpeciesLoadFields, SPECIES_LOADS } from './TransportFields';
+import DarcyFields, { HeadBCFields, DarcyLoadFields, DARCY_LOADS } from './DarcyFields';
+import ShallowWaterFields, { OutfallLoadFields, SWBCFields, WindLoadFields, SW_BCS } from './ShallowWaterFields';
 
-const MATERIAL_TYPES = [
-  'linear_elastic_isotropic', 'linear_elastic_orthotropic',
-  'elastoplastic_vonmises', 'hyperelastic_neohookean', 'viscoelastic_maxwell',
-  'fourier_isotropic', 'thermoelastic', 'piezoelectric', 'newtonian_fluid',
+// [model_type, label, implemented]; the not-yet-implemented ones are shown disabled.
+export const MATERIAL_TYPES = [
+  ['linear_elastic_isotropic', 'Elástico lineal isótropo', true],
+  ['linear_elastic_orthotropic', 'Elástico lineal ortótropo', true],
+  ['elastoplastic_vonmises', 'Elastoplástico von Mises (J2)', true],
+  ['thermoelastic', 'Termoelástico isótropo (α)', true],
+  ['fourier_isotropic', 'Solo térmico (Fourier isótropo)', true],
+  ['hyperelastic_neohookean', 'Hiperelástico Neo-Hookean', true],
+  ['viscoelastic_maxwell', 'Viscoelástico Maxwell (Prony)', true],
+  ['piezoelectric', 'Piezoeléctrico (6mm, u + φ)', true],
+  ['thermopiezoelectric', 'Termo-piezoeléctrico (α, piroeléctrico p3)', true],
+  ['newtonian_fluid', 'Fluido newtoniano (Stokes)', true],
+  ['linear_magnetic', 'Magnético (μr, imán Br, saturación B-H)', true],
+  ['scalar_transport', 'Transporte de contaminantes (advección–difusión–reacción)', true],
+  ['porous_medium', 'Medio poroso (Darcy, agua subterránea)', true],
+  ['shallow_water', 'Agua (aguas someras 2D: marea, ríos, viento)', true],
 ];
 
-const BC_TYPES = ['fixed', 'pinned', 'roller_x', 'roller_y', 'roller_z', 'symmetry'];
-const LOAD_TYPES = ['force', 'pressure', 'torque', 'gravity', 'thermal_flux'];
+// FASE 2: solids have translational DOFs only; symmetry needs planar axis-aligned faces.
+const BC_TYPES = [
+  ['fixed', 'Empotrado (UX, UY, UZ)'], ['pinned', 'Articulado (UX, UY, UZ)'],
+  ['roller_x', 'Rodillo: UX = 0'], ['roller_y', 'Rodillo: UY = 0'], ['roller_z', 'Rodillo: UZ = 0'],
+  ['symmetry', 'Simetría (normal = 0)'], ['temperature', 'Temperatura impuesta (térmico)'],
+  ['voltage', 'Potencial eléctrico / electrodo (piezo)'],
+  ['velocity', 'Velocidad impuesta / entrada (fluido)'],
+  ['magnetic_potential', 'Potencial magnético / polo (magnético)'],
+  ['coil', 'Bobina N·I (magnético)'],
+  ['concentration', 'Concentración impuesta (transporte)'],
+  ['hydraulic_head', 'Carga hidráulica impuesta (Darcy)'],
+  ['tide', 'Marea (aguas someras 2D)'], ['river_inflow', 'Caudal de río (aguas someras 2D)'],
+  ['open_boundary', 'Mar abierto: salida libre / nivel (aguas someras 2D)'],
+  ['coast', 'Costa / pared (aguas someras 2D)'],
+];
+const BC_DEFAULT_DOFS = { fixed: [0, 1, 2], pinned: [0, 1, 2], roller_x: [0], roller_y: [1], roller_z: [2] };
+const LOAD_TYPES = [
+  ['force', 'Fuerza total sobre caras'], ['pressure', 'Presión normal'], ['gravity', 'Gravedad (peso propio)'],
+  ['heat_flux', 'Flujo de calor (térmico)'], ['convection', 'Convección (térmico)'],
+  ['heat_source', 'Fuente de calor interna (térmico)'],
+  ['surface_charge', 'Carga eléctrica superficial (piezo)'],
+  ['magnetic_flux', 'Flujo magnético normal Bn (magnético)'],
+  ['point_source', 'Vertido puntual (transporte)'], ['species_flux', 'Flujo de especie en caras (transporte)'],
+  ['exchange', 'Intercambio con el exterior (transporte)'], ['species_source', 'Fuente de especie en volumen (transporte)'],
+  ['well', 'Pozo de bombeo / inyección (Darcy)'], ['recharge', 'Recarga por infiltración (Darcy)'],
+  ['leakage', 'Goteo río / acuitardo (Darcy)'],
+  ['wind', 'Viento (aguas someras 2D)'], ['outfall', 'Vertido / emisario (aguas someras 2D)'],
+  ['torque', 'Par (próximamente)'],
+];
+const LOAD_UNITS = {
+  force: ['N', 'kN', 'MN', 'lbf'], pressure: ['Pa', 'kPa', 'MPa', 'GPa', 'psi', 'bar'], gravity: ['m/s²', 'g'],
+  heat_flux: ['W/m²', 'kW/m²'], convection: ['W/m²·K'], heat_source: ['W/m³', 'kW/m³', 'MW/m³'],
+  surface_charge: ['C/m²', 'mC/m²', 'µC/m²'], magnetic_flux: ['T', 'mT'],
+  point_source: [''], species_flux: [''], exchange: [''], species_source: [''],
+  well: [''], recharge: [''], leakage: [''], wind: [''], outfall: ['m3/s'],
+};
+const THERMAL_LOADS = ['heat_flux', 'convection', 'heat_source'];
+// face-based scalar loads of the field physics (same panel as the thermal ones)
+const FIELD_LOADS = [...THERMAL_LOADS, 'surface_charge', 'magnetic_flux'];
+// BCs that prescribe a scalar field on faces instead of displacements: [property, label, default face set]
+export const SCALAR_BC = {
+  temperature: ['temperature', 'Temperatura [°C]', 'fixed'],
+  voltage: ['voltage', 'Potencial [V]', 'z0'],
+  magnetic_potential: ['magnetic_potential', 'Potencial magnético ψ [A·vuelta]', 'fixed'],
+};
+// FASE 2 multiphysics: conductivity for thermal studies, α and T_ref for thermal stresses
+const THERMAL_MATERIAL = [['k', 'Conductividad k [W/m·K]', 'ej: 50'], ['alpha', 'Dilatación α [1/K]', 'ej: 1.2e-5'],
+  ['T_ref', 'T de referencia (sin tensión) [°C]', '20']];
 
 export default function NodePanel({ node, graphId, onClose }) {
-  const { updateNode, deleteNode } = useDesignStore();
+  const { updateNode, deleteNode } = useStudy('updateNode', 'deleteNode');
   const [label, setLabel] = useState(node.data.label || '');
   const [props, setProps] = useState(node.data.properties || {});
   const [level, setLevel] = useState(node.data.level || 0);
   const [dirty, setDirty] = useState(false);
+  const [matEditor, setMatEditor] = useState(false);
 
   const nodeType = node.data.node_type;
   const color = NODE_COLORS[nodeType] || '#888';
+  const studyGeometryId = useStudyGeometryId();
 
   // Reset when selection changes
   useEffect(() => {
@@ -36,6 +109,7 @@ export default function NodePanel({ node, graphId, onClose }) {
     setProps(node.data.properties || {});
     setLevel(node.data.level || 0);
     setDirty(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the form only when another node is selected, not on every edit
   }, [node.id]);
 
   const setProp = (key, value) => {
@@ -132,6 +206,11 @@ export default function NodePanel({ node, graphId, onClose }) {
 
         {nodeType === 'GEOMETRY' && (
           <>
+            <CadGeometryFields props={props} setProp={setProp} />
+            <Divider sx={{ borderColor: '#333' }} />
+            {!props.geometry_id && !props.mesh_id && (
+              <ParametricShapeFields props={props} setProp={setProp} />
+            )}
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Tipo de representación</InputLabel>
               <Select
@@ -188,6 +267,13 @@ export default function NodePanel({ node, graphId, onClose }) {
 
         {nodeType === 'MATERIAL' && (
           <>
+            <Button size="small" variant="contained" color="secondary" startIcon={<LibraryBooks />}
+              onClick={() => setMatEditor(true)}>
+              Biblioteca de materiales…
+            </Button>
+            <Typography variant="caption" sx={{ color: '#888', mt: -0.5 }}>
+              Catálogo (40 materiales), importados de CSV/Excel o CAPP, y ajuste con tus ensayos de tracción.
+            </Typography>
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Modelo constitutivo</InputLabel>
               <Select
@@ -196,21 +282,86 @@ export default function NodePanel({ node, graphId, onClose }) {
                 label="Modelo constitutivo"
                 sx={{ color: '#fff' }}
               >
-                {MATERIAL_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                {MATERIAL_TYPES.map(([t, lbl, ok]) => (
+                  <MenuItem key={t} value={t} disabled={!ok}>{ok ? lbl : `${lbl} (pendiente)`}</MenuItem>
+                ))}
               </Select>
             </FormControl>
+            {props.material_name && (
+              <Chip size="small" label={`Biblioteca: ${props.material_name}${props.constitutive_fit ? ` (${props.constitutive_fit})` : ''}`}
+                sx={{ bgcolor: '#263238', color: '#90caf9', fontSize: 10, alignSelf: 'flex-start' }} />
+            )}
             {[['E', 'Módulo de Young [Pa]', 70e9],
               ['nu', 'Coeficiente de Poisson', 0.33],
-              ['rho', 'Densidad [kg/m³]', 2700]].map(([k, lbl, def]) => (
-              <TextField
-                key={k} label={lbl} size="small" fullWidth
-                type="number"
-                value={props[k] ?? def}
-                onChange={e => setProp(k, parseFloat(e.target.value))}
-                inputProps={{ style: { color: '#fff' } }}
-                InputLabelProps={{ style: { color: '#888' } }}
-              />
+              ['rho', 'Densidad [kg/m³]', 2700],
+              ['yield_strength', 'Límite elástico σy [Pa]', '']]
+              .filter(() => !['scalar_transport', 'porous_medium', 'shallow_water'].includes(props.model_type))
+              .filter(([k]) => !['linear_elastic_orthotropic', 'piezoelectric', 'thermopiezoelectric', 'newtonian_fluid',
+                'linear_magnetic']
+                .includes(props.model_type) || k === 'rho')
+              .filter(([k]) => !['hyperelastic_neohookean', 'viscoelastic_maxwell'].includes(props.model_type)
+                || k !== 'yield_strength')
+              .map(([k, lbl, d0]) => [k, lbl, props.model_type === 'newtonian_fluid' && k === 'rho' ? 1000 : d0])
+              .map(([k, lbl, def]) => (
+              <Box key={k} sx={{ display: 'flex', gap: 0.5 }}>
+                <TextField
+                  label={lbl} size="small" sx={{ flex: 2 }}
+                  type="number"
+                  value={props[k] ?? def}
+                  onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+                <TextField
+                  label="± desv." size="small" sx={{ flex: 1 }}
+                  type="number"
+                  value={props[k === 'yield_strength' ? 'yield_std' : `${k}_std`] ?? ''}
+                  onChange={e => setProp(k === 'yield_strength' ? 'yield_std' : `${k}_std`,
+                    e.target.value === '' ? null : parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+              </Box>
             ))}
+            <Typography variant="caption" sx={{ color: '#777' }}>
+              Las desviaciones alimentan la propagación de incertidumbre (Solver → Incertidumbre).
+            </Typography>
+            {props.model_type === 'elastoplastic_vonmises' && <PlasticityFields props={props} setProp={setProp} />}
+            {props.model_type === 'linear_elastic_orthotropic' && <OrthotropicFields props={props} setProp={setProp} />}
+            {props.model_type === 'hyperelastic_neohookean' && <HyperelasticFields props={props} setProp={setProp} />}
+            {props.model_type === 'viscoelastic_maxwell' && <ViscoelasticFields props={props} setProp={setProp} />}
+            {['piezoelectric', 'thermopiezoelectric'].includes(props.model_type) && (
+              <PiezoFields props={props} setProp={setProp} thermal={props.model_type === 'thermopiezoelectric'} />
+            )}
+            {props.model_type === 'newtonian_fluid' && <FluidFields props={props} setProp={setProp} />}
+            {props.model_type === 'linear_magnetic' && <MagneticFields props={props} setProp={setProp} />}
+            {props.model_type === 'scalar_transport' && <TransportFields props={props} setProp={setProp} />}
+            {props.model_type === 'porous_medium' && <DarcyFields props={props} setProp={setProp} />}
+            {props.model_type === 'shallow_water' && <ShallowWaterFields props={props} setProp={setProp} />}
+            {!['scalar_transport', 'porous_medium', 'shallow_water'].includes(props.model_type) && (
+              <Typography variant="caption" sx={{ color: '#ffab91', mt: 0.5 }}>Propiedades térmicas</Typography>
+            )}
+            {!['scalar_transport', 'porous_medium', 'shallow_water'].includes(props.model_type) && THERMAL_MATERIAL.map(([k, lbl, ph]) => (
+              <TextField key={k} label={lbl} size="small" fullWidth type="number" placeholder={ph}
+                value={props[k] ?? ''}
+                onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+                inputProps={{ style: { color: '#fff' }, 'aria-label': lbl }}
+                InputLabelProps={{ style: { color: '#888' } }} />
+            ))}
+            {matEditor && (
+              <MaterialEditor open graphId={graphId} nodeId={node.id} onClose={() => setMatEditor(false)}
+                onAssigned={(p) => {
+                  setProps(p);
+                  setDirty(false);
+                  useDesignStore.setState((st) => ({
+                    graphData: {
+                      ...st.graphData,
+                      nodes: st.graphData.nodes.map((n) => (n.id === node.id
+                        ? { ...n, data: { ...n.data, properties: p } } : n)),
+                    },
+                  }));
+                }} />
+            )}
           </>
         )}
 
@@ -220,138 +371,335 @@ export default function NodePanel({ node, graphId, onClose }) {
               <InputLabel sx={{ color: '#888' }}>Tipo de BC</InputLabel>
               <Select
                 value={props.bc_type || 'fixed'}
-                onChange={e => setProp('bc_type', e.target.value)}
+                onChange={e => {
+                  setProp('bc_type', e.target.value);
+                  setProp('dofs', BC_DEFAULT_DOFS[e.target.value]);
+                }}
                 label="Tipo de BC"
                 sx={{ color: '#fff' }}
               >
-                {BC_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                {BC_TYPES.map(([t, lbl]) => <MenuItem key={t} value={t}>{lbl}</MenuItem>)}
               </Select>
             </FormControl>
-            <TextField
-              label="Nombre del conjunto de nodos (node_set)"
-              size="small" fullWidth
-              value={props.node_set || ''}
-              onChange={e => setProp('node_set', e.target.value)}
-              placeholder="ej: fixed_base"
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <Box>
-              <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
-                Grados de libertad restringidos:
-              </Typography>
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 }}>
-                {[['UX', 0], ['UY', 1], ['UZ', 2], ['RX', 3], ['RY', 4], ['RZ', 5]].map(([lbl, idx]) => {
-                  const dofs = props.dofs || [];
-                  const checked = dofs.includes(idx);
-                  return (
-                    <Box
-                      key={lbl}
-                      onClick={() => {
-                        const newDofs = checked ? dofs.filter(d => d !== idx) : [...dofs, idx].sort();
-                        setProp('dofs', newDofs);
-                      }}
-                      sx={{
-                        p: 0.5,
-                        border: `1px solid ${checked ? '#4caf50' : '#555'}`,
-                        borderRadius: 0.5,
-                        cursor: 'pointer',
-                        bgcolor: checked ? '#1b5e20' : '#222',
-                        color: checked ? '#81c784' : '#888',
-                        fontSize: 12,
-                        textAlign: 'center',
-                        fontWeight: checked ? 700 : 400,
-                        transition: 'all 0.15s',
-                        '&:hover': { bgcolor: checked ? '#2e7d32' : '#333' },
-                      }}
-                    >
-                      {lbl}
-                    </Box>
-                  );
-                })}
+            {SW_BCS.includes(props.bc_type) && <SWBCFields props={props} setProp={setProp} />}
+            {!SW_BCS.includes(props.bc_type) && (
+              <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)}
+                required={props.bc_type === 'symmetry'} />
+            )}
+            {SCALAR_BC[props.bc_type] && (() => {
+              const [key, lbl, defFace] = SCALAR_BC[props.bc_type];
+              return (
+                <>
+                  <TextField
+                    label={lbl} size="small" fullWidth type="number"
+                    value={props[key] ?? ''}
+                    onChange={e => setProp(key, e.target.value === '' ? null : parseFloat(e.target.value))}
+                    inputProps={{ style: { color: '#fff' }, 'aria-label': lbl }}
+                    InputLabelProps={{ style: { color: '#888' } }}
+                  />
+                  {!studyGeometryId && props.bc_type !== 'temperature' && (
+                    <TextField
+                      label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                      value={props.face_set || ''}
+                      onChange={e => setProp('face_set', e.target.value || null)}
+                      placeholder={`${defFace} (fixed, tip, y0, y1, z0, z1)`}
+                      inputProps={{ style: { color: '#fff' } }}
+                      InputLabelProps={{ style: { color: '#888' } }}
+                    />
+                  )}
+                </>
+              );
+            })()}
+            {props.bc_type === 'coil' && <CoilFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />}
+            {props.bc_type === 'concentration' && (
+              <ConcentrationBCFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+            )}
+            {props.bc_type === 'hydraulic_head' && (
+              <HeadBCFields props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+            )}
+            {props.bc_type === 'velocity' && (
+              <>
+                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                  {['vx', 'vy', 'vz'].map(k => (
+                    <TextField key={k} label={k} size="small" type="number" sx={{ flex: 1 }}
+                      value={props[k] ?? ''}
+                      onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+                      inputProps={{ style: { color: '#fff' }, 'aria-label': `velocidad ${k}` }}
+                      InputLabelProps={{ style: { color: '#888' } }} />
+                  ))}
+                  <Select size="small" value={props.unit || 'm/s'} onChange={e => setProp('unit', e.target.value)}
+                    sx={{ color: '#fff', minWidth: 72 }}>
+                    {['m/s', 'mm/s'].map(u => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  </Select>
+                </Box>
+                <Typography variant="caption" sx={{ color: '#777' }}>
+                  Fluido: «Empotrado» = pared sin deslizamiento; «Rodillo» = pared con deslizamiento; caras sin
+                  condición = salida libre (p = 0) o presión impuesta con una CARGA «Presión normal».
+                </Typography>
+                <InletTurbulenceFields props={props} setProp={setProp} />
+                <InletRampField props={props} setProp={setProp} />
+                {!studyGeometryId && (
+                  <TextField
+                    label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                    value={props.face_set || ''}
+                    onChange={e => setProp('face_set', e.target.value || null)}
+                    placeholder="fixed (fixed, tip, y0, y1, z0, z1)"
+                    inputProps={{ style: { color: '#fff' } }}
+                    InputLabelProps={{ style: { color: '#888' } }}
+                  />
+                )}
+              </>
+            )}
+            {!['symmetry', 'velocity', 'coil', 'concentration', 'hydraulic_head', ...SW_BCS].includes(props.bc_type) && !SCALAR_BC[props.bc_type] && (
+              <Box>
+                <Typography variant="caption" sx={{ color: '#888', mb: 0.5, display: 'block' }}>
+                  Desplazamientos restringidos:
+                </Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 0.5 }}>
+                  {[['UX', 0], ['UY', 1], ['UZ', 2]].map(([lbl, idx]) => {
+                    const dofs = props.dofs || BC_DEFAULT_DOFS[props.bc_type || 'fixed'] || [0, 1, 2];
+                    const checked = dofs.includes(idx);
+                    return (
+                      <Box
+                        key={lbl}
+                        onClick={() => {
+                          const newDofs = checked ? dofs.filter(d => d !== idx) : [...dofs, idx].sort();
+                          setProp('dofs', newDofs);
+                        }}
+                        sx={{
+                          p: 0.5,
+                          border: `1px solid ${checked ? '#4caf50' : '#555'}`,
+                          borderRadius: 0.5,
+                          cursor: 'pointer',
+                          bgcolor: checked ? '#1b5e20' : '#222',
+                          color: checked ? '#81c784' : '#888',
+                          fontSize: 12,
+                          textAlign: 'center',
+                          fontWeight: checked ? 700 : 400,
+                          transition: 'all 0.15s',
+                          '&:hover': { bgcolor: checked ? '#2e7d32' : '#333' },
+                        }}
+                      >
+                        {lbl}
+                      </Box>
+                    );
+                  })}
+                </Box>
               </Box>
-            </Box>
-            <TextField
-              label="Valor prescrito (displacement)"
-              size="small" fullWidth type="number"
-              value={props.value ?? 0}
-              onChange={e => setProp('value', parseFloat(e.target.value))}
-              placeholder="0"
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <TextField
-              label="Descripción / superficie"
-              size="small" fullWidth
-              value={props.surface_label || ''}
-              onChange={e => setProp('surface_label', e.target.value)}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
+            )}
+            {!SCALAR_BC[props.bc_type] && !['velocity', 'coil', 'concentration', 'hydraulic_head', ...SW_BCS].includes(props.bc_type) && (
+              <TextField
+                label="Desplazamiento prescrito [m]"
+                size="small" fullWidth type="number"
+                value={props.value ?? 0}
+                onChange={e => setProp('value', parseFloat(e.target.value))}
+                placeholder="0"
+                inputProps={{ style: { color: '#fff' } }}
+                InputLabelProps={{ style: { color: '#888' } }}
+              />
+            )}
+            {!studyGeometryId && !['concentration', 'hydraulic_head', ...SW_BCS].includes(props.bc_type) && (
+              <TextField
+                label="Conjunto de nodos (malla CAE / viga de prueba)"
+                size="small" fullWidth
+                value={props.node_set || ''}
+                onChange={e => setProp('node_set', e.target.value)}
+                placeholder="ej: fixed"
+                inputProps={{ style: { color: '#fff' } }}
+                InputLabelProps={{ style: { color: '#888' } }}
+              />
+            )}
           </>
         )}
 
-        {nodeType === 'LOAD' && (
-          <>
+        {nodeType === 'LOAD' && (() => {
+          const lt = props.load_type || 'force';
+          const units = LOAD_UNITS[lt] || ['N'];
+          const unit = units.includes(props.unit) ? props.unit : units[0];
+          const dir = [props.dir_x ?? 0, props.dir_y ?? 0, props.dir_z ?? -1];
+          const n = Math.hypot(...dir) || 1;
+          const num = (k, lbl, def = '') => (
+            <TextField key={k} label={lbl} size="small" type="number" sx={{ flex: 1 }}
+              value={props[k] ?? def}
+              onChange={e => setProp(k, e.target.value === '' ? null : parseFloat(e.target.value))}
+              inputProps={{ style: { color: '#fff' }, 'aria-label': lbl }}
+              InputLabelProps={{ style: { color: '#888' } }} />
+          );
+          const typeSelect = (
             <FormControl size="small" fullWidth>
               <InputLabel sx={{ color: '#888' }}>Tipo de carga</InputLabel>
               <Select
-                value={props.load_type || 'force'}
-                onChange={e => setProp('load_type', e.target.value)}
+                value={lt}
+                onChange={e => { setProp('load_type', e.target.value); setProp('unit', (LOAD_UNITS[e.target.value] || ['N'])[0]); }}
                 label="Tipo de carga"
                 sx={{ color: '#fff' }}
               >
-                {LOAD_TYPES.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                {LOAD_TYPES.map(([t, lbl]) => (
+                  <MenuItem key={t} value={t} disabled={!LOAD_UNITS[t]}>{lbl}</MenuItem>
+                ))}
               </Select>
             </FormControl>
-            <TextField
-              label="Nombre del conjunto de nodos (node_set)"
-              size="small" fullWidth
-              value={props.node_set || ''}
-              onChange={e => setProp('node_set', e.target.value)}
-              placeholder="ej: tip"
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <TextField
-              label="Magnitud"
-              size="small" fullWidth type="number"
-              value={props.magnitude ?? 0}
-              onChange={e => setProp('magnitude', parseFloat(e.target.value))}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <TextField
-              label="Unidad"
-              size="small" fullWidth
-              value={props.unit || 'N'}
-              onChange={e => setProp('unit', e.target.value)}
-              inputProps={{ style: { color: '#fff' } }}
-              InputLabelProps={{ style: { color: '#888' } }}
-            />
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              {['dir_x', 'dir_y', 'dir_z'].map((k, i) => (
+          );
+          if (lt === 'wind') {
+            return (
+              <>
+                {typeSelect}
+                <WindLoadFields props={props} setProp={setProp} />
+              </>
+            );
+          }
+          if (lt === 'outfall') {
+            return (
+              <>
+                {typeSelect}
+                <OutfallLoadFields props={props} setProp={setProp} />
+              </>
+            );
+          }
+          if (DARCY_LOADS.includes(lt)) {
+            return (
+              <>
+                {typeSelect}
+                {!(lt === 'well' && props.at_point) && (
+                  <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)} />
+                )}
+                <DarcyLoadFields lt={lt} props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+              </>
+            );
+          }
+          if (SPECIES_LOADS.includes(lt)) {
+            return (
+              <>
+                {typeSelect}
+                {['species_flux', 'exchange'].includes(lt) && (
+                  <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)} />
+                )}
+                <SpeciesLoadFields lt={lt} props={props} setProp={setProp} showFaceSet={!studyGeometryId} />
+              </>
+            );
+          }
+          if (FIELD_LOADS.includes(lt)) {
+            return (
+              <>
+                {typeSelect}
+                {lt !== 'heat_source' && (
+                  <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)} />
+                )}
+                {lt === 'convection' ? (
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    {num('h', 'h [W/m²·K]')}
+                    {num('T_inf', 'T∞ [°C]', 20)}
+                  </Box>
+                ) : (
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    {num('magnitude', lt === 'heat_flux' ? 'Flujo (+ entra al sólido)'
+                      : lt === 'surface_charge' ? 'Densidad de carga libre'
+                        : lt === 'magnetic_flux' ? 'Bn (+ entra al sólido)' : 'Potencia por volumen', 0)}
+                    <FormControl size="small" sx={{ flex: 1 }}>
+                      <InputLabel sx={{ color: '#888' }}>Unidad</InputLabel>
+                      <Select value={unit} label="Unidad" onChange={e => setProp('unit', e.target.value)} sx={{ color: '#fff' }}>
+                        {units.map(u => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Box>
+                )}
+                <Typography variant="caption" sx={{ color: '#888' }}>
+                  {lt === 'heat_source' ? 'Uniforme en todo el sólido.'
+                    : lt === 'convection' ? 'Sin caras seleccionadas: todo el resto de la superficie (caras sin otra condición).'
+                      : lt === 'surface_charge' ? 'Sin caras seleccionadas (viga de prueba): cara z1.'
+                        : 'Sin caras seleccionadas (viga de prueba): cara del extremo.'}
+                </Typography>
+                {!studyGeometryId && lt !== 'heat_source' && (
+                  <TextField
+                    label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                    value={props.face_set || ''}
+                    onChange={e => setProp('face_set', e.target.value || null)}
+                    placeholder={lt === 'convection' ? '@free (resto de la superficie)' : lt === 'surface_charge' ? 'z1' : 'tip'}
+                    inputProps={{ style: { color: '#fff' } }}
+                    InputLabelProps={{ style: { color: '#888' } }}
+                  />
+                )}
+              </>
+            );
+          }
+          return (
+            <>
+              {typeSelect}
+              {lt !== 'gravity' && (
+                <FaceSelector entityIds={props.entity_ids} onChange={ids => setProp('entity_ids', ids)}
+                  required={lt === 'pressure'} />
+              )}
+              <Box sx={{ display: 'flex', gap: 1 }}>
                 <TextField
-                  key={k} label={['Dx', 'Dy', 'Dz'][i]}
-                  size="small" type="number"
-                  value={props[k] ?? [0, 0, -1][i]}
-                  onChange={e => setProp(k, parseFloat(e.target.value))}
-                  inputProps={{ style: { color: '#fff', fontSize: 12 } }}
-                  InputLabelProps={{ style: { color: '#888', fontSize: 12 } }}
-                  sx={{ flex: 1 }}
+                  label={lt === 'gravity' ? 'Aceleración' : lt === 'pressure' ? 'Presión' : 'Fuerza total'}
+                  size="small" type="number" sx={{ flex: 2 }}
+                  value={props.magnitude ?? (lt === 'gravity' ? 9.80665 : 0)}
+                  onChange={e => setProp('magnitude', parseFloat(e.target.value))}
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
                 />
-              ))}
-            </Box>
-            <Box sx={{ bgcolor: '#1b3a1b', border: '1px solid #2e7d32', borderRadius: 0.5, p: 1 }}>
-              <Typography variant="caption" sx={{ color: '#81c784', fontSize: 11 }}>
-                Vector de fuerza:
-              </Typography>
-              <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', display: 'block', fontSize: 10, mt: 0.25 }}>
-                F = [{((props.magnitude ?? 0) * (props.dir_x ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_y ?? 0)).toFixed(1)}, {((props.magnitude ?? 0) * (props.dir_z ?? -1)).toFixed(1)}]
-              </Typography>
-            </Box>
-          </>
-        )}
+                <FormControl size="small" sx={{ flex: 1 }}>
+                  <InputLabel sx={{ color: '#888' }}>Unidad</InputLabel>
+                  <Select value={unit} label="Unidad" onChange={e => setProp('unit', e.target.value)} sx={{ color: '#fff' }}>
+                    {units.map(u => <MenuItem key={u} value={u}>{u}</MenuItem>)}
+                  </Select>
+                </FormControl>
+              </Box>
+              {lt === 'pressure' ? (
+                <>
+                  <Typography variant="caption" sx={{ color: '#888' }}>
+                    Normal a cada cara; positiva empuja hacia el interior del sólido (fluido: presión de entrada).
+                  </Typography>
+                  {!studyGeometryId && (
+                    <TextField
+                      label="Conjunto de caras (viga de prueba)" size="small" fullWidth
+                      value={props.face_set || ''}
+                      onChange={e => setProp('face_set', e.target.value || null)}
+                      placeholder="fixed, tip, y0, y1, z0, z1"
+                      inputProps={{ style: { color: '#fff' } }}
+                      InputLabelProps={{ style: { color: '#888' } }}
+                    />
+                  )}
+                </>
+              ) : (
+                <>
+                  <Box sx={{ display: 'flex', gap: 1 }}>
+                    {['dir_x', 'dir_y', 'dir_z'].map((k, i) => (
+                      <TextField
+                        key={k} label={['Dx', 'Dy', 'Dz'][i]}
+                        size="small" type="number"
+                        value={props[k] ?? [0, 0, -1][i]}
+                        onChange={e => setProp(k, parseFloat(e.target.value))}
+                        inputProps={{ style: { color: '#fff', fontSize: 12 } }}
+                        InputLabelProps={{ style: { color: '#888', fontSize: 12 } }}
+                        sx={{ flex: 1 }}
+                      />
+                    ))}
+                  </Box>
+                  <Box sx={{ bgcolor: '#1b3a1b', border: '1px solid #2e7d32', borderRadius: 0.5, p: 1 }}>
+                    <Typography variant="caption" sx={{ color: '#81c784', fontSize: 11 }}>
+                      {lt === 'gravity' ? 'Aceleración' : 'Fuerza total (repartida por área)'}:
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#a5d6a7', fontFamily: 'monospace', display: 'block', fontSize: 10, mt: 0.25 }}>
+                      [{dir.map(d => (((props.magnitude ?? (lt === 'gravity' ? 9.80665 : 0)) * d) / n).toFixed(2)).join(', ')}] {unit}
+                    </Typography>
+                  </Box>
+                </>
+              )}
+              {!studyGeometryId && lt === 'force' && (
+                <TextField
+                  label="Conjunto de nodos (malla CAE / viga de prueba)"
+                  size="small" fullWidth
+                  value={props.node_set || ''}
+                  onChange={e => setProp('node_set', e.target.value)}
+                  placeholder="ej: tip"
+                  inputProps={{ style: { color: '#fff' } }}
+                  InputLabelProps={{ style: { color: '#888' } }}
+                />
+              )}
+            </>
+          );
+        })()}
 
         {nodeType === 'RESULT' && (
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -448,6 +796,51 @@ export default function NodePanel({ node, graphId, onClose }) {
             Guardar cambios
           </Button>
         </Box>
+      )}
+    </Box>
+  );
+}
+
+
+/** FASE 9: parametric geometry defined in the graph (no CAD): a beam fixed at x = 0, loaded at x = L.
+ *  BC/LOAD nodes without faces use the default sets 'fixed' / 'tip'. */
+function ParametricShapeFields({ props, setProp }) {
+  const tf = {
+    size: 'small', type: 'number', inputProps: { style: { color: '#fff', fontSize: 12 } },
+    InputLabelProps: { style: { color: '#888' } },
+  };
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <FormControl size="small" fullWidth>
+        <InputLabel sx={{ color: '#888' }}>Forma paramétrica (sin CAD)</InputLabel>
+        <Select value={props.shape || ''} label="Forma paramétrica (sin CAD)" sx={{ color: '#fff' }}
+          onChange={(e) => setProp('shape', e.target.value || undefined)}>
+          <MenuItem value="">— ninguna (viga de prueba 50×10×10 T4) —</MenuItem>
+          <MenuItem value="beam">Viga prismática (empotrada en x = 0)</MenuItem>
+        </Select>
+      </FormControl>
+      {props.shape === 'beam' && (
+        <>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField {...tf} label="L [mm]" value={props.length_mm ?? 50} onChange={(e) => setProp('length_mm', Number(e.target.value))} />
+            <TextField {...tf} label="b [mm]" value={props.width_mm ?? 10} onChange={(e) => setProp('width_mm', Number(e.target.value))} />
+            <TextField {...tf} label="h [mm]" value={props.height_mm ?? 10} onChange={(e) => setProp('height_mm', Number(e.target.value))} />
+          </Box>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <TextField {...tf} label="Divisiones a lo largo" value={props.n_div ?? 12} onChange={(e) => setProp('n_div', Number(e.target.value))} />
+            <FormControl size="small" fullWidth>
+              <InputLabel sx={{ color: '#888' }}>Elemento</InputLabel>
+              <Select value={props.element_order ?? 2} label="Elemento" sx={{ color: '#fff' }}
+                onChange={(e) => setProp('element_order', e.target.value)}>
+                <MenuItem value={2}>T10 (cuadrático)</MenuItem>
+                <MenuItem value={1}>T4 (lineal, rígido en flexión)</MenuItem>
+              </Select>
+            </FormControl>
+          </Box>
+          <Typography sx={{ color: '#777', fontSize: 11 }}>
+            Caras: «fixed» (x = 0) y «tip» (x = L) para BC y cargas sin caras CAD.
+          </Typography>
+        </>
       )}
     </Box>
   );

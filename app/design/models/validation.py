@@ -24,6 +24,11 @@ class ExperimentalRecord(BaseModel):
     source          = Column(String(100), default='user')
     description     = Column(Text)
 
+    __table_args__ = (
+        db.Index('idx_exp_graph', 'graph_id'),
+        db.Index('idx_exp_material', 'material_id'),
+    )
+
     def __repr__(self):
         return f'<ExperimentalRecord {self.test_type} source={self.source}>'
 
@@ -31,7 +36,14 @@ class ExperimentalRecord(BaseModel):
 class SimExperimentCorrelation(BaseModel):
     __tablename__ = 'sim_experiment_correlations'
 
-    run_id              = Column(UUID(as_uuid=True), ForeignKey('simulation_runs.id'), nullable=False)
+    # NULL for material tests (correlated against the material model, not a simulation)
+    run_id              = Column(UUID(as_uuid=True), ForeignKey('simulation_runs.id'), nullable=True)
+    # 'material' (tensile test vs constitutive model) | 'structural' (sensors vs simulation)
+    kind                = Column(String(50), nullable=False, default='structural', server_default='structural')
+    graph_id            = Column(UUID(as_uuid=True), ForeignKey('design_graphs.id'), nullable=True)
+    material_id         = Column(UUID(as_uuid=True), ForeignKey('material_models.id'), nullable=True)
+    # per-sensor values / curves / extra metrics (FASE 8)
+    details             = Column(JSONB)
     experiment_id       = Column(UUID(as_uuid=True), ForeignKey('experimental_records.id'), nullable=False)
     # R² coefficient between interpolated simulation field and experimental measurements
     correlation_r2      = Column(Float)
@@ -51,7 +63,9 @@ class SimExperimentCorrelation(BaseModel):
     __table_args__ = (
         db.Index('idx_sim_exp_run', 'run_id'),
         db.Index('idx_sim_exp_exp', 'experiment_id'),
+        db.Index('idx_sim_exp_graph', 'graph_id'),
+        db.Index('idx_sim_exp_material', 'material_id'),
     )
 
     def __repr__(self):
-        return f'<SimExperimentCorrelation R²={self.correlation_r2:.3f} conf={self.confidence_factor:.2f}>'
+        return f'<SimExperimentCorrelation {self.kind} R²={self.correlation_r2} conf={self.confidence_factor}>'

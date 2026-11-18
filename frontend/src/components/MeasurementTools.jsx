@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   Box,
-  Paper,
   Typography,
   Button,
   ButtonGroup,
@@ -62,6 +61,7 @@ export default function MeasurementTools({
 
   useEffect(() => {
     if (headerId) loadMeasurements();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when the file changes
   }, [headerId]);
 
   // Consume a picked point and fill the pending input
@@ -74,6 +74,7 @@ export default function MeasurementTools({
     else if (pendingPick === 'v2') setVector2({ x, y, z });
     setPendingPick(null);
     onPickConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- react to a new picked point only
   }, [pickedPoint]);
 
   function activatePick(target) {

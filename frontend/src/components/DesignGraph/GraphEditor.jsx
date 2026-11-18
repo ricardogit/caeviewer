@@ -14,7 +14,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { Box, Typography, Alert, Snackbar, CircularProgress } from '@mui/material';
 
-import useDesignStore from '../../stores/designStore';
+import useDesignStore, { useStudy } from '../../stores/designStore';
 import ConceptToolbar from './ConceptToolbar';
 import NodePanel from './NodePanel';
 import EdgePanel from './EdgePanel';
@@ -22,6 +22,7 @@ import EdgeTypeDialog from './EdgeTypeDialog';
 import DesignNodeComponent from './DesignNodeComponent';
 import DesignEdgeComponent from './DesignEdgeComponent';
 import ValidationOverlay from './ValidationOverlay';
+import GraphStatusStrip from '../Workspace/GraphStatusStrip';
 
 // Register custom types once (outside component to avoid re-renders)
 const NODE_TYPES = { designNode: DesignNodeComponent };
@@ -33,7 +34,8 @@ function GraphEditorInner() {
   const { screenToFlowPosition } = useReactFlow();
   const connectingRef = useRef({ sourceId: null });
   const [edgeDialog, setEdgeDialog] = useState(null); // { sourceId, targetId }
-  const [showValidation, setShowValidation] = useState(false);
+  const showValidation = useDesignStore((st) => st.showValidation);
+  const setShowValidation = useDesignStore((st) => st.setShowValidation);
 
   const {
     activeGraphId: graphId,
@@ -44,7 +46,12 @@ function GraphEditorInner() {
     setSelectedNode, setSelectedEdge, clearSelection,
     addNode, addEdge, deleteNode, deleteEdge,
     persistNodePosition, validateGraph, clearError,
-  } = useDesignStore();
+  } = useStudy(
+    'activeGraphId', 'graphData', 'isLoading', 'error', 'selectedNodeId', 'selectedEdgeId', 'validationErrors',
+    'readyForSimulation', 'isValidating', 'onNodesChange', 'onEdgesChange', 'setSelectedNode',
+    'setSelectedEdge', 'clearSelection', 'addNode', 'addEdge', 'deleteNode', 'deleteEdge',
+    'persistNodePosition', 'validateGraph', 'clearError'
+  );
 
   const selectedNode = graphData.nodes.find(n => n.id === selectedNodeId) || null;
   const selectedEdge = graphData.edges.find(e => e.id === selectedEdgeId) || null;
@@ -203,6 +210,9 @@ function GraphEditorInner() {
           onClose={clearSelection}
         />
       )}
+
+      {/* Study status (FASE 9 §9.4) */}
+      <GraphStatusStrip />
 
       {/* Validation overlay */}
       {showValidation && validationErrors.length > 0 && (

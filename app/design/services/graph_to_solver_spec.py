@@ -1,10 +1,30 @@
 """Graph-to-solver-spec translation layer.
 
 Extrae propiedades de nodos y ARISTAS del grafo. Phase 2-3: edge-aware solver.
+
+FASE 2 (caras CAD): un GEOMETRY con ``geometry_id`` se malla desde el CAD
+(``mesh_source='geometry'``) y los BC/LOAD con ``entity_ids`` (UUID persistentes
+de caras) se traducen a ``face_set`` = ['F_<índice>', ...] en esa versión.
+Unidades: el solver trabaja en SI (m, N, Pa); fuerzas y presiones se convierten
+desde la unidad declarada en el nodo.
 """
 import math
 from app.design.models.graph import DesignGraph, DesignNode, DesignEdge
 from app.design.services.graph_service import DesignGraphService
+
+
+class GraphSpecError(ValueError):
+    """The graph cannot be turned into a solver spec (message is user-facing, Spanish)."""
+
+
+FORCE_UNITS = {'N': 1.0, 'kN': 1e3, 'MN': 1e6, 'lbf': 4.4482216152605}
+PRESSURE_UNITS = {'Pa': 1.0, 'kPa': 1e3, 'MPa': 1e6, 'GPa': 1e9, 'psi': 6894.757293168, 'bar': 1e5}
+ACCEL_UNITS = {'m/s²': 1.0, 'm/s2': 1.0, 'g': 9.80665}
+FLUX_UNITS = {'W/m²': 1.0, 'W/m2': 1.0, 'kW/m²': 1e3, 'kW/m2': 1e3}
+SOURCE_UNITS = {'W/m³': 1.0, 'W/m3': 1.0, 'kW/m³': 1e3, 'kW/m3': 1e3, 'MW/m³': 1e6, 'MW/m3': 1e6}
+THERMAL_LOAD_TYPES = ('heat_flux', 'convection', 'heat_source')
+BC_TYPE_DOFS = {'fixed': [0, 1, 2], 'pinned': [0, 1, 2],
+                'roller_x': [0], 'roller_y': [1], 'roller_z': [2]}
 
 
 def graph_to_solver_spec(graph_id: str) -> dict:
@@ -42,7 +62,7 @@ def graph_to_solver_spec(graph_id: str) -> dict:
     }
 
     service = DesignGraphService()
-    nodes = DesignNode.query.filter_by(graph_id=graph_id).all()
+    nodes = DesignNode.query.filter_by(graph_id=graph_id).order_by(DesignNode.created_at, DesignNode.id).all()
     node_map = {str(n.id): n for n in nodes}
 
     # Phase 1 fallback: collect all nodes by type
@@ -58,28 +78,104 @@ def graph_to_solver_spec(graph_id: str) -> dict:
         props = mat_node.properties or {}
         spec['material'] = {
             'type': props.get('model_type', 'linear_elastic_isotropic'),
-            'E': float(props.get('E', 210e9)),
-            'nu': float(props.get('nu', 0.3)),
-            'rho': float(props.get('rho', 7800.0)),
+            'E': float(props.get('E') if props.get('E') is not None else 210e9),
+            'nu': float(props.get('nu') if props.get('nu') is not None else 0.3),
+            'rho': float(props.get('rho') if props.get('rho') is not None else 7800.0),
         }
+        if spec['material']['type'] == 'elastoplastic_vonmises':
+            _plastic_material(spec, mat_node)
+        elif spec['material']['type'] == 'linear_elastic_orthotropic':
+            _orthotropic_material(spec, mat_node)
+        elif spec['material']['type'] == 'hyperelastic_neohookean':
+            # large deformations: Newton with load steps (dead loads), E and ν are the small-strain values
+            spec['n_load_steps'] = int(props.get('load_steps') or 10)
+        elif spec['material']['type'] == 'viscoelastic_maxwell':
+            _viscoelastic_material(spec, mat_node)
+        elif spec['material']['type'] in ('piezoelectric', 'thermopiezoelectric'):
+            _piezo_material(spec, mat_node)
+        elif spec['material']['type'] == 'newtonian_fluid':
+            mu = props.get('mu')
+            if mu in (None, '') or float(mu) <= 0:
+                raise GraphSpecError(f'"{mat_node.label}": el fluido necesita la viscosidad dinámica μ > 0 (Pa·s).')
+            spec['material'] = {'type': 'newtonian_fluid', 'mu': float(mu),
+                                'rho': float(props.get('rho') if props.get('rho') is not None else 1000.0)}
+            flow_model = props.get('flow_model') or 'stokes'
+            if flow_model not in ('stokes', 'navier_stokes', *RANS_MODELS):
+                raise GraphSpecError(f'"{mat_node.label}": modelo de flujo desconocido «{flow_model}» '
+                                     '(stokes | navier_stokes | rans_k_epsilon | rans_k_omega_sst).')
+            if flow_model != 'stokes':                       # only when on: Stokes studies keep their hash
+                if not spec['material']['rho'] > 0:
+                    raise GraphSpecError(f'"{mat_node.label}": Navier-Stokes necesita la densidad ρ > 0.')
+                spec['material']['inertia'] = True
+                if flow_model in RANS_MODELS:
+                    spec['material']['turbulence'] = _turbulence_settings(props, mat_node.label, flow_model)
+                elif props.get('stabilization') == 'supg':   # opt-in: unstabilised studies keep their hash
+                    spec['material']['stabilization'] = 'supg'
+                if props.get('transient'):                   # transient NS / URANS (FASE 10.4)
+                    _fluid_transient(spec, props, mat_node.label, flow_model)
+        elif spec['material']['type'] == 'scalar_transport':
+            _transport_material(spec, mat_node)
+        elif spec['material']['type'] == 'porous_medium':
+            _porous_material(spec, mat_node)
+        elif spec['material']['type'] == 'shallow_water':
+            _sw_material(spec, mat_node)
+        elif spec['material']['type'] == 'linear_magnetic':
+            mu_r = props.get('mu_r')
+            if mu_r in (None, '') or float(mu_r) <= 0:
+                raise GraphSpecError(f'"{mat_node.label}": el material magnético necesita la permeabilidad '
+                                     'relativa μr > 0.')
+            spec['material'] = {'type': 'linear_magnetic', 'mu_r': float(mu_r),
+                                'Br': [float(props.get(k) or 0) for k in ('Br_x', 'Br_y', 'Br_z')],
+                                'rho': spec['material']['rho']}
+            _magnetic_saturation(spec, mat_node)
 
     # ── GEOMETRY ───────────────────────────────────────────────────────────
 
     if geometry_nodes:
         geom_node = geometry_nodes[0]
         props = geom_node.properties or {}
+        # Fase 1b: versioned CAD geometry with persistent face IDs (app.geometry).
+        # Consumed by the Gmsh/CalculiX path in Fase 2; BC/LOAD entity_ids refer to its faces.
+        if props.get('geometry_id'):
+            spec['geometry_id'] = props['geometry_id']
         mesh_id = props.get('mesh_id')
-        if mesh_id:
+        if props.get('geometry_id'):
+            spec['mesh_source'] = 'geometry'
+            spec['mesh_params'] = {'order': int(props.get('element_order', 2))}
+            if props.get('mesh_size_mm'):
+                spec['mesh_params']['mesh_size'] = float(props['mesh_size_mm'])
+        elif mesh_id:
             spec['mesh_source'] = 'cae_mesh'
             spec['mesh_id'] = mesh_id
+        elif props.get('shape') == 'domain_2d':
+            # FASE 10.5: 2D water domain drawn in the Mapa mode (lon/lat polygon, boundary kinds per edge,
+            # geographic datasets by id, mesh parameters). Solved by the shallow-water module (FASE 10.3).
+            dom = {k: props[k] for k in ('domain', 'segments', 'segment_labels', 'epsg', 'mesh', 'points',
+                                          'land_datasets', 'bathymetry_datasets', 'zone_dataset', 'points_datasets')
+                   if props.get(k) not in (None, '', [])}
+            if not dom.get('domain'):
+                raise GraphSpecError('GEOMETRY dominio 2D: dibuje el polígono del dominio en el modo Mapa.')
+            spec['mesh_source'] = 'domain_2d'
+            spec['domain_2d'] = dom
+        elif props.get('shape') == 'beam':
+            # FASE 9: parametric beam defined in the graph (no CAD). Dimensions in mm; faces
+            # 'fixed' (x = 0) and 'tip' (x = L) are the default BC / LOAD sets. T10 by default.
+            spec['mesh_params'] = {
+                'length': float(props.get('length_mm') or 50) / 1000.0,
+                'width': float(props.get('width_mm') or 10) / 1000.0,
+                'height': float(props.get('height_mm') or 10) / 1000.0,
+                'n_along_length': int(props.get('n_div') or 12),
+                'order': int(props.get('element_order') or 2),
+            }
 
         tier = geom_node.tier if geom_node.tier is not None else props.get('tier', 1)
         spec['tier'] = int(tier)
 
     # ── BC & LOAD with Phase 2-3 edge scoping ──────────────────────────────
 
+    ctx = {'geometry_id': spec.get('geometry_id'), 'normals': None}
     use_edge_scoping = False
-    edges = DesignEdge.query.filter_by(graph_id=graph_id).all()
+    edges = DesignEdge.query.filter_by(graph_id=graph_id).order_by(DesignEdge.created_at, DesignEdge.id).all()
 
     # Check if any CONSTRAINS_BC or APPLIED_TO edges exist (Phase 2+ indicator)
     if any(e.edge_type in ('CONSTRAINS_BC', 'APPLIED_TO') for e in edges):
@@ -95,11 +191,11 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 graph_id=graph_id,
                 target_id=geom.id,
                 edge_type='CONSTRAINS_BC'
-            ).all()
+            ).order_by(DesignEdge.created_at, DesignEdge.id).all()
             for bc_edge in bc_edges:
                 bc_node = node_map.get(str(bc_edge.source_id))
                 if bc_node and bc_node.node_type == 'BC':
-                    bc_entry = _bc_node_to_entry(bc_node, geom_id)
+                    bc_entry = _bc_node_to_entry(ctx, bc_node, geom_id)
                     spec['bcs'].append(bc_entry)
 
             # Get LOADs for this geometry via APPLIED_TO edge
@@ -107,57 +203,1151 @@ def graph_to_solver_spec(graph_id: str) -> dict:
                 graph_id=graph_id,
                 target_id=geom.id,
                 edge_type='APPLIED_TO'
-            ).all()
+            ).order_by(DesignEdge.created_at, DesignEdge.id).all()
             for load_edge in load_edges:
                 load_node = node_map.get(str(load_edge.source_id))
                 if load_node and load_node.node_type == 'LOAD':
-                    load_entry = _load_node_to_entry(load_node, geom_id)
+                    load_entry = _load_node_to_entry(ctx, load_node, geom_id)
                     spec['loads'].append(load_entry)
     else:
         # Phase 1 fallback: all BCs/LOADs to all GEOMETRIEs
         for bc_node in bc_nodes:
-            bc_entry = _bc_node_to_entry(bc_node)
+            bc_entry = _bc_node_to_entry(ctx, bc_node)
             spec['bcs'].append(bc_entry)
 
         for load_node in load_nodes:
-            load_entry = _load_node_to_entry(load_node)
+            load_entry = _load_node_to_entry(ctx, load_node)
             spec['loads'].append(load_entry)
 
+    _set_physics(spec, material_nodes[0] if material_nodes else None)
+    _finalize_physics(spec)
     return spec
 
 
-def _bc_node_to_entry(node: DesignNode, geometry_id: str = None) -> dict:
+PIEZO_TYPES = ('piezoelectric', 'thermopiezoelectric')
+
+
+def _magnetic_saturation(spec: dict, node) -> None:
+    """MATERIAL ``saturation``: none (linear μr) | tanh (μr = initial, ``Js`` saturation polarisation [T]) |
+    table (``bh_points`` [[H A/m, B T], …]). Absent / none → linear (hashes unchanged)."""
+    from app.design.services.fem.magnetic import BHCurve
+    p = node.properties or {}
+    mode = p.get('saturation') or 'none'
+    if mode == 'none':
+        return
+    if mode == 'tanh':
+        curve = {'model': 'tanh', 'mu_r': spec['material']['mu_r'], 'Js': p.get('Js')}
+    elif mode == 'table':
+        curve = {'model': 'table', 'points': p.get('bh_points') or []}
+    else:
+        raise GraphSpecError(f'"{node.label}": saturación desconocida {mode!r} (none | tanh | table).')
+    try:
+        c = BHCurve(curve)
+    except (TypeError, ValueError) as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    if any(spec['material']['Br']):
+        raise GraphSpecError(f'"{node.label}": saturación e imán permanente (Br) a la vez no están soportados.')
+    spec['material']['bh_curve'] = c.spec
+    spec['material']['mu_r'] = c.mu_r_initial
+
+
+RATE_UNITS = {'1/s': 1.0, '1/h': 1 / 3600.0, '1/d': 1 / 86400.0}
+TIME_UNITS = {'s': 1.0, 'min': 60.0, 'h': 3600.0, 'd': 86400.0}
+TRANSPORT_LOAD_TYPES = ('species_flux', 'exchange', 'species_source', 'point_source')
+DARCY_LOAD_TYPES = ('recharge', 'well', 'leakage')
+K_UNITS = {'m/s': 1.0, 'cm/s': 1e-2, 'm/d': 1 / 86400.0}
+RECHARGE_UNITS = {'m/s': 1.0, 'mm/d': 1e-3 / 86400.0, 'mm/año': 1e-3 / (365.25 * 86400.0)}
+WELL_UNITS = {'m³/s': 1.0, 'L/s': 1e-3, 'm³/h': 1 / 3600.0, 'm³/d': 1 / 86400.0}
+
+
+def _num(props: dict, key: str, label: str, what: str, default=None, positive=False, nonneg=False) -> float:
+    v = props.get(key)
+    if v in (None, ''):
+        if default is None:
+            raise GraphSpecError(f'"{label}": falta {what}.')
+        return float(default)
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise GraphSpecError(f'"{label}": {what} debe ser numérico.')
+    if (positive and not x > 0) or (nonneg and x < 0):
+        raise GraphSpecError(f'"{label}": {what} debe ser {"> 0" if positive else "≥ 0"}.')
+    return x
+
+
+def _decay_rate(sp_props: dict, label: str) -> float:
+    """Species decay λ [1/s] from ``decay`` + ``decay_unit`` (1/s | 1/h | 1/d | T90_h: λ = ln 10 / T90)."""
+    v = sp_props.get('decay')
+    if v in (None, '', 0, '0'):
+        return 0.0
+    unit = sp_props.get('decay_unit') or '1/s'
+    x = _num(sp_props, 'decay', label, 'el decaimiento', positive=True)
+    if unit == 'T90_h':
+        return math.log(10.0) / (x * 3600.0)
+    if unit not in RATE_UNITS:
+        raise GraphSpecError(f'"{label}": unidad de decaimiento «{unit}» no reconocida (1/s, 1/h, 1/d, T90_h).')
+    return x * RATE_UNITS[unit]
+
+
+def _history(props: dict, label: str):
+    """Time series [[t, factor], …] (t in the study time unit, scaled to s in ``_finalize_physics``) or ``t_off``:
+    on until t_off, then off."""
+    if props.get('history'):
+        try:
+            h = [[float(t), float(f)] for t, f in props['history']]
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{label}": serie temporal inválida ([[t, factor], …]).')
+        if any(b[0] < a[0] for a, b in zip(h, h[1:])):
+            raise GraphSpecError(f'"{label}": la serie temporal necesita tiempos crecientes.')
+        return h
+    if props.get('t_off') not in (None, ''):
+        t = _num(props, 't_off', label, 'el tiempo de corte', positive=True)
+        return [[0.0, 1.0], [t, 1.0], [t * (1 + 1e-9), 0.0]]
+    return None
+
+
+def _transport_material(spec: dict, node) -> None:
+    """MATERIAL ``scalar_transport`` (FASE 10.1): ``species`` [{name, D [m²/s], decay + decay_unit, unit, threshold,
+    c0, pulse_center_mm, pulse_sigma_mm, pulse_peak}], ``reaction_model`` none | streeter_phelps (kd, ka in
+    ``rate_unit``, do_sat), ``velocity_source`` uniform (vx, vy, vz m/s) | run (``velocity_run_id``, a finished fluid
+    run on the same mesh), ``stabilization`` supg | none, ``transient`` + t_end / time_steps / scheme / n_output in
+    ``time_unit``, ``probes`` [{label, x, y, z mm}]."""
+    p = node.properties or {}
+    label = node.label
+    species_p = p.get('species') or [{'name': 'Contaminante', 'D': 1e-6}]
+    if not isinstance(species_p, list) or not species_p:
+        raise GraphSpecError(f'"{label}": defina al menos una especie.')
+    rx_model = p.get('reaction_model') or 'none'
+    if rx_model == 'streeter_phelps' and len(species_p) != 2:
+        raise GraphSpecError(f'"{label}": Streeter–Phelps usa dos especies (DBO y déficit de oxígeno).')
+    species, initial = [], []
+    for i, sp_ in enumerate(species_p):
+        name = str(sp_.get('name') or f'Especie {i + 1}')
+        lab = f'{label} · {name}'
+        d = {'name': name, 'D': _num(sp_, 'D', lab, 'la difusividad D (m²/s)', default=0.0, nonneg=True),
+             'decay': _decay_rate(sp_, lab), 'unit': sp_.get('unit') or 'mg/L'}
+        if sp_.get('threshold') not in (None, ''):
+            d['threshold'] = _num(sp_, 'threshold', lab, 'el umbral')
+        if p.get('porous') and sp_.get('retardation') not in (None, '', 1, '1'):
+            d['retardation'] = _num(sp_, 'retardation', lab, 'el factor de retardo R', positive=True)
+            if d['retardation'] < 1:
+                raise GraphSpecError(f'"{lab}": el factor de retardo R debe ser ≥ 1.')
+        species.append(d)
+        if sp_.get('pulse_sigma_mm') not in (None, ''):
+            c = sp_.get('pulse_center_mm') or [0, 0, 0]
+            try:
+                center = [float(v) / 1000.0 for v in c]
+            except (TypeError, ValueError):
+                raise GraphSpecError(f'"{lab}": centro del pulso inválido (x, y, z en mm).')
+            initial.append({'gaussian': {'center': center,
+                                         'sigma': _num(sp_, 'pulse_sigma_mm', lab, 'σ del pulso', positive=True) / 1000.0,
+                                         'peak': _num(sp_, 'pulse_peak', lab, 'el pico del pulso', default=1.0)}})
+        else:
+            initial.append({'value': _num(sp_, 'c0', lab, 'la concentración inicial', default=0.0)})
+    m = {'type': 'scalar_transport', 'species': species}
+    if rx_model == 'streeter_phelps':
+        f = RATE_UNITS.get(p.get('rate_unit') or '1/d')
+        if f is None:
+            raise GraphSpecError(f'"{label}": unidad de tasa «{p.get("rate_unit")}» no reconocida (1/s, 1/h, 1/d).')
+        m['reaction'] = {'model': 'streeter_phelps',
+                         'kd': _num(p, 'kd', label, 'la tasa de desoxigenación kd', positive=True) * f,
+                         'ka': _num(p, 'ka', label, 'la tasa de reaireación ka', positive=True) * f,
+                         'do_sat': _num(p, 'do_sat', label, 'el oxígeno de saturación', default=0.0, nonneg=True)}
+    elif rx_model != 'none':
+        raise GraphSpecError(f'"{label}": modelo de reacción desconocido «{rx_model}» (none | streeter_phelps).')
+    src = p.get('velocity_source') or 'uniform'
+    if src == 'run':
+        if not p.get('velocity_run_id'):
+            raise GraphSpecError(f'"{label}": elija el run de fluido que da la velocidad.')
+        m['velocity'] = {'run_id': str(p['velocity_run_id'])}
+    elif src == 'uniform':
+        m['velocity'] = [_num(p, k, label, k, default=0.0) for k in ('vx', 'vy', 'vz')]
+    else:
+        raise GraphSpecError(f'"{label}": origen de velocidad desconocido «{src}» (uniform | run).')
+    if p.get('stabilization') == 'none':
+        m['stabilization'] = 'none'
+    if p.get('porous'):                               # aquifer: dispersion α_L, α_T [m], porosity (or the Darcy run's)
+        por = {'alpha_L': _num(p, 'alpha_L', label, 'la dispersividad longitudinal α_L (m)', default=0.0, nonneg=True),
+               'alpha_T': _num(p, 'alpha_T', label, 'la dispersividad transversal α_T (m)', default=0.0, nonneg=True)}
+        if p.get('porosity') not in (None, ''):
+            por['porosity'] = _num(p, 'porosity', label, 'la porosidad eficaz', positive=True)
+        elif src != 'run':
+            raise GraphSpecError(f'"{label}": indique la porosidad eficaz (o tome la velocidad de un run de Darcy).')
+        m['porous'] = por
+    if any(ic.get('value') or 'gaussian' in ic for ic in initial):
+        m['initial'] = initial
+    spec['material'] = m
+    # popped in _finalize_physics (BC/LOAD series → s)
+    spec['transport_time_scale'] = _transient_settings(spec, p, label)
+    _probes(spec, p, label)
+
+
+def _transient_settings(spec: dict, p: dict, label: str, growth: bool = False) -> float:
+    """``time_unit`` scale; with ``transient`` writes spec['time'] (t_end, n_steps, scheme, n_output, dt_growth)."""
+    t_scale = TIME_UNITS.get(p.get('time_unit') or 's')
+    if t_scale is None:
+        raise GraphSpecError(f'"{label}": unidad de tiempo «{p.get("time_unit")}» no reconocida (s, min, h, d).')
+    if p.get('transient'):
+        spec['time'] = {'t_end': _num(p, 't_end', label, 'el tiempo final', positive=True) * t_scale,
+                        'n_steps': int(_num(p, 'time_steps', label, 'el número de pasos', default=50, positive=True)),
+                        'scheme': p.get('scheme') or 'bdf2'}
+        if p.get('n_output') not in (None, ''):
+            spec['time']['n_output'] = int(_num(p, 'n_output', label, 'las salidas', positive=True))
+        if growth and p.get('dt_growth') not in (None, '', 1, '1'):
+            spec['time']['dt_growth'] = _num(p, 'dt_growth', label, 'la razón de crecimiento del paso', positive=True)
+    return t_scale
+
+
+def _fluid_transient(spec: dict, p: dict, label: str, flow_model: str) -> None:
+    """MATERIAL fluid with ``transient``: spec['time'] (t_end + ``time_unit``, ``time_steps``, scheme bdf2 | be,
+    n_output; URANS also ``inner_iterations``, ``steady_tol``, ``urans_initial`` rest | steady, ``average_from``),
+    probes [{label, x, y, z mm}]. Velocity BC histories
+    (``t_ramp``, ``history``) are in the study time unit (scaled in ``_finalize_physics``)."""
+    if spec['material'].get('stabilization'):
+        raise GraphSpecError(f'"{label}": la estabilización SUPG no está disponible en Navier-Stokes transitorio '
+                             'laminar; desactívela o use RANS k-ε.')
+    if (p.get('scheme') or 'bdf2') not in ('bdf2', 'be'):
+        raise GraphSpecError(f'"{label}": esquema temporal «{p.get("scheme")}» no disponible para fluidos (bdf2, be).')
+    spec['fluid_time_scale'] = _transient_settings(spec, p, label)
+    if flow_model in RANS_MODELS:
+        if p.get('inner_iterations') not in (None, ''):
+            spec['time']['inner_iterations'] = int(_num(p, 'inner_iterations', label, 'las sub-iteraciones',
+                                                        positive=True))
+        if p.get('steady_tol') not in (None, ''):
+            spec['time']['steady_tol'] = _num(p, 'steady_tol', label, 'la tolerancia de estacionario',
+                                              positive=True)
+        if p.get('urans_initial') == 'steady':      # pseudo-time iteration first, then the march
+            spec['time']['initial'] = 'steady'
+        if p.get('average_from') not in (None, ''):  # time-mean fields after this time (study time unit)
+            spec['time']['average_from'] = _num(p, 'average_from', label, 'el inicio del promedio') \
+                * spec['fluid_time_scale']
+    _probes(spec, p, label)
+
+
+def _probes(spec: dict, p: dict, label: str) -> None:
+    probes = []
+    for i, pr in enumerate(p.get('probes') or []):
+        try:
+            probes.append({'label': pr.get('label') or f'P{i + 1}',
+                           'point': [float(pr.get(k)) / 1000.0 for k in ('x', 'y', 'z')]})
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{label}": punto de control {i + 1} con coordenadas inválidas (mm).')
+    if probes:
+        spec['probes'] = probes
+
+
+def _porous_material(spec: dict, node) -> None:
+    """MATERIAL ``porous_medium`` (FASE 10.6, Darcy): ``K`` + ``K_unit`` (m/s | cm/s | m/d), optional vertical
+    anisotropy ``Kz_ratio`` (Kz / Kh), ``K_zones`` [{label, x0, y0, z0, x1, y1, z1 (mm), K}] (same unit), ``Ss``
+    [1/m], ``porosity`` (effective), ``initial_head`` [m], ``transient`` + t_end / time_steps / scheme / dt_growth /
+    n_output in ``time_unit``, ``probes`` [{label, x, y, z mm}]."""
+    p = node.properties or {}
+    label = node.label
+    f = K_UNITS.get(p.get('K_unit') or 'm/s')
+    if f is None:
+        raise GraphSpecError(f'"{label}": unidad de K «{p.get("K_unit")}» no reconocida (m/s, cm/s, m/d).')
+    K = _num(p, 'K', label, 'la conductividad hidráulica K', positive=True) * f
+    ratio = _num(p, 'Kz_ratio', label, 'la anisotropía Kz/Kh', default=1.0, positive=True)
+    m = {'type': 'porous_medium', 'K': K if ratio == 1.0 else [K, K, K * ratio],
+         'Ss': _num(p, 'Ss', label, 'el almacenamiento específico S_s', default=0.0, nonneg=True),
+         'porosity': _num(p, 'porosity', label, 'la porosidad eficaz', default=0.3, positive=True),
+         'initial_head': _num(p, 'initial_head', label, 'la carga inicial', default=0.0)}
+    if m['porosity'] > 1:
+        raise GraphSpecError(f'"{label}": la porosidad eficaz debe estar en (0, 1].')
+    zones = []
+    for i, z in enumerate(p.get('K_zones') or []):
+        lab = f'{label} · zona {i + 1}'
+        lo = [_num(z, k, lab, k + ' (mm)') / 1000.0 for k in ('x0', 'y0', 'z0')]
+        hi = [_num(z, k, lab, k + ' (mm)') / 1000.0 for k in ('x1', 'y1', 'z1')]
+        if any(b < a for a, b in zip(lo, hi)):
+            raise GraphSpecError(f'"{lab}": la caja necesita x0 ≤ x1, y0 ≤ y1, z0 ≤ z1.')
+        Kz = _num(z, 'K', lab, 'K de la zona', positive=True) * f
+        zones.append({'label': z.get('label') or f'zona {i + 1}', 'box': [lo, hi],
+                      'K': Kz if ratio == 1.0 else [Kz, Kz, Kz * ratio]})
+    if zones:
+        m['K_zones'] = zones
+    if p.get('transient') and not m['Ss'] > 0:
+        raise GraphSpecError(f'"{label}": el transitorio necesita el almacenamiento específico S_s > 0 (1/m).')
+    spec['material'] = m
+    spec['transport_time_scale'] = _transient_settings(spec, p, label, growth=True)
+    _probes(spec, p, label)
+
+
+# ── Shallow water (FASE 10.3) ────────────────────────────────────────────────
+
+SW_BC_TYPES = ('tide', 'river_inflow', 'open_boundary', 'coast')
+DISCHARGE_UNITS = {'m3/s': 1.0, 'L/s': 1e-3, 'm3/h': 1 / 3600.0}
+
+
+def _sw_material(spec: dict, node) -> None:
+    """MATERIAL ``shallow_water``: ρ, Manning n (+ zone attribute), Coriolis, ν_t, h_dry, initial level,
+    order, CFL, duration (``t_end`` + ``time_unit``, default h), ``n_output``, probes [{label, lon, lat}]."""
+    p = node.properties or {}
+    lab = node.label
+    m = {'type': 'shallow_water', 'rho': _num(p, 'rho', lab, 'ρ', default=1025.0, positive=True),
+         'manning': _num(p, 'manning_n', lab, 'el coeficiente de Manning n', default=0.025, nonneg=True),
+         'coriolis': bool(p.get('coriolis', True)),
+         'nu_t': _num(p, 'nu_t', lab, 'ν_t', default=0.0, nonneg=True),
+         'h_dry': _num(p, 'h_dry', lab, 'el calado de secado', default=0.01, positive=True),
+         'order': int(p.get('order') or 2)}
+    if m['order'] not in (1, 2):
+        raise GraphSpecError(f'"{lab}": orden 1 o 2.')
+    if p.get('manning_zone_key'):
+        m['manning_zone_key'] = str(p['manning_zone_key'])
+    if p.get('eta0') not in (None, ''):
+        m['eta0'] = _num(p, 'eta0', lab, 'el nivel inicial')
+    if p.get('cfl') not in (None, ''):
+        c = _num(p, 'cfl', lab, 'el CFL', positive=True)
+        if c > 1:
+            raise GraphSpecError(f'"{lab}": CFL ≤ 1.')
+        m['cfl'] = c
+    scale = TIME_UNITS.get(p.get('time_unit') or 'h')
+    if scale is None:
+        raise GraphSpecError(f'"{lab}": unidad de tiempo «{p.get("time_unit")}» no reconocida (s, min, h, d).')
+    spec['material'] = m
+    spec['time'] = {'t_end': _num(p, 't_end', lab, 'la duración de la simulación', positive=True) * scale,
+                    'n_output': int(p.get('n_output') or 48)}
+    probes = []
+    for i, pr in enumerate(p.get('probes') or []):
+        try:
+            probes.append({'label': pr.get('label') or f'P{i + 1}', 'lon': float(pr['lon']), 'lat': float(pr['lat'])})
+        except (KeyError, TypeError, ValueError):
+            raise GraphSpecError(f'"{lab}": punto de control {i + 1} sin lon/lat válidos.')
+    if probes:
+        spec['probes'] = probes
+    tracers, names = [], set()
+    for i, s in enumerate(p.get('species') or []):            # depth-averaged tracers (FASE 10.4)
+        nm = str(s.get('name') or '').strip() or f'Especie {i + 1}'
+        if nm in names:
+            raise GraphSpecError(f'"{lab}": especie «{nm}» repetida.')
+        names.add(nm)
+        sl = f'{lab} · {nm}'
+        t = {'name': nm, 'unit': s.get('unit') or 'mg/L',
+             'D': _num(s, 'D', sl, 'la difusividad horizontal (m²/s)', default=1.0, nonneg=True),
+             'decay': _decay_rate(s, sl)}
+        if s.get('threshold') not in (None, ''):
+            t['threshold'] = _num(s, 'threshold', sl, 'el umbral', nonneg=True)
+        if s.get('c0') not in (None, ''):
+            t['c0'] = _num(s, 'c0', sl, 'la concentración inicial', nonneg=True)
+        tracers.append(t)
+    if tracers:
+        m['tracers'] = tracers
+    _sw_3d(m, p, lab)
+
+
+SW_CLOSURES = ('k_epsilon', 'constant')
+SW_EOS = ('unesco', 'linear')
+
+
+def _sw_3d(m: dict, p: dict, lab: str) -> None:
+    """3-D stratified σ-layer model (FASE 10.4) when ``vertical_layers`` ≥ 2: closure, ν_v / κ_v, bed roughness
+    z₀ [mm] (empty → from Manning), equation of state, initial T / S (surface value, optional bottom value at
+    ``profile_depth`` m → linear profile; both empty → not modelled), horizontal diffusivity of T, S."""
+    nl = p.get('vertical_layers')
+    if nl in (None, '') or int(float(nl)) <= 1:
+        return
+    nl = int(float(nl))
+    if nl > 100:
+        raise GraphSpecError(f'"{lab}": como máximo 100 capas σ.')
+    m['layers'] = nl
+    m['closure'] = p.get('closure') or 'k_epsilon'
+    if m['closure'] not in SW_CLOSURES:
+        raise GraphSpecError(f'"{lab}": cierre vertical «{m["closure"]}» desconocido (k_epsilon | constant).')
+    m['eos'] = p.get('eos') or 'unesco'
+    if m['eos'] not in SW_EOS:
+        raise GraphSpecError(f'"{lab}": ecuación de estado «{m["eos"]}» desconocida (unesco | linear).')
+    for key, what in (('nu_v', 'la viscosidad vertical (m²/s)'), ('kappa_v', 'la difusividad vertical (m²/s)'),
+                      ('D_h', 'la difusividad horizontal de T y S (m²/s)')):
+        if p.get(key) not in (None, ''):
+            m[key] = _num(p, key, lab, what, nonneg=True)
+    if m['closure'] == 'constant' and 'nu_v' not in m:
+        raise GraphSpecError(f'"{lab}": con mezcla vertical constante indique ν_v.')
+    if p.get('bottom_z0_mm') not in (None, ''):
+        m['bottom_roughness'] = _num(p, 'bottom_z0_mm', lab, 'la rugosidad del fondo z₀ (mm)', positive=True) / 1000
+    depth = _num(p, 'profile_depth', lab, 'la profundidad del perfil inicial (m)', default=20.0, positive=True)
+    for q, name in (('T', 'la temperatura'), ('S', 'la salinidad')):
+        top, bot = p.get(f'{q}_surface'), p.get(f'{q}_bottom')
+        if top in (None, ''):
+            if bot not in (None, ''):
+                raise GraphSpecError(f'"{lab}": indique {name} en superficie.')
+            continue
+        vt = _num(p, f'{q}_surface', lab, f'{name} en superficie', nonneg=(q == 'S'))
+        if bot in (None, ''):
+            val = vt
+        else:
+            vb = _num(p, f'{q}_bottom', lab, f'{name} en el fondo', nonneg=(q == 'S'))
+            val = vt if vb == vt else [[0.0, vt], [depth, vb]]
+        m['temperature' if q == 'T' else 'salinity'] = val
+
+
+def _sw_ts(e: dict, p: dict, lab: str, keys=('temperature', 'salinity')) -> None:
+    """Temperature / salinity of inflowing (BC: spec keys T_in / S_in — a BC ``temperature`` key is a thermal
+    condition) or discharged (outfall) water, 3-D model."""
+    for prop, key, what in (('temperature', keys[0], 'la temperatura (°C)'),
+                            ('salinity', keys[1], 'la salinidad (psu)')):
+        if p.get(prop) not in (None, ''):
+            e[key] = _num(p, prop, lab, what, nonneg=(prop == 'salinity'))
+
+
+def _concentrations(p: dict, lab: str):
+    """{species name: c} from a BC / outfall node (``concentrations``), validated ≥ 0; None if absent."""
+    c = p.get('concentrations')
+    if not c:
+        return None
+    if not isinstance(c, dict):
+        raise GraphSpecError(f'"{lab}": concentraciones como {{especie: valor}}.')
+    out = {}
+    for k, v in c.items():
+        if v in (None, ''):
+            continue
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{lab}": concentración de «{k}» no numérica.')
+        if x < 0 or not math.isfinite(x):
+            raise GraphSpecError(f'"{lab}": concentración de «{k}» debe ser ≥ 0.')
+        out[str(k)] = x
+    return out
+
+
+def _ids(props) -> list:
+    b = props.get('boundaries')
+    if isinstance(b, str):
+        b = [b]
+    return [str(x) for x in (b or [])]
+
+
+def _sw_bc(node) -> dict:
+    p = node.properties or {}
+    lab = node.label
+    t = p.get('bc_type')
+    e = {'label': lab, 'boundaries': _ids(p)}
+    conc = _concentrations(p, lab)
+    if conc is not None and t != 'coast':
+        e['c_named'] = conc
+    if t != 'coast':
+        _sw_ts(e, p, lab, ('T_in', 'S_in'))
+    if p.get('ramp_h') not in (None, ''):
+        e['ramp_s'] = _num(p, 'ramp_h', lab, 'la rampa', nonneg=True) * 3600.0
+    if t == 'tide':
+        e['sw_bc'] = 'tide'
+        if p.get('forcing_dataset'):
+            e['forcing_dataset'] = str(p['forcing_dataset'])
+            if p.get('column'):
+                e['column'] = str(p['column'])
+        else:
+            from app.geodata.forcing import CONSTITUENTS
+            cons = []
+            for c in p.get('constituents') or []:
+                name = next((k for k in CONSTITUENTS if k.upper() == str(c.get('name', '')).upper()), None)
+                if name is None:
+                    raise GraphSpecError(f'"{lab}": constituyente «{c.get("name")}» desconocido.')
+                cons.append({'name': name, 'amplitude': float(c.get('amplitude') or 0),
+                             'phase': float(c.get('phase') or 0)})
+            if not cons:
+                raise GraphSpecError(f'"{lab}": la marea necesita al menos un constituyente (M2, S2…) o un '
+                                     'forzamiento.')
+            e['tide'] = {'constituents': cons, 'z0': float(p.get('z0') or 0)}
+    elif t == 'river_inflow':
+        e['sw_bc'] = 'river'
+        if p.get('forcing_dataset'):
+            e['forcing_dataset'] = str(p['forcing_dataset'])
+            if p.get('column'):
+                e['column'] = str(p['column'])
+        else:
+            q = _num(p, 'discharge', lab, 'el caudal (m³/s)', nonneg=True)
+            e['discharge'] = q * _unit(DISCHARGE_UNITS, p.get('unit'), node, 'm3/s')
+    elif t == 'open_boundary':
+        mode = p.get('mode') or 'free'
+        if mode == 'level':
+            e['sw_bc'] = 'level'
+            e['level'] = _num(p, 'level', lab, 'el nivel impuesto (m)')
+        elif mode == 'free':
+            e['sw_bc'] = 'free'
+        else:
+            raise GraphSpecError(f'"{lab}": mar abierto «{mode}» desconocido (free | level).')
+    else:
+        e['sw_bc'] = 'wall'
+    return e
+
+
+def _sw_wind(node) -> dict:
+    p = node.properties or {}
+    if p.get('forcing_dataset'):
+        w = {'forcing_dataset': str(p['forcing_dataset']), 'u_column': p.get('u_column') or 'u',
+             'v_column': p.get('v_column') or 'v'}
+    else:
+        w = {'speed': _num(p, 'speed', node.label, 'la velocidad del viento (m/s)', nonneg=True),
+             'direction': _num(p, 'direction', node.label, 'la dirección de procedencia (°)', default=0.0)}
+    return {'wind': w, 'label': node.label}
+
+
+def _sw_outfall(node) -> dict:
+    """LOAD ``outfall``: point discharge (outfall / sewer / spill) at lon, lat — water Q + species concentrations;
+    optional ``t_off`` [h] (spill duration)."""
+    p = node.properties or {}
+    lab = node.label
+    try:
+        lon, lat = float(p['lon']), float(p['lat'])
+    except (KeyError, TypeError, ValueError):
+        raise GraphSpecError(f'"{lab}": el vertido necesita lon y lat.')
+    o = {'lon': lon, 'lat': lat,
+         'Q': _num(p, 'discharge', lab, 'el caudal del vertido', default=0.0, nonneg=True)
+         * _unit(DISCHARGE_UNITS, p.get('unit'), node, 'm3/s'),
+         'c_named': _concentrations(p, lab) or {}}
+    if p.get('t_off') not in (None, ''):
+        o['t_off_s'] = _num(p, 't_off', lab, 'la duración del vertido (h)', positive=True) * 3600.0
+    _sw_ts(o, p, lab)
+    if p.get('release') not in (None, ''):
+        if p['release'] not in ('bottom', 'surface', 'column'):
+            raise GraphSpecError(f'"{lab}": liberación «{p["release"]}» desconocida (bottom | surface | column).')
+        o['release'] = p['release']
+    return {'outfall': o, 'label': lab}
+
+
+SW_DEFAULT_SIDE = {'tide': 'open', 'level': 'open', 'free': 'open', 'river': 'river', 'wall': 'coast'}
+
+
+def _finalize_shallow_water(spec: dict) -> bool:
+    """True when the study is a 2D shallow-water one (physics set, default boundaries resolved)."""
+    is_sw = spec['material'].get('type') == 'shallow_water'
+    dom = spec.get('mesh_source') == 'domain_2d'
+    sw_cond = [e for e in spec['bcs'] if 'sw_bc' in e] + [e for e in spec['loads'] if 'wind' in e or 'outfall' in e]
+    if not (is_sw or dom or sw_cond):
+        return False
+    if not dom:
+        raise GraphSpecError('Aguas someras: la GEOMETRY debe ser un dominio 2D dibujado en el modo Mapa.')
+    if not is_sw:
+        raise GraphSpecError('Dominio 2D: el material debe ser «Agua (aguas someras)».')
+    other = len(spec['bcs']) + len(spec['loads']) - len(sw_cond)
+    if other:
+        raise GraphSpecError(f'Aguas someras: solo admite marea, caudal de río, mar abierto, costa, viento y vertidos; hay '
+                             f'{other} condiciones de otro tipo.')
+    segs = spec['domain_2d'].get('segments') or []
+    taken = {i for e in spec['bcs'] for i in e.get('boundaries') or []}
+    for e in spec['bcs']:                         # default sides by kind
+        if e['boundaries']:
+            continue
+        want = SW_DEFAULT_SIDE[e['sw_bc']]
+        e['boundaries'] = [f'edge{i}' for i, k in enumerate(segs) if k == want and f'edge{i}' not in taken]
+        if e['sw_bc'] == 'wall' and 'coast' not in taken:
+            e['boundaries'].append('coast')
+        if not e['boundaries']:
+            raise GraphSpecError(f'"{e["label"]}": no hay lados de tipo «{want}» libres en el dominio; elija los '
+                                 'contornos en el nodo.')
+        taken.update(e['boundaries'])
+    # species concentrations by name → lists in the material's species order
+    names = [t['name'] for t in spec['material'].get('tracers') or []]
+
+    def as_list(named, lab):
+        unknown = [k for k in named if k not in names]
+        if unknown:
+            raise GraphSpecError(f'"{lab}": especie «{unknown[0]}» no definida en el material '
+                                 f'({", ".join(names) or "sin especies"}).')
+        return [float(named.get(n, 0.0)) for n in names]
+    m3 = spec['material'].get('layers')                    # T, S of inflows / outfalls: 3-D model only
+    for e in spec['bcs'] + [ld['outfall'] for ld in spec['loads'] if 'outfall' in ld]:
+        for keys, mk in ((('T_in', 'temperature'), 'temperature'), (('S_in', 'salinity'), 'salinity')):
+            for key in keys:
+                if key in e and not (m3 and spec['material'].get(mk) is not None):
+                    del e[key]
+        if not m3:
+            e.pop('release', None)
+    for e in spec['bcs']:
+        named = e.pop('c_named', None)
+        if named is not None and names:
+            e['c_in'] = as_list(named, e['label'])
+    for e in spec['loads']:
+        if 'outfall' in e:
+            o = e['outfall']
+            o['c'] = as_list(o.pop('c_named', {}), e['label'])
+            if not names and o['Q'] <= 0:
+                raise GraphSpecError(f'"{e["label"]}": vertido sin caudal ni especies.')
+    spec['physics'] = ['shallow_water']
+    return True
+
+
+def _finalize_physics(spec: dict) -> None:
+    """Physics of the special material models (piezo, thermo-piezo, magnetic, fluid) and the checks that the
+    conditions match the material."""
+    if _finalize_shallow_water(spec):
+        return
+    if spec['material'].get('type') == 'piezoelectric':
+        if 'thermal' in spec['physics']:
+            raise GraphSpecError('Hay condiciones térmicas con un material piezoeléctrico: elija el modelo '
+                                 '«Termo-piezoeléctrico» (α y coeficiente piroeléctrico p3).')
+        spec['physics'] = ['piezoelectric']
+    elif spec['material'].get('type') == 'thermopiezoelectric':
+        if 'thermal' in spec['physics']:
+            spec['physics'] = ['thermal', 'piezoelectric']
+        else:                                     # no temperature field: ΔT = 0 → plain piezoelectric
+            spec['material'] = {k: v for k, v in spec['material'].items()
+                                if k not in ('p3', 'alpha', 'k', 'T_ref')}
+            spec['material']['type'] = 'piezoelectric'
+            spec['physics'] = ['piezoelectric']
+    t_scale = spec.pop('transport_time_scale', 1.0)
+    is_tr_bc = lambda b: 'concentration' in b                                         # noqa: E731
+    is_tr_ld = lambda ld: any(k in ld for k in TRANSPORT_LOAD_TYPES)                  # noqa: E731
+    if spec['material'].get('type') == 'scalar_transport':
+        n_other = sum(not is_tr_bc(b) for b in spec['bcs']) + sum(not is_tr_ld(ld) for ld in spec['loads'])
+        if n_other:
+            raise GraphSpecError('El estudio de transporte solo admite BC «Concentración» y cargas de especie (flujo, '
+                                 f'intercambio, fuente, vertido puntual): hay {n_other} condiciones de otro tipo.')
+        n_sp = len(spec['material']['species'])
+        for e in spec['bcs'] + spec['loads']:
+            sp_ = e.get('species', 0)
+            if not (isinstance(sp_, int) and 0 <= sp_ < n_sp):
+                raise GraphSpecError(f'"{e.get("label")}": especie {sp_!r} inexistente (hay {n_sp}).')
+            if t_scale != 1.0 and e.get('history'):
+                e['history'] = [[t * t_scale, f] for t, f in e['history']]
+        spec['physics'] = ['transport']
+        return
+    is_dc_bc = lambda b: 'hydraulic_head' in b                                       # noqa: E731
+    is_dc_ld = lambda ld: any(k in ld for k in DARCY_LOAD_TYPES)                      # noqa: E731
+    if spec['material'].get('type') == 'porous_medium':
+        n_other = sum(not is_dc_bc(b) for b in spec['bcs']) + sum(not is_dc_ld(ld) for ld in spec['loads'])
+        if n_other:
+            raise GraphSpecError('El estudio de flujo subterráneo solo admite BC «Carga hidráulica» y cargas de recarga, '
+                                 f'pozo o goteo: hay {n_other} condiciones de otro tipo.')
+        for e in spec['bcs'] + spec['loads']:
+            if t_scale != 1.0 and e.get('history'):
+                e['history'] = [[t * t_scale, f] for t, f in e['history']]
+        spec['physics'] = ['darcy']
+        return
+    if any(is_dc_bc(b) for b in spec['bcs']) or any(is_dc_ld(ld) for ld in spec['loads']):
+        raise GraphSpecError('Hay condiciones de flujo subterráneo (carga hidráulica, pozos, recarga) pero el material '
+                             'no es «Medio poroso (Darcy)».')
+    if any(is_tr_bc(b) for b in spec['bcs']) or any(is_tr_ld(ld) for ld in spec['loads']):
+        raise GraphSpecError('Hay condiciones de transporte (concentración, vertidos) pero el material no es '
+                             '«Transporte de contaminantes».')
+    if spec['material'].get('type') != 'linear_magnetic' and (
+            any('magnetic_potential' in b for b in spec['bcs']) or any('magnetic_flux' in ld for ld in spec['loads'])):
+        raise GraphSpecError('Hay condiciones magnéticas pero el material no es magnético (μr, Br).')
+    if spec['material'].get('type') == 'linear_magnetic':
+        n_mech = (sum('magnetic_potential' not in b for b in spec['bcs'])
+                  + sum('magnetic_flux' not in ld for ld in spec['loads']))
+        if n_mech:
+            raise GraphSpecError('El material magnético solo admite BC de potencial magnético y cargas de flujo '
+                                 f'magnético ({n_mech} condiciones mecánicas o térmicas en el estudio).')
+        if any('coil' in b for b in spec['bcs']) and all('coil' in b for b in spec['bcs']):
+            raise GraphSpecError('La bobina necesita una cara de referencia: añada una BC «Potencial magnético» '
+                                 '(ψ = 0) en la otra cara del corte del núcleo.')
+        spec['physics'] = ['magnetic']
+    elif spec['material'].get('type') == 'newtonian_fluid':
+        if 'thermal' in spec['physics']:
+            raise GraphSpecError('El fluido newtoniano no admite condiciones térmicas todavía.')
+        ft = spec.pop('fluid_time_scale', None)
+        for b in spec['bcs']:
+            if not b.get('history'):
+                continue
+            if ft is None:                       # steady study: time histories do not apply (hash unchanged)
+                b.pop('history')
+            elif spec['material'].get('turbulence'):
+                raise GraphSpecError(f'"{b.get("label")}": RANS transitorio con velocidad variable en el tiempo no '
+                                     'está disponible todavía (condiciones constantes).')
+            else:
+                b['history'] = [[t * ft, f] for t, f in b['history']]
+        if any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads']):
+            raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material es un fluido.')
+        spec['physics'] = ['fluid']               # T10 required: the kernel raises a clear error for T4
+    elif spec['material'].get('type') not in PIEZO_TYPES and (
+            any('voltage' in b for b in spec['bcs']) or any('surface_charge' in ld for ld in spec['loads'])):
+        raise GraphSpecError('Hay electrodos o cargas eléctricas pero el material no es piezoeléctrico.')
+
+
+ORTHO_KEYS = ('E1', 'E2', 'E3', 'G12', 'G13', 'G23', 'nu12', 'nu13', 'nu23')
+
+
+def _axis(props: dict, key: str):
+    v = props.get(key)
+    if v in (None, '', []):
+        return None
+    try:
+        out = [float(x) for x in v]
+    except (TypeError, ValueError):
+        out = []
+    if len(out) != 3:
+        raise GraphSpecError(f'{key} debe ser un vector de 3 componentes')
+    return out
+
+
+def _orthotropic_material(spec: dict, node) -> None:
+    """Orthotropic elasticity: E1..E3, G12/G13/G23 [Pa], ν12/ν13/ν23 along the material axes
+    ``axis_1``/``axis_2`` (global/CAD frame; omitted = global axes). Replaces the isotropic E/ν."""
+    from app.design.services.fem.constitutive import LinearElasticOrthotropic
+    p = node.properties or {}
+    missing = [k for k in ORTHO_KEYS if p.get(k) in (None, '')]
+    if missing:
+        raise GraphSpecError(f'"{node.label}": material ortótropo sin {", ".join(missing)}.')
+    m = {'type': 'linear_elastic_orthotropic', **{k: float(p[k]) for k in ORTHO_KEYS},
+         'rho': spec['material']['rho']}
+    for key in ('axis_1', 'axis_2'):
+        a = _axis(p, key)
+        if a is not None:
+            m[key] = a
+    try:
+        LinearElasticOrthotropic.from_dict(m)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material'] = m
+
+
+def _piezo_material(spec: dict, node) -> None:
+    """Piezoelectric (6mm, poling = material axis 3): c11 c12 c13 c33 c44 c66 [Pa], e31 e33 e15 [C/m²],
+    eps11 eps33 (relative, constant strain), optional axis_1/axis_2. Replaces the isotropic E/ν."""
+    from app.design.services.fem.piezo import KEYS, PiezoMaterial
+    p = node.properties or {}
+    missing = [k for k in KEYS if p.get(k) in (None, '')]
+    if missing:
+        raise GraphSpecError(f'"{node.label}": material piezoeléctrico sin {", ".join(missing)}.')
+    m = {'type': spec['material']['type'], **{k: float(p[k]) for k in KEYS}, 'rho': spec['material']['rho']}
+    for key in ('axis_1', 'axis_2'):
+        a = _axis(p, key)
+        if a is not None:
+            m[key] = a
+    if m['type'] == 'thermopiezoelectric':        # pyroelectric p3 [C/(m²·K)]; α, k, T_ref in _set_physics
+        if p.get('p3') in (None, ''):
+            raise GraphSpecError(f'"{node.label}": el material termo-piezoeléctrico necesita el coeficiente '
+                                 'piroeléctrico p3 (C/m²·K).')
+        m['p3'] = float(p['p3'])
+    try:
+        PiezoMaterial(m)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material'] = m
+
+
+def _viscoelastic_material(spec: dict, node) -> None:
+    """Generalized Maxwell: E = instantaneous modulus E₀, ``prony_terms`` [{g, tau [s]}], time settings
+    ``t_end`` [s], ``time_steps`` and ``load_history``: creep (load applied at t = 0 and held; with prescribed
+    displacements: relaxation), ramp (linear to full load at ``t_ramp`` then held), recovery (load removed at
+    ``t_unload``)."""
+    from app.design.services.fem.viscoelastic import PronySeries
+    p = node.properties or {}
+    terms = []
+    for t in p.get('prony_terms') or []:
+        try:
+            g, tau = float(t.get('g')), float(t.get('tau'))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        terms.append({'g': g, 'tau': tau})
+    try:
+        pr = PronySeries(spec['material']['E'], spec['material']['nu'], terms)
+    except ValueError as e:
+        raise GraphSpecError(f'"{node.label}": {e}')
+    spec['material']['prony'] = terms
+    t_end = float(p.get('t_end') or 10 * float(pr.tau.max()))
+    kind = p.get('load_history') or 'creep'
+    if kind == 'ramp':
+        tr = float(p.get('t_ramp') or 0.1 * t_end)
+        history = [[0.0, 0.0], [min(tr, t_end), 1.0], [t_end, 1.0]]
+    elif kind == 'recovery':
+        tu = float(p.get('t_unload') or 0.5 * t_end)
+        if not 0 < tu < t_end:
+            raise GraphSpecError(f'"{node.label}": t_unload debe estar entre 0 y t_end.')
+        history = [[0.0, 1.0], [tu, 1.0], [tu, 0.0], [t_end, 0.0]]
+    else:
+        history = [[0.0, 1.0], [t_end, 1.0]]
+    spec['time'] = {'t_end': t_end, 'n_steps': int(p.get('time_steps') or 40), 'history': history,
+                    'load_history': kind}
+
+
+def _anisotropic_thermal(props: dict, base: str, label: str):
+    """[v1, v2, v3] when the node gives ``<base>1..3`` (orthotropic materials), else None."""
+    vals = [props.get(f'{base}{i}') for i in (1, 2, 3)]
+    if all(v in (None, '') for v in vals):
+        return None
+    if any(v in (None, '') for v in vals):
+        raise GraphSpecError(f'"{label}": da {base}1, {base}2 y {base}3 (o ninguno).')
+    return [float(v) for v in vals]
+
+
+def _plastic_material(spec: dict, node) -> None:
+    """J2 plasticity (FASE 2.5): σy and the hardening law from the MATERIAL node. ``hardening_type``
+    perfect | linear (H) | voce (hardening_Q, hardening_b, H) | fit (``hardening_table`` written by the
+    tensile-test fit of the material library); default: fit if a table exists, else linear/perfect."""
+    p = node.properties or {}
+    sy = p.get('yield_strength')
+    if sy in (None, '') or float(sy) <= 0:
+        raise GraphSpecError(f'"{node.label}": el modelo elastoplástico necesita el límite elástico σy.')
+    kind = p.get('hardening_type') or ('fit' if p.get('hardening_table') else 'linear' if p.get('H') else 'perfect')
+    if kind == 'fit':
+        t = p.get('hardening_table')
+        if not t:
+            raise GraphSpecError(f'"{node.label}": no hay curva de endurecimiento ajustada; ajusta un ensayo '
+                                 'de tracción en la biblioteca o elige endurecimiento lineal/Voce.')
+        hard = {'type': 'table', 'ep': t['ep'], 'sy': t['sy']}
+    elif kind == 'linear':
+        hard = {'type': 'linear', 'H': float(p.get('H') or 0.0)}
+    elif kind == 'voce':
+        hard = {'type': 'voce', 'Q': float(p.get('hardening_Q') or 0.0), 'b': float(p.get('hardening_b') or 0.0),
+                'H': float(p.get('H') or 0.0)}
+    elif kind == 'perfect':
+        hard = {'type': 'perfect'}
+    else:
+        raise GraphSpecError(f'"{node.label}": endurecimiento "{kind}" no reconocido.')
+    spec['material']['sigma_y'] = float(sy) if kind != 'fit' else float(hard['sy'][0])
+    spec['material']['hardening'] = hard
+    spec['n_load_steps'] = int(p.get('load_steps') or 10)
+    if p.get('unload'):
+        spec['load_path'] = [1.0, 0.0]
+
+
+def _set_physics(spec: dict, mat_node) -> None:
+    """Physics inferred from the conditions (FASE 2 multiphysics): temperature BCs / heat loads →
+    thermal; supports / mechanical loads → structural; both → one-way thermo-mechanical.
+    Thermal material keys are only added when thermal is active (structural hashes unchanged)."""
+    from app.design.services.fem.thermal import is_thermal_bc, is_thermal_load
+    thermal = any(is_thermal_bc(b) for b in spec['bcs']) or any(is_thermal_load(ld) for ld in spec['loads'])
+    structural = (any(not is_thermal_bc(b) for b in spec['bcs'])
+                  or any(not is_thermal_load(ld) for ld in spec['loads']))
+    if not thermal:
+        return
+    spec['physics'] = ['structural', 'thermal'] if structural else ['thermal']
+    props = (mat_node.properties or {}) if mat_node is not None else {}
+    label = mat_node.label if mat_node is not None else 'MATERIAL'
+    ortho = spec['material'].get('type') in ('linear_elastic_orthotropic', 'thermopiezoelectric')
+    if ortho and not structural:                 # thermal only: elastic constants are not needed
+        for key in ('axis_1', 'axis_2'):
+            a = _axis(props, key)
+            if a is not None:
+                spec['material'][key] = a
+    k3 = _anisotropic_thermal(props, 'k', label) if ortho else None
+    if k3 is not None:
+        if min(k3) <= 0:
+            raise GraphSpecError(f'"{label}": las conductividades k1, k2, k3 deben ser positivas.')
+        spec['material']['k'] = k3
+    else:
+        k = props.get('k')
+        if k in (None, '') or float(k) <= 0:
+            raise GraphSpecError(f'"{label}": el análisis térmico necesita la conductividad k (W/m·K).')
+        spec['material']['k'] = float(k)
+    if structural:
+        a3 = _anisotropic_thermal(props, 'alpha', label) if ortho else None
+        a = props.get('alpha')
+        if a3 is None and a in (None, ''):
+            raise GraphSpecError(f'"{label}": el análisis termo-mecánico necesita el coeficiente de '
+                                 'dilatación α (1/K).')
+        spec['material']['alpha'] = a3 if a3 is not None else float(a)
+        spec['material']['T_ref'] = float(props.get('T_ref') if props.get('T_ref') not in (None, '') else 20.0)
+
+
+def _faces(ctx: dict, node: DesignNode) -> list | None:
+    """face_set names for a node's ``entity_ids`` on the study geometry, or None."""
+    ids = (node.properties or {}).get('entity_ids') or []
+    if not ids:
+        return None
+    if not ctx.get('geometry_id'):
+        raise GraphSpecError(f'"{node.label}" tiene caras seleccionadas pero el nodo GEOMETRY no '
+                             'tiene una geometría CAD asignada.')
+    from app.geometry.resolve import resolve_faces
+    res = resolve_faces(ctx['geometry_id'], ids)
+    bad = [i for i, r in res.items() if r['index'] is None]
+    if bad:
+        raise GraphSpecError(f'"{node.label}": {len(bad)} de {len(ids)} caras no existen en la versión '
+                             'actual de la geometría. Vuelve a seleccionarlas.')
+    return [f"F_{r['index']}" for r in res.values()]
+
+
+def _symmetry_dofs(ctx: dict, node: DesignNode) -> list:
+    """Normal DOF of planar, axis-aligned faces (symmetry BC without MPCs)."""
+    from app.extensions import db
+    from app.geometry.models import GeometryEntity
+    from app.geometry.resolve import resolve_faces
+    ids = (node.properties or {}).get('entity_ids') or []
+    if not ids or not ctx.get('geometry_id'):
+        raise GraphSpecError(f'"{node.label}": la simetría necesita caras planas seleccionadas.')
+    axes = set()
+    for r in resolve_faces(ctx['geometry_id'], ids).values():
+        e = db.session.get(GeometryEntity, r['entity_id']) if r['entity_id'] else None
+        n = (e.normal if e is not None else None) or []
+        if e is None or e.surface_type != 'plane' or len(n) != 3:
+            raise GraphSpecError(f'"{node.label}": la simetría solo admite caras planas.')
+        k = max(range(3), key=lambda i: abs(n[i]))
+        if abs(abs(n[k]) - 1.0) > 1e-6:
+            raise GraphSpecError(f'"{node.label}": la cara de simetría debe ser normal a X, Y o Z '
+                                 '(planos inclinados requieren restricciones MPC, aún no soportadas).')
+        axes.add(k)
+    return sorted(axes)
+
+
+def _bc_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> dict:
     """Convert BC node to solver BC entry."""
     props = node.properties or {}
-    dofs = props.get('dofs', [0, 1, 2])
-    values = [float(props.get('value', 0))] * len(dofs)
+    faces = _faces(ctx, node)
+    bc_type = props.get('bc_type', 'fixed')
+    if bc_type == 'voltage':                      # electrode (piezoelectric)
+        v = props.get('voltage', props.get('value'))
+        if v in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta el potencial del electrodo (V).')
+        entry = {'voltage': float(v), 'label': node.label}
+        _target(entry, faces, props, 'z0', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'temperature':
+        t = props.get('temperature', props.get('value'))
+        if t in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta la temperatura impuesta (°C).')
+        entry = {'temperature': float(t), 'label': node.label}
+        _target(entry, faces, props, 'fixed')
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'coil':                         # coil MMF: ψ = N·I on its pole faces (vs the reference poles)
+        try:
+            turns, current = float(props.get('turns')), float(props.get('current'))
+        except (TypeError, ValueError):
+            raise GraphSpecError(f'"{node.label}": la bobina necesita número de vueltas N y corriente I (A).')
+        if turns <= 0:
+            raise GraphSpecError(f'"{node.label}": el número de vueltas debe ser > 0.')
+        coil = {'turns': turns, 'current': current}
+        if props.get('current_steps') not in (None, ''):
+            coil['steps'] = max(1, min(int(props['current_steps']), 50))
+        entry = {'magnetic_potential': turns * current, 'coil': coil, 'label': node.label}
+        _target(entry, faces, props, 'tip', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'magnetic_potential':           # equipotential pole face (ideal iron), ψ in A·turn
+        v = props.get('magnetic_potential', props.get('value'))
+        if v in (None, ''):
+            raise GraphSpecError(f'"{node.label}": falta el potencial magnético (A).')
+        entry = {'magnetic_potential': float(v), 'label': node.label}
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type in SW_BC_TYPES:                    # shallow water (FASE 10.3): boundaries of the 2D domain
+        return _sw_bc(node)
+    if bc_type == 'hydraulic_head':               # groundwater: fixed head [m] (lake, river, sea, far field)
+        entry = {'hydraulic_head': _num(props, 'head', node.label, 'la carga hidráulica (m)'), 'label': node.label}
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'concentration':                # species transport: fixed concentration (inlet, source face)
+        entry = {'concentration': _num(props, 'concentration', node.label, 'la concentración impuesta'),
+                 'species': int(props.get('species') or 0), 'label': node.label}
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        _target(entry, faces, props, 'fixed', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if bc_type == 'velocity':                     # fluid inlet / moving wall [m/s or mm/s]
+        f = {'m/s': 1.0, 'mm/s': 1e-3}.get(props.get('unit') or 'm/s', 1.0)
+        values = [float(props.get(k) or 0) * f for k in ('vx', 'vy', 'vz')]
+        entry = {'dofs': [0, 1, 2], 'values': values, 'label': node.label}
+        turb = {}                                 # inlet turbulence of a RANS study (overrides the material's)
+        if props.get('turbulence_intensity') not in (None, ''):
+            turb['intensity'] = _num(props, 'turbulence_intensity', node.label, 'la intensidad turbulenta') / 100.0
+        if props.get('turbulence_length_mm') not in (None, ''):
+            turb['length_scale'] = _num(props, 'turbulence_length_mm', node.label, 'la escala de longitud') * 1e-3
+        if turb:
+            entry['turbulence'] = turb
+        if props.get('t_ramp') not in (None, ''):    # transient studies: linear ramp 0 → 1 (study time unit)
+            entry['history'] = [[0.0, 0.0], [_num(props, 't_ramp', node.label, 'la rampa', positive=True), 1.0]]
+        else:
+            hist = _history(props, node.label)
+            if hist:
+                entry['history'] = hist
+        _target(entry, faces, props, 'fixed')
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if props.get('dofs'):
+        dofs = sorted({int(d) for d in props['dofs'] if int(d) in (0, 1, 2)})
+        if not dofs:
+            raise GraphSpecError(f'"{node.label}": los sólidos solo tienen grados de libertad de '
+                                 'traslación (UX, UY, UZ); RX/RY/RZ no aplican.')
+    elif bc_type == 'symmetry':
+        dofs = _symmetry_dofs(ctx, node)
+    else:
+        dofs = BC_TYPE_DOFS.get(bc_type, [0, 1, 2])
+    values = [float(props.get('value', 0) or 0)] * len(dofs)
 
-    entry = {
-        'node_set': props.get('node_set', 'fixed'),
-        'dofs': dofs,
-        'values': values,
-    }
+    entry = {'dofs': dofs, 'values': values, 'label': node.label}
+    # topology optimization keeps support regions solid, but not symmetry/plane constraints
+    if bc_type == 'symmetry':
+        entry['symmetry'] = True
+    elif props.get('keep_solid') is False:
+        entry['keep_solid'] = False
+    _target(entry, faces, props, 'fixed')       # CAD faces > face_set > node_set (default 'fixed')
     if geometry_id:
         entry['geometry_id'] = geometry_id
     return entry
 
 
-def _load_node_to_entry(node: DesignNode, geometry_id: str = None) -> dict:
-    """Convert LOAD node to solver LOAD entry."""
+RANS_MODELS = {'rans_k_epsilon': 'k_epsilon', 'rans_k_omega_sst': 'k_omega_sst'}   # graph flow_model → spec model
+
+
+def _turbulence_settings(props: dict, label: str, flow_model: str = 'rans_k_epsilon') -> dict:
+    """MATERIAL fluid with ``flow_model: 'rans_k_epsilon' | 'rans_k_omega_sst'`` → spec ``turbulence`` (SI).
+    ``wall_distance_mm`` empty = automatic (½ wall-element height); inlet intensity in %, length scale in mm (empty =
+    0.07 × smallest extent)."""
+    t = {'model': RANS_MODELS[flow_model]}
+    if props.get('wall_distance_mm') not in (None, ''):
+        t['wall_distance'] = _num(props, 'wall_distance_mm', label, 'la distancia de pared δ') * 1e-3
+        if not t['wall_distance'] > 0:
+            raise GraphSpecError(f'"{label}": la distancia de pared δ debe ser > 0 mm.')
+    if props.get('inlet_intensity') not in (None, ''):
+        t['inlet_intensity'] = _num(props, 'inlet_intensity', label, 'la intensidad turbulenta') / 100.0
+        if not 0 < t['inlet_intensity'] < 1:
+            raise GraphSpecError(f'"{label}": la intensidad turbulenta de entrada va entre 0 y 100 %.')
+    if props.get('inlet_length_mm') not in (None, ''):
+        t['inlet_length_scale'] = _num(props, 'inlet_length_mm', label, 'la escala de longitud') * 1e-3
+    return t
+
+
+def _target(entry: dict, faces, props: dict, default: str, face: bool = False) -> None:
+    """Selected CAD faces, else the node's ``face_set`` / ``node_set`` (parametric beam:
+    'fixed', 'tip', '@free' = rest of the surface)."""
+    if faces:
+        entry['face_set'] = faces
+    elif face or props.get('face_set'):
+        entry['face_set'] = props.get('face_set') or default
+    else:
+        entry['node_set'] = props.get('node_set', default)
+
+
+def _unit(table: dict, unit: str, node: DesignNode, default: str) -> float:
+    u = (unit or default).strip()
+    if u not in table:
+        raise GraphSpecError(f'"{node.label}": unidad "{u}" no reconocida '
+                             f'(usa {", ".join(table)}).')
+    return table[u]
+
+
+def _load_node_to_entry(ctx: dict, node: DesignNode, geometry_id: str = None) -> dict:
+    """Convert LOAD node to solver LOAD entry (SI units)."""
     props = node.properties or {}
-    mag = float(props.get('magnitude', 0))
-    dx = float(props.get('dir_x', 0))
-    dy = float(props.get('dir_y', -1))
-    dz = float(props.get('dir_z', 0))
+    load_type = props.get('load_type', 'force')
+    mag = float(props.get('magnitude', 0) or 0)
+    # defaults match NodePanel (Dz = -1)
+    dx = float(props.get('dir_x', 0) or 0)
+    dy = float(props.get('dir_y', 0) or 0)
+    dz = float(props.get('dir_z', -1) if props.get('dir_z') is not None else -1)
+    norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if norm > 1e-12:
+        dx, dy, dz = dx / norm, dy / norm, dz / norm
 
-    norm = math.sqrt(dx*dx + dy*dy + dz*dz)
-    if norm > 1e-10:
-        dx, dy, dz = dx/norm, dy/norm, dz/norm
+    if load_type == 'wind':                       # shallow water: wind stress over the 2D domain
+        return _sw_wind(node)
+    if load_type == 'outfall':                    # shallow water: point discharge (water + species)
+        return _sw_outfall(node)
+    entry = {'label': node.label}
+    if load_type in THERMAL_LOAD_TYPES:
+        faces = _faces(ctx, node)
+        if load_type == 'heat_source':
+            entry['heat_source'] = mag * _unit(SOURCE_UNITS, props.get('unit'), node, 'W/m³')
+            return entry
+        if load_type == 'heat_flux':
+            entry['heat_flux'] = mag * _unit(FLUX_UNITS, props.get('unit'), node, 'W/m²')
+            _target(entry, faces, props, 'tip', face=True)
+        else:   # convection
+            h = props.get('h')
+            if h in (None, '') or float(h) <= 0:
+                raise GraphSpecError(f'"{node.label}": la convección necesita h > 0 (W/m²·K).')
+            entry['convection'] = {'h': float(h), 'T_inf': float(props.get('T_inf') or 0.0)}
+            _target(entry, faces, props, '@free', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type == 'surface_charge':             # free charge density on a face (piezoelectric)
+        entry['surface_charge'] = mag * {'C/m²': 1.0, 'mC/m²': 1e-3, 'µC/m²': 1e-6}.get(props.get('unit') or 'C/m²', 1.0)
+        _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type in TRANSPORT_LOAD_TYPES:         # species transport (units: concentration c, m, s)
+        entry['species'] = int(props.get('species') or 0)
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        if load_type == 'species_source':         # uniform volumetric source [c/s]
+            entry['species_source'] = mag
+            return entry
+        if load_type == 'point_source':           # discharge [c·m³/s] (mg/L → g/s) at a point given in mm
+            try:
+                pt = [float(props.get(k)) / 1000.0 for k in ('x', 'y', 'z')]
+            except (TypeError, ValueError):
+                raise GraphSpecError(f'"{node.label}": el vertido puntual necesita el punto x, y, z (mm).')
+            entry['point_source'] = {'point': pt, 'rate': mag}
+            return entry
+        faces = _faces(ctx, node)
+        if load_type == 'species_flux':           # [c·m/s] into the body
+            entry['species_flux'] = mag
+            _target(entry, faces, props, 'tip', face=True)
+        else:                                      # exchange k (c_ext − c) with the atmosphere / bed
+            entry['exchange'] = {'k': _num(props, 'k', node.label, 'el coeficiente de intercambio k (m/s)',
+                                           nonneg=True),
+                                 'c_ext': _num(props, 'c_ext', node.label, 'la concentración exterior', default=0.0)}
+            _target(entry, faces, props, '@free', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type in DARCY_LOAD_TYPES:             # groundwater (head m, rates SI after the unit tables)
+        hist = _history(props, node.label)
+        if hist:
+            entry['history'] = hist
+        if load_type == 'well':                   # positive = extraction; screen faces or a point (mm)
+            rate = mag * _unit(WELL_UNITS, props.get('unit'), node, 'm³/s')
+            if props.get('at_point'):
+                try:
+                    pt = [float(props.get(k)) / 1000.0 for k in ('x', 'y', 'z')]
+                except (TypeError, ValueError):
+                    raise GraphSpecError(f'"{node.label}": el pozo puntual necesita el punto x, y, z (mm).')
+                entry['well'] = {'rate': rate, 'point': pt}
+                return entry
+            entry['well'] = {'rate': rate}
+            _target(entry, _faces(ctx, node), props, 'tip', face=True)
+        elif load_type == 'recharge':             # infiltration into the body [m/s]
+            entry['recharge'] = mag * _unit(RECHARGE_UNITS, props.get('unit'), node, 'mm/d')
+            _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        else:                                     # leakage C (h_ext − h): river bed / leaky aquitard
+            cu = {'1/s': 1.0, '1/d': 1 / 86400.0}.get(props.get('conductance_unit') or '1/d')
+            if cu is None:
+                raise GraphSpecError(f'"{node.label}": unidad de conductancia no reconocida (1/s, 1/d).')
+            entry['leakage'] = {'conductance': _num(props, 'conductance', node.label, 'la conductancia de goteo',
+                                                    nonneg=True) * cu,
+                                'head': _num(props, 'head', node.label, 'la carga exterior (m)')}
+            _target(entry, _faces(ctx, node), props, 'z1', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type == 'magnetic_flux':              # normal flux density entering the face [T]
+        entry['magnetic_flux'] = mag * {'T': 1.0, 'mT': 1e-3}.get(props.get('unit') or 'T', 1.0)
+        _target(entry, _faces(ctx, node), props, 'tip', face=True)
+        if geometry_id:
+            entry['geometry_id'] = geometry_id
+        return entry
+    if load_type == 'gravity':
+        g = mag * _unit(ACCEL_UNITS, props.get('unit'), node, 'm/s²') if mag else 9.80665
+        entry['gravity'] = [g * dx, g * dy, g * dz]
+        return entry
+    if load_type not in ('force', 'pressure'):
+        raise GraphSpecError(f'"{node.label}": el tipo de carga "{load_type}" aún no está soportado '
+                             '(disponibles: force, pressure, gravity, heat_flux, convection, heat_source, '
+                             'species_flux, exchange, species_source, point_source, recharge, well, leakage).')
 
-    entry = {
-        'node_set': props.get('node_set', 'tip'),
-        'force': [mag * dx, mag * dy, mag * dz],
-    }
+    faces = _faces(ctx, node)
+    if load_type == 'pressure':
+        if not faces and not props.get('face_set'):
+            raise GraphSpecError(f'"{node.label}": la presión necesita caras seleccionadas.')
+        entry['face_set'] = faces or props['face_set']      # parametric beam: named face set
+        entry['pressure'] = mag * _unit(PRESSURE_UNITS, props.get('unit'), node, 'Pa')
+    else:
+        f = mag * _unit(FORCE_UNITS, props.get('unit'), node, 'N')
+        entry['force'] = [f * dx, f * dy, f * dz]
+        if faces:
+            entry['face_set'] = faces
+        else:
+            entry['node_set'] = props.get('node_set', 'tip')
     if geometry_id:
         entry['geometry_id'] = geometry_id
     return entry

@@ -20,18 +20,14 @@ import {
   CircularProgress,
 } from '@mui/material';
 import {
-  AccountTree, Info, Close, Build,
-  Straighten, SquareFoot, ContentCut, Draw, GridOn, Hub, Share,
+  Close,
+  SquareFoot, ContentCut, Draw, Hub, Share,
 } from '@mui/icons-material';
 import axios from 'axios';
 
 import StepViewer3D from './components/StepViewer3D';
 import FileList from './components/FileList';
 import TopBar from './components/TopBar';
-import EntityTree from './components/EntityTree';
-import EntityDetails from './components/EntityDetails';
-import FeaturePanel from './components/FeaturePanel';
-import PMIPanel from './components/PMIPanel';
 import MeasurementTools from './components/MeasurementTools';
 import SectionCutPanel from './components/SectionCutPanel';
 import MarkupPanel from './components/MarkupPanel';
@@ -41,6 +37,15 @@ import MeshFromStepDialog from './components/MeshFromStepDialog';
 import GraphEditor from './components/DesignGraph/GraphEditor';
 import GraphProjectList from './components/DesignGraph/GraphProjectList';
 import SolverPanel from './components/Solver/SolverPanel';
+import GeometryList from './components/Geometry/GeometryList';
+import GeoDataList from './components/Map/GeoDataList';
+import HubPage from './components/Hub/HubPage';
+import HubFilters from './components/Hub/HubFilters';
+import GeometryViewer from './components/Geometry/GeometryViewer';
+import FacePanel from './components/Geometry/FacePanel';
+import ResultsViewer from './components/Results/ResultsViewer';
+import ResultsRunList from './components/Results/ResultsRunList';
+import useDesignStore, { useStudy } from './stores/designStore';
 
 const darkTheme = createTheme({
   palette: {
@@ -51,23 +56,23 @@ const darkTheme = createTheme({
   },
 });
 
+// Leaflet only loads when the Mapa mode opens (FASE 10.5)
+const MapMode = React.lazy(() => import('./components/Map/MapMode'));
 const SIDEBAR_WIDTH = 300;
-const DETAILS_WIDTH = 350;
 
 export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
-  const [selectedEntityId, setSelectedEntityId] = useState(null);
 
   // ── Panel visibility ─────────────────────────────────────────────────────
   const [fileListOpen, setFileListOpen] = useState(true);
-  const [entityTreeOpen, setEntityTreeOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [featurePanelOpen, setFeaturePanelOpen] = useState(false);
-  const [pmiPanelOpen, setPmiPanelOpen] = useState(false);
 
-  // ── App mode: 'design' | 'step' | 'cae' ────────────────────────────────
-  const [appMode, setAppMode] = useState('cae');
-  const [solverOpen, setSolverOpen] = useState(false);
+  // ── App mode (FASE 9: workspace store, so TopBar actions and panels can switch it) ──
+  // design | results | geometry | step | cae | hub — Design Graph is the default (§1.5)
+  const { appMode, setAppMode, solverOpen, setSolverOpen, toggleSolver, loadPreflight } = useStudy(
+    'appMode', 'setAppMode', 'solverOpen', 'setSolverOpen', 'toggleSolver', 'loadPreflight'
+  );
+  const activeGraphId = useDesignStore((st) => st.activeGraphId);
+  useEffect(() => { loadPreflight(activeGraphId); }, [activeGraphId, loadPreflight]);
   const caeMode = appMode === 'cae';     // kept for internal logic compatibility
 
   // ── CAE mode ─────────────────────────────────────────────────────────────
@@ -90,8 +95,6 @@ export default function App() {
   // Measurements to render as 3D overlay
   const [measurements3D, setMeasurements3D] = useState([]);
 
-  // PMI annotations to render as 3D labels
-  const [pmiAnnotations, setPmiAnnotations] = useState([]);
 
   // Markup state
   const [markupActive, setMarkupActive] = useState(false);
@@ -102,21 +105,12 @@ export default function App() {
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
-  function handleEntitySelect(entityId) {
-    setSelectedEntityId(entityId);
-    if (entityId && !detailsOpen) setDetailsOpen(true);
-  }
-
   function handleFileSelect(file) {
     setSelectedFile(file);
-    setSelectedEntityId(null);
-    setDetailsOpen(false);
     setPickingMode(false);
     setPickedPoint(null);
     setMeasurements3D([]);
-    setPmiAnnotations([]);
     setMarkupStrokes([]);
-    if (file && !entityTreeOpen) setEntityTreeOpen(true);
   }
 
   // Called when user clicks "Pick from 3D" in MeasurementTools
@@ -155,14 +149,6 @@ export default function App() {
       .catch(() => {});
   }, [measurementPanelOpen, selectedFile]);
 
-  // Load PMI annotations when PMI panel opens
-  useEffect(() => {
-    if (!pmiPanelOpen || !selectedFile?.header_id) return;
-    axios.get(`/api/step-view/pmi/${selectedFile.header_id}/list`)
-      .then(res => setPmiAnnotations(res.data.annotations || []))
-      .catch(() => {});
-  }, [pmiPanelOpen, selectedFile]);
-
   // Auto-load part from CAPP integration
   useEffect(() => {
     const partId = window.PART_ID;
@@ -175,15 +161,10 @@ export default function App() {
         })
         .catch(console.error);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount: open the part passed by the host page
   }, []);
 
   const headerId = selectedFile?.header_id || selectedFile?.id;
-
-  // ── Drawer layer helpers ──────────────────────────────────────────────────
-
-  function leftOffset(extras = 0) {
-    return (fileListOpen ? SIDEBAR_WIDTH : 0) + extras;
-  }
 
   return (
     <ThemeProvider theme={darkTheme}>
@@ -195,10 +176,9 @@ export default function App() {
           onMenuClick={() => setFileListOpen(!fileListOpen)}
           selectedFile={selectedFile}
           selectedMesh={selectedMesh}
-          appMode={appMode}
           onSetMode={(mode) => {
             setAppMode(mode);
-            if (mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+            if (mode === 'design' || mode === 'results') { setSelectedFile(null); setSelectedMesh(null); }
             // Keep selectedFile when switching to CAE (for mesh provenance display)
           }}
         />
@@ -207,8 +187,16 @@ export default function App() {
         <Drawer variant="persistent" anchor="left" open={fileListOpen}
           sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8 } }}
         >
-          {appMode === 'design'
+          {appMode === 'hub'
+            ? <HubFilters />
+            : appMode === 'design'
             ? <GraphProjectList />
+            : appMode === 'results'
+            ? <ResultsRunList />
+            : appMode === 'geometry'
+            ? <GeometryList />
+            : appMode === 'map'
+            ? <GeoDataList />
             : appMode === 'cae'
               ? <CAEFileList onSelectMesh={setSelectedMesh} selectedMeshId={selectedMesh?.id} />
               : <FileList onSelectFile={handleFileSelect} selectedFileId={selectedFile?.id} />
@@ -225,13 +213,21 @@ export default function App() {
           overflow: 'hidden',
           transition: 'left 0.2s',
         }}>
-          {appMode === 'design' ? (
+          {appMode === 'hub' ? (
+            <HubPage onLaunch={(launch) => {
+              if (!launch?.mode) return;
+              if (launch.mode === 'design') { setSelectedFile(null); setSelectedMesh(null); }
+              setAppMode(launch.mode);
+            }} />
+          ) : appMode === 'results' ? (
+            <ResultsViewer />
+          ) : appMode === 'design' ? (
             <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
               <GraphEditor />
               {/* Solver panel toggle */}
               <Box sx={{ position: 'absolute', top: 16, right: 16, zIndex: 25 }}>
                 <IconButton
-                  onClick={() => setSolverOpen(o => !o)}
+                  onClick={toggleSolver}
                   sx={{
                     bgcolor: solverOpen ? '#1565c0' : '#1e1e1e',
                     border: `1px solid ${solverOpen ? '#2196f3' : '#444'}`,
@@ -251,19 +247,25 @@ export default function App() {
                 </Box>
               )}
             </Box>
+          ) : appMode === 'map' ? (
+            <React.Suspense fallback={<Box sx={{ p: 3, color: '#888' }}>Cargando mapa…</Box>}>
+              <MapMode />
+            </React.Suspense>
+          ) : appMode === 'geometry' ? (
+            <Box sx={{ width: '100%', height: '100%', position: 'relative' }}>
+              <GeometryViewer />
+              <FacePanel />
+            </Box>
           ) : caeMode ? (
             <CAEViewer mesh={selectedMesh} />
           ) : selectedFile ? (
             <StepViewer3D
               headerId={headerId}
               filename={selectedFile.original_filename}
-              selectedEntityId={selectedEntityId}
-              onEntitySelect={handleEntitySelect}
               pickingMode={pickingMode}
               onPointPicked={handlePointPicked}
               clippingPlane={clippingPlane}
               measurements={measurements3D}
-              pmiAnnotations={pmiAnnotations}
               markupActive={markupActive}
               markupTool={markupTool}
               markupColor={markupColor}
@@ -281,26 +283,8 @@ export default function App() {
           )}
 
           {/* Floating Action Buttons */}
-          {selectedFile && !caeMode && (
-            <Box sx={{ position: 'absolute', top: 16, right: detailsOpen ? DETAILS_WIDTH + 16 : 16, display: 'flex', gap: 1, transition: 'right 0.2s' }}>
-
-              <Tooltip title="Manufacturing Features">
-                <IconButton onClick={() => setFeaturePanelOpen(!featurePanelOpen)} sx={{ bgcolor: featurePanelOpen ? 'warning.main' : 'background.paper', '&:hover': { bgcolor: 'warning.dark' } }}>
-                  <Build />
-                </IconButton>
-              </Tooltip>
-
-              <Tooltip title="Entity Graph">
-                <IconButton onClick={() => setEntityTreeOpen(!entityTreeOpen)} sx={{ bgcolor: entityTreeOpen ? 'primary.main' : 'background.paper', '&:hover': { bgcolor: 'primary.dark' } }}>
-                  <AccountTree />
-                </IconButton>
-              </Tooltip>
-
-              <Tooltip title="PMI Annotations">
-                <IconButton onClick={() => setPmiPanelOpen(!pmiPanelOpen)} sx={{ bgcolor: pmiPanelOpen ? 'info.main' : 'background.paper', '&:hover': { bgcolor: 'info.dark' } }}>
-                  <Straighten />
-                </IconButton>
-              </Tooltip>
+          {selectedFile && appMode === 'step' && (
+            <Box sx={{ position: 'absolute', top: 16, right: 16, display: 'flex', gap: 1 }}>
 
               <Tooltip title="Measurement Tools">
                 <IconButton onClick={() => setMeasurementPanelOpen(!measurementPanelOpen)} sx={{ bgcolor: measurementPanelOpen ? 'success.main' : 'background.paper', '&:hover': { bgcolor: 'success.dark' } }}>
@@ -326,7 +310,7 @@ export default function App() {
                 </IconButton>
               </Tooltip>
 
-              {selectedFile && !caeMode && (
+              {selectedFile && appMode === 'step' && (
                 <Tooltip title="Enviar a Design Graph">
                   <IconButton onClick={() => setSendToDesignDialogOpen(true)} sx={{ bgcolor: 'background.paper', '&:hover': { bgcolor: 'warning.dark' } }}>
                     <Share />
@@ -334,46 +318,13 @@ export default function App() {
                 </Tooltip>
               )}
 
-              {selectedEntityId && (
-                <Tooltip title="Entity Details">
-                  <IconButton onClick={() => setDetailsOpen(!detailsOpen)} sx={{ bgcolor: detailsOpen ? 'secondary.main' : 'background.paper', '&:hover': { bgcolor: 'secondary.dark' } }}>
-                    <Info />
-                  </IconButton>
-                </Tooltip>
-              )}
             </Box>
           )}
         </Box>
 
         {/* ── Left drawers ──────────────────────────────────────────────── */}
 
-        {selectedFile && !caeMode && (
-          <Drawer variant="persistent" anchor="left" open={featurePanelOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, left: leftOffset(), zIndex: 1060, transition: 'left 0.2s' } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setFeaturePanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <FeaturePanel headerId={headerId} onFeatureSelect={handleEntitySelect} selectedFeatureId={null} />
-            </Box>
-          </Drawer>
-        )}
-
         {/* ── Right drawers ─────────────────────────────────────────────── */}
-
-        {selectedFile && (
-          <Drawer variant="persistent" anchor="right" open={pmiPanelOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1090 } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setPmiPanelOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <PMIPanel
-                headerId={headerId}
-                onAnnotationSelect={handleEntitySelect}
-                onAnnotationsLoaded={setPmiAnnotations}
-              />
-            </Box>
-          </Drawer>
-        )}
 
         {selectedFile && (
           <Drawer variant="persistent" anchor="right" open={measurementPanelOpen}
@@ -427,29 +378,6 @@ export default function App() {
           </Drawer>
         )}
 
-        {selectedFile && (
-          <Drawer variant="persistent" anchor="right" open={entityTreeOpen}
-            sx={{ width: SIDEBAR_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1100 } }}
-          >
-            <Box sx={{ position: 'relative', height: '100%' }}>
-              <IconButton onClick={() => setEntityTreeOpen(false)} sx={{ position: 'absolute', top: 8, right: 8, zIndex: 1 }} size="small"><Close /></IconButton>
-              <EntityTree headerId={headerId} selectedEntityId={selectedEntityId} onEntitySelect={handleEntitySelect} />
-            </Box>
-          </Drawer>
-        )}
-
-        {selectedFile && selectedEntityId && (
-          <Drawer variant="persistent" anchor="right" open={detailsOpen}
-            sx={{ width: DETAILS_WIDTH, flexShrink: 0, '& .MuiDrawer-paper': { width: DETAILS_WIDTH, boxSizing: 'border-box', mt: 8, zIndex: 1200 } }}
-          >
-            <EntityDetails
-              headerId={headerId}
-              entityId={selectedEntityId}
-              onClose={() => { setDetailsOpen(false); setSelectedEntityId(null); }}
-              onEntityClick={handleEntitySelect}
-            />
-          </Drawer>
-        )}
 
       </Box>
 

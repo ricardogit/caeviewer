@@ -45,7 +45,7 @@ def create_app(config_name=None):
     _register_frontend(app)
     _register_error_handlers(app)
     _register_socketio_events()
-    _create_tables(app)
+    _warn_if_schema_behind(app)
 
     return app
 
@@ -74,6 +74,11 @@ def _register_models(app):
             from app.cae.models import CAEMesh, CAEField  # noqa
         except ImportError as e:
             print(f"[WARN] CAE models: {e}")
+        from app.jobs.models import Job  # noqa
+        from app.auth.models import User, Project  # noqa
+        from app.geometry.models import Geometry, GeometryEntity  # noqa
+        from app.geodata.models import GeoDataset  # noqa
+        from app.catalog.models import SolverCatalog  # noqa
         try:
             from app.design.models import (  # noqa
                 DesignGraph, DesignNode, DesignEdge,
@@ -100,6 +105,19 @@ def _register_blueprints(app):
 
     from app.cae.api.mesh_from_step_routes import bp as cae_from_step_bp
     app.register_blueprint(cae_from_step_bp, url_prefix='/api/cae')
+
+    # Job queue + auth (Engineering Hub, Fase 0)
+    from app.jobs.api import bp as jobs_bp
+    app.register_blueprint(jobs_bp, url_prefix='/api/jobs', strict_slashes=False)
+    from app.auth import init_auth
+    init_auth(app)
+    from app.geometry.api import bp as geometry_bp
+    app.register_blueprint(geometry_bp, url_prefix='/api/geometry', strict_slashes=False)
+    from app.geodata.api import bp as geodata_bp
+    app.register_blueprint(geodata_bp, url_prefix='/api/geodata', strict_slashes=False)
+    from app.catalog import init_catalog
+    init_catalog(app)
+    _register_material_cli(app)
 
     # Design module — new-generation CAE (FASE 0+)
     try:
@@ -170,6 +188,10 @@ def _register_socketio_events():
         if room:
             leave_room(room)
 
+    # FASE 5: real-time ROM evaluation (ROM explorer sliders)
+    from app.design.api.rom_routes import register_socket_handlers
+    register_socket_handlers(socketio)
+
     @socketio.on('connect')
     def handle_connect():
         pass   # connection acknowledged automatically
@@ -179,31 +201,57 @@ def _register_socketio_events():
         pass
 
 
-def _create_tables(app):
-    """Create any tables not yet managed by Alembic (fail-safe only).
-    Alembic migrations are the authoritative schema source — this is a
-    best-effort fallback for tables that weren't captured in a migration.
-    Circular-FK tables (step_file_headers ↔ step_view_files) are skipped
-    silently because Alembic handles them correctly.
-    """
-    import warnings
-    with app.app_context():
-        _log = logging.getLogger(__name__)
-        circular = {'step_file_headers', 'step_view_files'}
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            try:
-                tables = list(db.metadata.sorted_tables)
-            except Exception:
-                tables = list(db.metadata.tables.values())
-        for tbl in tables:
-            if tbl.name in circular:
-                continue   # managed by Alembic migration
-            try:
-                tbl.create(db.engine, checkfirst=True)
-            except Exception as e:
-                _log.debug(f"Table '{tbl.name}' skipped: {e}")
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
+def _warn_if_schema_behind(app):
+    """Alembic is the only schema mechanism (run `flask db upgrade`).
+    The old create_all fallback was removed; we only warn if the DB is behind."""
+    if app.config.get('TESTING'):
+        return
+    try:
+        from alembic.script import ScriptDirectory
+        from alembic.migration import MigrationContext
+        import pathlib
+        mig_dir = pathlib.Path(__file__).parent.parent / 'migrations'
+        cfg = app.extensions['migrate'].migrate.get_config(str(mig_dir))
+        heads = set(ScriptDirectory.from_config(cfg).get_heads())
+        with app.app_context(), db.engine.connect() as conn:
+            current = set(MigrationContext.configure(conn).get_current_heads())
+        if current != heads:
+            logging.getLogger(__name__).warning(
+                "Database schema %s is not at migration head %s — run `flask db upgrade`",
+                sorted(current) or '<empty>', sorted(heads))
+    except Exception as e:
+        logging.getLogger(__name__).debug("schema check skipped: %s", e)
+
+
+def _register_material_cli(app):
+    """flask materials seed [--prune] — typical-value material catalog (seed_data.py), idempotent."""
+    import click
+    from flask.cli import AppGroup
+
+    group = AppGroup('materials', help='Material library')
+
+    @group.command('seed')
+    @click.option('--prune', is_flag=True, help='Disable unmodified catalog rows no longer in seed_data')
+    def seed(prune):
+        from app.extensions import db
+        from app.design.services.material.seed_data import seed_materials
+        click.echo(seed_materials(db, prune=prune))
+
+    @group.command('import-capp')
+    @click.option('--url', envvar='CAPP_DATABASE_URL', help='CAPP database URL (read-only SELECT on materials)')
+    @click.option('--csv', 'csv_path', type=click.Path(exists=True, dir_okay=False),
+                  help='CSV export of the CAPP materials table instead of --url')
+    @click.option('--prune', is_flag=True, help='Disable CAPP materials no longer in CAPP')
+    def import_capp_cmd(url, csv_path, prune):
+        """Import the CAPP material catalog (read only; E, ν, k, α, cp completed from the seed catalog)."""
+        from app.extensions import db
+        from app.design.services.material.capp_import import import_capp, read_capp
+        res = import_capp(db, read_capp(url=url, csv_path=csv_path), prune=prune)
+        for r in res.pop('rows'):
+            click.echo(f"  ok  {r['code']:<14} {r['name']:<28} catálogo={r['catalog']} completado={r['filled']}")
+        for r in res['rejected']:
+            click.echo(f"  NO  {r['code']:<14} {r['name']:<28} {' '.join(r['errors'])}")
+        res.pop('rejected')
+        click.echo(res)
+
+    app.cli.add_command(group)

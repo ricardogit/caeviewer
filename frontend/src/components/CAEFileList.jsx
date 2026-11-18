@@ -3,7 +3,7 @@ import {
   Box, List, ListItem, ListItemButton, ListItemText,
   Typography, CircularProgress, Chip, Button,
   IconButton, Tooltip, Dialog, DialogTitle,
-  DialogContent, DialogActions, LinearProgress, Alert, Divider,
+  DialogContent, DialogActions, LinearProgress, Alert,
 } from '@mui/material';
 import { UploadFile, Refresh, GridOn, DeleteOutline, Hub, InsertDriveFile, Share } from '@mui/icons-material';
 import axios from 'axios';
@@ -91,7 +91,7 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
     try {
       const res = await axios.get('/api/step-view/files');
       setStepFiles(res.data.files || []);
-    } catch (e) {
+    } catch {
       setStepFiles([]);
     } finally {
       setStepFilesLoading(false);
@@ -277,7 +277,7 @@ export default function CAEFileList({ onSelectMesh, selectedMeshId }) {
                 const res = await axios.get('/api/design/graph/');
                 setDesignGraphs(res.data.graphs || []);
                 if (res.data.graphs?.length > 0) setSelectedGraphId(res.data.graphs[0].id);
-              } catch (e) {
+              } catch {
                 alert('Error cargando grafos');
               }
             }}>

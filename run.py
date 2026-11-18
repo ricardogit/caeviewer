@@ -5,6 +5,11 @@ from app.extensions import socketio
 
 app = create_app(os.getenv('FLASK_ENV', 'development'))
 
+# Forward worker events (Postgres NOTIFY) to socket.io clients of this process.
+# Lives here, not in create_app, so workers and `flask db ...` never start it.
+from app.jobs.listener import start_job_listener  # noqa: E402
+start_job_listener(app, socketio)
+
 if __name__ == '__main__':
     port = int(os.getenv('API_PORT', 8080))
     debug = os.getenv('FLASK_ENV', 'development') == 'development'

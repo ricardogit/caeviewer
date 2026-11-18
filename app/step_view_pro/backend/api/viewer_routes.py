@@ -138,6 +138,22 @@ def _convert_glb_background(step_path: str, glb_path: str, quality: str) -> None
                 pass
 
 
+def _find_part(model_id):
+    """Part by part.id or STEPFileHeader.id; None for unknown or non-UUID ids (a non-UUID used to
+    reach Postgres as ``::UUID`` and fail with a 500)."""
+    import uuid
+    try:
+        uuid.UUID(str(model_id))
+    except ValueError:
+        return None
+    part = Part.query.filter_by(id=model_id).first()
+    if not part:
+        header = STEPFileHeader.query.filter_by(id=model_id).first()
+        if header:
+            part = header.part
+    return part
+
+
 @bp.route('/model/<string:model_id>/glb', methods=['GET'])
 def get_model_glb(model_id):
     """
@@ -150,11 +166,7 @@ def get_model_glb(model_id):
     """
     try:
         # Resolve Part — accept both part.id and STEPFileHeader.id
-        part = Part.query.filter_by(id=model_id).first()
-        if not part:
-            header = STEPFileHeader.query.filter_by(id=model_id).first()
-            if header:
-                part = header.part
+        part = _find_part(model_id)
 
         if not part:
             return jsonify({'error': 'Part not found'}), 404
@@ -185,6 +197,18 @@ def get_model_glb(model_id):
                     error_msg = f.read().strip()
             except Exception:
                 error_msg = 'Conversion failed (see server logs)'
+            if 'no transferable shapes' in error_msg.lower():
+                # unusable STEP that slipped past the upload check: it must not stay in the library
+                from app.geometry.step_check import INVALID_STEP_MESSAGE
+                from app.step_view_pro.backend.api.files_routes import delete_part
+                logger.info(f"Removing STEP part {part.id} ({part.name}): {error_msg}")
+                try:
+                    delete_part(part)
+                except Exception as e:
+                    db.session.rollback()
+                    logger.warning(f"Could not remove invalid STEP part {part.id}: {e}")
+                return jsonify({'error': 'GLB conversion failed', 'message': INVALID_STEP_MESSAGE,
+                                'removed': True}), 422
             return jsonify({'error': 'GLB conversion failed', 'message': error_msg}), 500
 
         # ── 3. Conversion in progress → tell client to retry ──────────────────
@@ -303,11 +327,7 @@ def get_conversion_progress(job_id):
 def get_model_metadata(model_id):
     """Return Part metadata by part_id or STEPFileHeader.id."""
     try:
-        part = Part.query.filter_by(id=model_id).first()
-        if not part:
-            header = STEPFileHeader.query.filter_by(id=model_id).first()
-            if header:
-                part = header.part
+        part = _find_part(model_id)
 
         if not part:
             return jsonify({'error': 'Part not found'}), 404

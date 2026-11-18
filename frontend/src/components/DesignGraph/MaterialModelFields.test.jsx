@@ -1,0 +1,203 @@
+// @vitest-environment jsdom
+import React from 'react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import OrthotropicFields from './OrthotropicFields';
+import HyperelasticFields from './HyperelasticFields';
+import ViscoelasticFields from './ViscoelasticFields';
+import PiezoFields, { PZT5H } from './PiezoFields';
+import FluidFields, { InletRampField, InletTurbulenceFields } from './FluidFields';
+import MagneticFields, { CoilFields, parseBH } from './MagneticFields';
+import { availableFields, fieldMeta, fieldValues } from '../Results/resultsField';
+import { SummaryRows } from '../Results/ResultsViewer';
+
+describe('material model fields (item 8)', () => {
+  beforeEach(() => cleanup());
+
+  it('orthotropic: lists missing constants and edits an axis component', () => {
+    const setProp = vi.fn();
+    render(<OrthotropicFields props={{ E1: 140e9 }} setProp={setProp} />);
+    expect(screen.getByText(/Faltan: E2, E3, G12/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Eje 1 y'), { target: { value: '1' } });
+    expect(setProp).toHaveBeenCalledWith('axis_1', [1, 1, 0]);
+  });
+
+  it('neo-hookean: shows μ and κ from E and ν', () => {
+    render(<HyperelasticFields props={{ E: 10e6, nu: 0.45 }} setProp={vi.fn()} />);
+    expect(screen.getByText(/μ = 3.448 MPa · κ = 33.33 MPa/)).toBeTruthy();
+  });
+
+  it('viscoelastic: adds Prony terms and flags Σg ≥ 1', () => {
+    const setProp = vi.fn();
+    const { rerender } = render(<ViscoelasticFields props={{}} setProp={setProp} />);
+    expect(screen.getByText('Falta al menos un término.')).toBeTruthy();
+    fireEvent.click(screen.getByText('+ término de Prony'));
+    expect(setProp).toHaveBeenCalledWith('prony_terms', [{ g: 0.3, tau: 10 }]);
+    rerender(<ViscoelasticFields props={{ prony_terms: [{ g: 0.7, tau: 1 }, { g: 0.4, tau: 5 }] }} setProp={setProp} />);
+    expect(screen.getByText(/Σg debe ser < 1/)).toBeTruthy();
+  });
+
+  it('results summary shows the model-specific rows', () => {
+    render(<SummaryRows header={{ summary: { viscoelastic: { prony: [{}], t_end_s: 60, E0: 3e9, E_inf: 1.5e9,
+      creep_ratio: 2 } }, material: { E1: 140e9, E2: 10e9, E3: 10e9 } }} />);
+    expect(screen.getByText('Maxwell (1 términos)')).toBeTruthy();
+    expect(screen.getByText('E1 / E2 / E3')).toBeTruthy();
+  });
+
+  it('piezo: PZT-5H preset fills every constant', () => {
+    const setProp = vi.fn();
+    render(<PiezoFields props={{}} setProp={setProp} />);
+    expect(screen.getByText(/Faltan: c11/)).toBeTruthy();
+    fireEvent.click(screen.getByText('PZT-5H'));
+    expect(setProp).toHaveBeenCalledWith('e33', PZT5H.e33);
+    expect(setProp).toHaveBeenCalledTimes(Object.keys(PZT5H).length);
+  });
+
+  it('magnetic saturation: B-H table parsing, Js field and coil MMF', () => {
+    expect(parseBH('100 0.25\n300;0.9\nmal\n1000, 1.4')).toEqual([[100, 0.25], [300, 0.9], [1000, 1.4]]);
+    const setProp = vi.fn();
+    const { rerender } = render(<MagneticFields props={{ mu_r: 2000, saturation: 'tanh' }} setProp={setProp} />);
+    expect(screen.getByLabelText('μr inicial')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Polarización de saturación Js [T]'), { target: { value: '2' } });
+    expect(setProp).toHaveBeenCalledWith('Js', 2);
+    rerender(<MagneticFields props={{ saturation: 'table' }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Curva B-H'), { target: { value: '100 0.25\n300 0.9' } });
+    expect(setProp).toHaveBeenCalledWith('bh_points', [[100, 0.25], [300, 0.9]]);
+    expect(screen.getByText(/2 puntos/)).toBeTruthy();
+    cleanup();
+    render(<CoilFields props={{ turns: 200, current: 1.5 }} setProp={setProp} showFaceSet />);
+    expect(screen.getByText(/N·I = 300.0 A·vuelta/)).toBeTruthy();
+  });
+
+  it('thermo-piezo: asks for p3, α and k and edits p3', () => {
+    const setProp = vi.fn();
+    render(<PiezoFields props={{ ...PZT5H }} setProp={setProp} thermal />);
+    expect(screen.getByText('Faltan: p3, alpha, k')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('p3 piroeléctrico [C/m²·K]'), { target: { value: '-0.0003' } });
+    expect(setProp).toHaveBeenCalledWith('p3', -0.0003);
+  });
+
+  it('results: extra fields (x_<key>) come from the pack header', () => {
+    const pack = { nNodes: 2, header: { fields: ['u', 'vm'], extra_fields: [{ key: 'phi', label: 'Potencial eléctrico', unit: 'V' }] },
+      u: { data: new Float32Array(6) }, x_phi: { data: new Float32Array([0, 100]) } };
+    expect(availableFields(pack)).toContain('x_phi');
+    expect(fieldMeta(pack, 'x_phi')).toEqual({ label: 'Potencial eléctrico', unit: 'V' });
+    expect(fieldMeta(pack, 'vm').unit).toBe('MPa');
+    expect(Array.from(fieldValues(pack, 'x_phi'))).toEqual([0, 100]);
+    render(<SummaryRows header={{ summary: { piezo: { min_potential_V: 0, max_potential_V: 100, max_field_V_m: 5e4,
+      electrodes: [{ label: 'top', voltage_V: 100, charge_C: 2e-9 }] } }, material: { c11: 127e9, c33: 117e9 } }} />);
+    expect(screen.getByText('Electrodo top')).toBeTruthy();
+    expect(screen.getByText('c11ᴱ / c33ᴱ')).toBeTruthy();
+  });
+
+  it('fluid: preset sets μ and ρ; summary shows flow rates and Reynolds', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{}} setProp={setProp} />);
+    expect(screen.getByText('Falta la viscosidad μ.')).toBeTruthy();
+    fireEvent.click(screen.getByText('Glicerina 20 °C'));
+    expect(setProp).toHaveBeenCalledWith('mu', 1.41);
+    expect(setProp).toHaveBeenCalledWith('rho', 1261);
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { mu: 1.41, max_velocity_m_s: 2e-3, min_pressure_pa: 0,
+      max_pressure_pa: 100, mass_balance_error: 1e-12, reynolds: 2.5,
+      flow_rates: [{ face_set: 'tip', label: 'Salida', flow_m3_s: 3e-9 }, { face_set: 'z0', flow_m3_s: 0 }] } } }} />);
+    expect(screen.getByText('Caudal Salida')).toBeTruthy();
+    expect(screen.queryByText('Caudal z0')).toBeNull();
+    expect(screen.getByText(/⚠ > 1/)).toBeTruthy();
+    expect(screen.queryByText('k')).toBeNull();
+  });
+
+  it('fluid: Navier-Stokes toggle, ρ check and iteration summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, flow_model: 'navier_stokes' }} setProp={setProp} />);
+    expect(screen.getByText(/necesita la densidad/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Stokes (Re ≪ 1)'));
+    expect(setProp).toHaveBeenCalledWith('flow_model', 'stokes');
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'navier_stokes', mu: 1e-3,
+      max_velocity_m_s: 0.1, min_pressure_pa: 0, max_pressure_pa: 5, mass_balance_error: 1e-12, reynolds: 150,
+      flow_rates: [], navier_stokes: { picard_iterations: 4, newton_iterations: 3, continuation_steps: 1,
+        element_reynolds_max: 12 } } } }} />);
+    expect(screen.getByText(/Navier-Stokes laminar · μ/)).toBeTruthy();
+    expect(screen.getByText('4 Picard + 3 Newton')).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();                 // Re 150 is fine for Navier-Stokes
+  });
+
+  it('fluid: RANS k-ε fields, inlet turbulence and turbulence summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon' }} setProp={setProp} />);
+    expect(screen.getByTestId('turbulence-fields')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Intensidad turbulenta de entrada [%]'), { target: { value: '3' } });
+    expect(setProp).toHaveBeenCalledWith('inlet_intensity', 3);
+    render(<InletTurbulenceFields props={{}} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Escala turb. [mm]'), { target: { value: '5' } });
+    expect(setProp).toHaveBeenCalledWith('turbulence_length_mm', 5);
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'rans_k_epsilon', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 2e4,
+      flow_rates: [], turbulence: { iterations: 64, converged: true, y_plus_min: 20, y_plus_max: 60, y_plus_mean: 40,
+        wall_distance_m: 5e-4, u_tau_max_m_s: 0.05, nut_ratio_max: 120 } } } }} />);
+    expect(screen.getByText(/RANS k-ε \(funciones de pared\)/)).toBeTruthy();
+    expect(screen.getByText('Iteraciones RANS')).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();                 // y⁺ 40 and Re 2e4 are fine for RANS
+  });
+
+  it('fluid: RANS k-ω SST selector, turbulence fields and summary label', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon' }} setProp={setProp} />);
+    fireEvent.click(screen.getByText('RANS k-ω SST'));
+    expect(setProp).toHaveBeenCalledWith('flow_model', 'rans_k_omega_sst');
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_omega_sst', transient: true }}
+      setProp={setProp} />);
+    expect(screen.getByTestId('turbulence-fields')).toBeTruthy();
+    expect(screen.getByText(/k-ω SST con funciones de pared/)).toBeTruthy();
+    expect(screen.getByLabelText('Estado inicial URANS')).toBeTruthy();       // URANS options for SST too
+    cleanup();
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'rans_k_omega_sst', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 2e4,
+      flow_rates: [], turbulence: { iterations: 111, converged: true, y_plus_min: 20, y_plus_max: 60, y_plus_mean: 40,
+        wall_distance_m: 5e-4, u_tau_max_m_s: 0.05, nut_ratio_max: 120 } } } }} />);
+    expect(screen.getByText(/RANS k-ω SST \(funciones de pared\)/)).toBeTruthy();
+    expect(screen.queryByText(/⚠/)).toBeNull();
+  });
+
+  it('fluid: transient Navier-Stokes / URANS settings, inlet ramp and transient summary', () => {
+    const setProp = vi.fn();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'stokes' }} setProp={setProp} />);
+    expect(screen.queryByTestId('fluid-transient-fields')).toBeNull();          // Stokes is steady
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'navier_stokes', transient: true }} setProp={setProp} />);
+    expect(screen.getByText(/Fluido newtoniano transitorio/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Pasos'), { target: { value: '200' } });
+    expect(setProp).toHaveBeenCalledWith('time_steps', 200);
+    expect(screen.queryByLabelText('Sub-iteraciones')).toBeNull();
+    cleanup();
+    render(<FluidFields props={{ mu: 1e-3, rho: 998, flow_model: 'rans_k_epsilon', transient: true }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Tol. estacionario'), { target: { value: '1e-5' } });
+    expect(setProp).toHaveBeenCalledWith('steady_tol', 1e-5);
+    render(<InletRampField props={{}} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('Rampa de arranque'), { target: { value: '0.5' } });
+    expect(setProp).toHaveBeenCalledWith('t_ramp', 0.5);
+    cleanup();
+    render(<SummaryRows header={{ fields: [], summary: { fluid: { model: 'navier_stokes', mu: 1e-3,
+      max_velocity_m_s: 1, min_pressure_pa: 0, max_pressure_pa: 50, mass_balance_error: 1e-12, reynolds: 200,
+      flow_rates: [], transient: { scheme: 'bdf2', dt: 0.01, t_end: 2, courant_max: 0.8,
+        forces: [{ label: 'cilindro', final_N: [1.5, 0.2, 0] }] } } } }} />);
+    expect(screen.getByText('Transitorio')).toBeTruthy();
+    expect(screen.getByText('Courant máx.')).toBeTruthy();
+    expect(screen.getByText('Fuerza cilindro (final)')).toBeTruthy();
+  });
+
+  it('magnetic: NdFeB preset sets μr and Br; summary shows poles and permeance', () => {
+    const setProp = vi.fn();
+    render(<MagneticFields props={{}} setProp={setProp} />);
+    expect(screen.getByText('Falta la permeabilidad μr.')).toBeTruthy();
+    fireEvent.click(screen.getByText('NdFeB N42 (+Z)'));
+    expect(setProp).toHaveBeenCalledWith('mu_r', 1.05);
+    expect(setProp).toHaveBeenCalledWith('Br_z', 1.3);
+    render(<SummaryRows header={{ fields: [], summary: { magnetic: { mu_r: 1000, Br_T: [0, 0, 0], max_B_T: 3.14,
+      max_H_A_m: 2500, min_potential_A: 0, max_potential_A: 100, field_energy_J: 0.0157, permeance_H: 3.14e-6,
+      poles: [{ label: 'N', potential_A: 100, flux_in_Wb: 3.14e-4 }] } } }} />);
+    expect(screen.getByText('Polo N')).toBeTruthy();
+    expect(screen.getByText('Permeancia (L para 1 vuelta)')).toBeTruthy();
+    expect(screen.queryByText('k')).toBeNull();
+  });
+});
