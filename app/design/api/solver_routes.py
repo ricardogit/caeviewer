@@ -889,6 +889,9 @@ def preflight(graph_id):
         if mtype in MATERIAL_LABELS:
             out['physics_label'] = (out['physics_label'].replace('(elástico lineal)', '').strip()
                                     + ' · ' + MATERIAL_LABELS[mtype])
+        if mtype == 'shallow_water' and int((spec.get('material') or {}).get('layers') or 1) > 1:
+            out['physics_label'] = (f"3D estratificado en {spec['material']['layers']} capas σ (marea, ríos, viento, "
+                                    'mezcla vertical; volúmenes finitos)')
         if mtype in NONLINEAR_MATERIALS:
             out['nonlinear'] = True
         out['tier_declared'] = int(spec.get('tier', g.tier if g.tier is not None else 1))

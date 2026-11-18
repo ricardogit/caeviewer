@@ -407,7 +407,7 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   5–5.5) but no strict convergence (2-cycle at a step-face node: residual 1e-4…1e-3 at mesh 0.4, 0.2 at 0.6, x_r
   unchanged; not cured by friction / wall-value / velocity relaxation (friction relaxation broke δ⁺ ≥ 100) or CFL — next step: true
   BDF2 time marching). Server: Gmsh duct 100×20×20 mm, water 1 m/s, converged in 53 it, y⁺ 133. Gmsh slab / duct
-  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Not done: stratified σ-layer model.
+  meshes converge in 36–61 it. Tests `tests/test_rans.py`. Stratified σ-layer model: see «3-D stratified» below.
 - **k-ω SST** (`turbulence.model 'k_omega_sst'`, graph `flow_model: 'rans_k_omega_sst'`, UI toggle «RANS k-ω SST»):
   Menter–Kuntz–Langtry 2003 (F1/F2 blending, ν_t = a₁k/max(a₁ω, S F2), P̃ ≤ 10β*kω), same discretisation, wall
   functions, URANS and outputs as k-ε (internally the `eps` slot holds ω; summary/fields give ε = β*kω plus field
@@ -616,6 +616,47 @@ positive pushes inward), `gravity` (uses material rho). Solid elements have tran
   monotone), series fields in the surface pack. Tests in `tests/test_shallow_water.py`. Caveats: an outfall goes into
   one cell (near field = cell size; use a refinement point in Mapa mode), no near-field dilution model, constant D (no
   Elder/shear dispersion), the source switches off inside the RK step that crosses `t_off` (½ weight).
+- **3-D stratified σ-layer model** (FASE 10.4, `fem/sw3d.py` + `fem/sw3d_run.py`): hydrostatic multilayer shallow water
+  with mass exchange (Audusse–Bristeau–Perthame–Sainte-Marie) on the same Mapa-mode triangle mesh: L layers of fixed
+  fractions of H per cell, unknowns H, h_α u_α, h_α v_α, h_α c_α (T, S active, passive species). Horizontal fluxes
+  (`hll_layers`): wave speeds common to the column; layer **mass** = HLL of each layer state, layer **momentum** =
+  upwinded by its own mass flux + the layer fraction of the depth-averaged HLL pressure/dissipation (F1 − F0 ū_up of
+  the 2-D flux of (H, ū)). Do not use the plain per-layer HLL momentum flux: its s_L s_R Δ(H u_α) term damps
+  baroclinic velocities with the external speed (ν ~ √(gH)Δx/2) and the internal seiche vanishes. Same hydrostatic
+  reconstruction / P1 bed / boundaries as the 2-D model → a block-moving column = the 2-D model to round-off (1e-13),
+  lake at rest exact, uniform tracer kept. Mass exchange G_{α+½} = Σ_{β≤α}(D_β − l_β ∂H/∂t), upwind vertical advection.
+  Baroclinic pressure −h_α(∇_σP'_α + b'_α∇_σz_α) with b' = g(ρ − **ρ_ref(z)**)/ρ₀ (reference = binned mean profile of
+  the initial state, `set_reference`; its gradient on z levels is exactly 0, the surface term −h b_ref(η)∇η is
+  added): seamount PGE 17 → 0.15 mm/s. ρ(T, S) UNESCO 1981 (p = 0) or linear. Vertical step split after SSP-RK2, implicit
+  per column (vectorised Thomas): viscosity / diffusivity from `closure` constant (ν_v, κ_v) | k_epsilon (1-D k-ε on the
+  interfaces, buoyancy production, c₃⁻ = c₂ − (c₂ − c₁)Pr_t/Ri_st (= 0 for Ri_st 0.25, Pr_t 1), c₃⁺ 1, Galperin limit
+  0.53, Patankar sinks; boundaries: zero k flux and the log-layer ε flux c_μk²/(σ_ε(h/2 + z₀)) with the adjacent k —
+  a Dirichlet ε at z₀ is not resolved (ν_t −30 %) and a u_*-based flux kills the spin-up from rest), log-law bed drag
+  on the bottom layer (z₀ = `bottom_roughness` or Strickler from Manning per cell: (21.1 n)⁶/30), wind on the top
+  layer, Coriolis rotation per layer. Test hooks: `horizontal: False` (+ `dt`) = 1-D columns, `body_force`,
+  `surface_stress`, `bottom_drag: False`. Kernel: `sw_run.run` dispatches to `sw3d_run.run` when material `layers` > 1
+  (`sw_run.setup` = the shared mesh / Manning / boundaries / wind / outfalls / probes part); spec material `layers`,
+  `closure`, `nu_v`, `kappa_v`, `bottom_roughness`, `eos`, `temperature` / `salinity` (scalar or [[depth, v]]; absent →
+  not modelled), `D_h`; BC `T_in` / `S_in` (**not** `temperature`: a BC `temperature` key is a thermal condition);
+  outfall `temperature`, `salinity`, `release` bottom|surface|column. Summary `shallow_water.stratified` {layers,
+  closure, eos, nut_max, stratification_max_kg_m3, stratified_area_m2, density_range, budgets (heat, salt)}, probe
+  `profiles` (≤ 25 times: z, u, v, T, S, ρ, ν_t per layer) + surface/bottom tracer curves; fields eta, speed (depth
+  mean), speed_s, H (series), u/v, us/vs, ub/vb, smax, smax_b, T_s/T_b, S_s/S_b, strat (Δρ bottom − surface), rho_s,
+  c<k> / c<k>_s / c<k>_b, cmax<k>, tabove<k>; material_model `shallow_water_3d`, n_dof (1 + 2L + nt·L)·cells.
+  Graph: MATERIAL `vertical_layers` ≥ 2 (+ `closure`, `nu_v`, `kappa_v`, `bottom_z0_mm`, `eos`, `T_surface`/`T_bottom`,
+  `S_surface`/`S_bottom`, `profile_depth`, `D_h`; `_sw_3d`), BC `temperature`/`salinity`, outfall `temperature`/
+  `salinity`/`release` (dropped for 2-D studies: hashes unchanged). UI `ShallowWaterFields.jsx` (`Stratified3DFields`,
+  `TSInputs`, `OutfallRelease`, `useSW3D`), Results rows, preflight label «3D estratificado en L capas σ». Hito `python
+  validate_sw3d.py [--server …] [--server-only] [--quick]` (~40 min local): block motion = 2-D 1e-13, lake at rest with
+  island, tide + river + wetting budgets 1e-13; vertical diffusion 0.17 %; open channel k-ε: bed stress exact, bottom
+  layer on the log law, depth mean +3.3 % vs the log-law integral (k-ε wake, mesh-independent 10–80 layers), k within
+  2 %; **Kato–Phillips** D/(1.05u*√(t/N₀)) 0.99–1.03 over 5–30 h; internal seiche ω/(NH/L) 0.975 (25 × 10) → 0.990 (50 × 20, amplitude kept 98 % over 1.5 periods); lock exchange
+  Fr 0.43 (Benjamin 0.5, experiments 0.43–0.48); seamount PGE 0.15 mm/s after 6 h. Server: bay, 6 layers, tide 12 °C /
+  35 psu, warm fresh outfall at the bed, wind (286 cells × 6 layers × 3 h, 82 s) → budgets 1e-13, stratification
+  Δρ ~1 kg/m³, profiles, fields; there ν_t stays ~1e-6 (weak tide, Ri ≫ 1, 6 layers do not resolve the bed layer). Tests `tests/test_sw3d.py`.
+  Caveats: one explicit time step for all modes (no mode splitting: Δt set by the external gravity wave, cost ∝ L ×
+  2-D cost — 286 cells × 6 layers × 3 h = 93 s), σ layers only (no z levels), Mellor–Yamada not implemented, no surface
+  heat flux / evaporation, outfall in one cell and one layer (no near-field plume model).
 - **Performance caveat (Windows, OpenBLAS numpy):** batched tiny `np.linalg.solve` in `tet_batch._jac` is ~60× slower
   with OpenBLAS threading on a loaded machine (0.54 s vs 0.009 s per 8000 elements); `OPENBLAS_NUM_THREADS=1` for the
   worker / scripts (backend suite 82 s → 45 s). Not changed in code.

@@ -159,15 +159,28 @@ export function SummaryRows({ header }) {
     ] : []),
     ...(s.shallow_water ? (() => {
       const w = s.shallow_water;
+      const st = w.stratified;
       const km2 = (a) => `${fmt(a / 1e6)} km²`;
       return [
-        ['Modelo', `Aguas someras 2D · orden ${w.order} · ${w.n_cells?.toLocaleString()} celdas · ${w.n_steps?.toLocaleString()}`
+        ['Modelo', `${st ? `3D estratificado · ${st.layers} capas σ` : 'Aguas someras 2D'} · orden ${w.order} · `
+          + `${w.n_cells?.toLocaleString()} celdas · ${w.n_steps?.toLocaleString()}`
           + ` pasos (Δt ${fmt(w.dt_min_s)} … ${fmt(w.dt_max_s)} s)`],
+        ...(st ? [
+          ['Mezcla vertical', `${st.closure === 'k_epsilon' ? 'k-ε' : 'ν, κ constantes'} · ν_t máx. ${fmt(st.nut_max_m2_s)} m²/s`
+            + ` · z₀ fondo ${fmt(st.bottom_roughness_m?.[0] * 1000)}…${fmt(st.bottom_roughness_m?.[1] * 1000)} mm`],
+          ...(st.active?.length ? [['Densidad', `${st.eos === 'unesco' ? 'UNESCO' : 'lineal'} (${st.active.join(', ')})`
+            + (st.density_range_kg_m3 ? ` · ρ ${fmt(st.density_range_kg_m3[0])} … ${fmt(st.density_range_kg_m3[1])} kg/m³` : '')
+            + ` · Δρ fondo − sup. máx. ${fmt(st.stratification_max_kg_m3)} kg/m³`
+            + ` · estratificada (Δρ > 0,5) ${km2(st.stratified_area_m2 || 0)}`]] : []),
+          ...(w.max_surface_speed_m_s != null ? [['Velocidad sup. máx.', `${fmt(w.max_surface_speed_m_s)} m/s`]] : []),
+          ...(st.budgets || []).map((b) => [`Balance ${b.name === 'T' ? 'de calor' : 'de sal'}`, fmt(b.balance_error)]),
+        ] : []),
         ['Fricción / Coriolis', `Manning n ${fmt(w.manning_default)}${w.manning_zones?.length ? ` + ${w.manning_zones.length} zona(s)` : ''}`
           + ` · ${w.coriolis ? `f a lat ${fmt(w.latitude_mean)}°` : 'sin Coriolis'}${w.wind ? ' · viento' : ''}`],
         ...(w.boundaries || []).filter((b) => b.kind !== 'wall').map((b) => [`Contorno ${b.label}`,
           `${b.kind} · entra ${fmt(b.volume_in_m3)} m³ · neto sale ${fmt(b.net_outflow_m3)} m³`]),
-        ['Velocidad máx. / Froude', `${fmt(w.max_speed_m_s)} m/s · Fr ${fmt(w.froude_max)}`],
+        st ? ['Velocidad media máx.', `${fmt(w.max_speed_m_s)} m/s`]
+          : ['Velocidad máx. / Froude', `${fmt(w.max_speed_m_s)} m/s · Fr ${fmt(w.froude_max)}`],
         ...(w.max_eta_m != null ? [['Nivel máx.', `${fmt(w.max_eta_m)} m`]] : []),
         ['Área mojada final / total', `${km2(w.wet_area_final_m2)} / ${km2(w.area_m2)}`
           + (w.flooded_area_m2 > 0 ? ` · inundada ${km2(w.flooded_area_m2)}` : '')],
@@ -175,7 +188,8 @@ export function SummaryRows({ header }) {
           + `${fmt(p.max_speed_m_s)} m/s · prof. ${fmt(p.depth_m)} m`
           + (p.c_max ? ` · c máx. ${p.c_max.map((c, k) => `${w.tracers?.[k]?.name ?? k} ${fmt(c)}`).join(', ')}` : '')]),
         ...(w.outfalls || []).map((o) => [`Vertido ${o.label}`, `Q ${fmt(o.Q_m3_s)} m³/s · prof. ${fmt(o.depth_m)} m`
-          + (o.t_off_s != null ? ` · ${fmt(o.t_off_s / 3600)} h` : '')]),
+          + (o.t_off_s != null ? ` · ${fmt(o.t_off_s / 3600)} h` : '')
+          + (o.release ? ` · descarga ${{ bottom: 'en el fondo', surface: 'en superficie', column: 'en la columna' }[o.release]}` : '')]),
         ...(w.tracers || []).map((t) => [`Especie ${t.name}`, `máx. ${fmt(t.max)} ${t.unit} · masa ${fmt(t.mass_initial)} → `
           + `${fmt(t.mass_final)} · aportada ${fmt(t.source)} · decaída ${fmt(t.decayed)}`
           + (t.boundary_out?.length ? ` · sale ${t.boundary_out.map((b) => `${b.label} ${fmt(b.net_out)}`).join(', ')}` : '')

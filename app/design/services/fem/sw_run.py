@@ -87,7 +87,8 @@ def boundary_setup(bcs: list, mesh) -> tuple[dict, list, list]:
         else:
             sig = None
         for i in ids:
-            out[i] = {'kind': kind, 'signal': sig, 'label': b.get('label') or kind, 'c_in': b.get('c_in')}
+            out[i] = {'kind': kind, 'signal': sig, 'label': b.get('label') or kind, 'c_in': b.get('c_in'),
+                      'T_in': b.get('T_in'), 'S_in': b.get('S_in')}      # T, S: 3-D model only
         info.append({'label': b.get('label'), 'kind': kind, 'boundaries': ids, **meta})
     for i, bi in known.items():
         if i in out:
@@ -102,11 +103,10 @@ def boundary_setup(bcs: list, mesh) -> tuple[dict, list, list]:
     return out, info, warnings
 
 
-def run(spec: dict, emit, tier: int, check_tier) -> dict:
-    """``emit(pct, message)``; ``check_tier(n_nodes, n_elements, n_dof, tier)``."""
-    from app.design.services.traceability.hasher import array_hash, mesh_hash
+def setup(spec: dict, emit, tier: int, check_tier, dof_per_cell) -> dict:
+    """Common part of the 2-D and 3-D runs: mesh (cache), Manning per cell, Coriolis, boundaries, wind, time,
+    outfalls (cell, Q, concentrations, switch-off), probes. ``dof_per_cell(ns)`` sizes the tier check."""
     from app.geodata.service import get_or_build_mesh, load_forcing
-    t_start = time.perf_counter()
     mat = spec.get('material') or {}
     if mat.get('type') != 'shallow_water':
         raise ValueError('Dominio 2D: el material debe ser «Agua (aguas someras)».')
@@ -114,7 +114,7 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
     mesh, cached = get_or_build_mesh(spec['domain_2d'], progress=lambda p, m: emit(2 + p * 0.03, m))
     tracers = mat.get('tracers') or []
     ns = len(tracers)
-    check_tier(mesh.n_nodes, mesh.n_elements, (3 + ns) * mesh.n_elements, tier)
+    check_tier(mesh.n_nodes, mesh.n_elements, dof_per_cell(ns) * mesh.n_elements, tier)
     if not mesh.stats.get('has_bathymetry', True) or not np.isfinite(mesh.depth).all():
         raise ValueError('Aguas someras: el dominio necesita batimetría (marque una capa de batimetría en el modo '
                          'Mapa y regenere la malla).')
@@ -166,10 +166,8 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
               'order': int(mat.get('order') or 2), 'rho': float(mat.get('rho') or 1025.0)}
     if mat.get('cfl'):
         params['cfl'] = float(mat['cfl'])
-    # tracers (FASE 10.4): species carried by the flow; outfalls = point water + mass sources
-    sources, src_info = [], []
-    if ns:
-        params['tracers'] = tracers
+    # outfalls = point water + mass sources
+    outfalls, src_info = [], []
     for ld in spec.get('loads') or []:
         if 'outfall' not in ld:
             continue
@@ -181,19 +179,42 @@ def run(spec: dict, emit, tier: int, check_tier) -> dict:
         mass = np.asarray(o.get('mass_rate'), float) if o.get('mass_rate') is not None else Q * conc
         t_off = o.get('t_off_s')
         fac = (lambda t, t_off=float(t_off): 1.0 if t < t_off else 0.0) if t_off is not None else None
-        sources.append({'cell': cell, 'Q': Q, 'mass': mass if ns else None, 'factor': fac, 'label': ld.get('label')})
+        outfalls.append({'cell': cell, 'Q': Q, 'mass': mass, 'factor': fac, 'label': ld.get('label'), 'raw': o})
         src_info.append({'label': ld.get('label'), 'lon': o['lon'], 'lat': o['lat'], 'Q_m3_s': Q,
                          'mass_rate': mass.tolist() if ns else [], 'depth_m': float(-grid.zb[cell]),
                          'cell_area_m2': float(grid.area[cell]), **({'t_off_s': float(t_off)} if t_off is not None else {})})
         if grid.zb[cell] > 0:
             warnings.append(f'Vertido «{ld.get("label")}» sobre terreno emergido (cota {grid.zb[cell]:.2f} m).')
-    if sources:
-        params['sources'] = sources
     probes = []
     for i, p in enumerate(spec.get('probes') or []):
         x, y = mesh.frame.from_lonlat([p['lon']], [p['lat']])
         probes.append({'label': p.get('label') or f'P{i + 1}', 'xy': [float(x[0]), float(y[0])],
                        'lon': p['lon'], 'lat': p['lat']})
+    return {'mat': mat, 'mesh': mesh, 'cached': cached, 'tracers': tracers, 'ns': ns, 'grid': grid, 'nc': nc,
+            'manning': n, 'zinfo': zinfo, 'lat': lat, 'bnd': bnd, 'binfo': binfo, 'warnings': warnings,
+            'wind': wind, 't_end': t_end, 'n_out': n_out, 'eta0': eta0, 'params': params, 'outfalls': outfalls,
+            'src_info': src_info, 'probes': probes}
+
+
+def run(spec: dict, emit, tier: int, check_tier) -> dict:
+    """``emit(pct, message)``; ``check_tier(n_nodes, n_elements, n_dof, tier)``. Materials with ``layers`` > 1 run
+    the 3-D stratified σ-layer model (``sw3d_run``)."""
+    if int((spec.get('material') or {}).get('layers') or 1) > 1:
+        from app.design.services.fem import sw3d_run
+        return sw3d_run.run(spec, emit, tier, check_tier)
+    from app.design.services.traceability.hasher import array_hash, mesh_hash
+    t_start = time.perf_counter()
+    ctx = setup(spec, emit, tier, check_tier, lambda ns: 3 + ns)
+    mat, mesh, cached, tracers, ns = (ctx[k] for k in ('mat', 'mesh', 'cached', 'tracers', 'ns'))
+    grid, nc, zinfo, lat, bnd, binfo = (ctx[k] for k in ('grid', 'nc', 'zinfo', 'lat', 'bnd', 'binfo'))
+    warnings, wind, t_end, n_out, eta0 = (ctx[k] for k in ('warnings', 'wind', 't_end', 'n_out', 'eta0'))
+    params, src_info, probes = ctx['params'], ctx['src_info'], ctx['probes']
+    if ns:
+        params['tracers'] = tracers
+    sources = [{'cell': o['cell'], 'Q': o['Q'], 'mass': o['mass'] if ns else None, 'factor': o['factor'],
+                'label': o['label']} for o in ctx['outfalls']]
+    if sources:
+        params['sources'] = sources
     emit(6, f'aguas someras: {nc:,} celdas, {len(bnd)} contornos, t = {t_end / 3600:.3g} h')
 
     def prog(k, total, t):

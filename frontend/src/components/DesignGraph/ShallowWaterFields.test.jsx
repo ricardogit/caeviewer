@@ -30,8 +30,43 @@ describe('Shallow-water fields (FASE 10.3)', () => {
     expect(setProp).toHaveBeenCalledWith('manning_n', 0.03);
     fireEvent.click(screen.getByText('Punto de control'));
     expect(setProp).toHaveBeenCalledWith('probes', [{ label: 'P1', lon: null, lat: null }]);
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByLabelText('Coriolis (latitud del dominio)'));
     expect(setProp).toHaveBeenCalledWith('coriolis', false);
+    fireEvent.click(screen.getByLabelText('modelo 3D estratificado'));
+    expect(setProp).toHaveBeenCalledWith('vertical_layers', 10);
+    expect(screen.queryByLabelText('T superficie [°C]')).toBeNull();
+  });
+
+  it('3-D stratified model: material fields, inflow T/S, outfall release and summary rows', () => {
+    const setProp = vi.fn();
+    render(<ShallowWaterFields props={{ vertical_layers: 8, closure: 'constant' }} setProp={setProp} />);
+    fireEvent.change(screen.getByLabelText('T superficie [°C]'), { target: { value: '18' } });
+    expect(setProp).toHaveBeenCalledWith('T_surface', 18);
+    fireEvent.change(screen.getByLabelText('ν vertical [m²/s]'), { target: { value: '0.001' } });
+    expect(setProp).toHaveBeenCalledWith('nu_v', 0.001);
+    cleanup();
+    const mat = { id: 'm', data: { node_type: 'MATERIAL', properties: { model_type: 'shallow_water',
+      vertical_layers: 8, S_surface: 35 } } };
+    useDesignStore.setState({ graphData: { nodes: [domainNode, mat], edges: [] } });
+    render(<SWBCFields props={{ bc_type: 'river_inflow' }} setProp={setProp} />);
+    expect(screen.queryByLabelText('Temperatura [°C]')).toBeNull();          // T not modelled
+    fireEvent.change(screen.getByLabelText('Salinidad [psu]'), { target: { value: '0' } });
+    expect(setProp).toHaveBeenCalledWith('salinity', 0);
+    cleanup();
+    render(<OutfallLoadFields props={{}} setProp={setProp} />);
+    expect(screen.getByLabelText('nivel de descarga')).toBeTruthy();
+    cleanup();
+    const header = { fields: [], summary: { shallow_water: {
+      order: 2, n_cells: 100, n_steps: 50, dt_min_s: 1, dt_max_s: 2, manning_default: 0.025, coriolis: false,
+      max_speed_m_s: 0.4, max_surface_speed_m_s: 0.6, wet_area_final_m2: 1e6, area_m2: 1e6, balance_error: 1e-16,
+      outfalls: [{ label: 'E1', Q_m3_s: 1, depth_m: 20, release: 'bottom' }],
+      stratified: { layers: 8, closure: 'k_epsilon', nut_max_m2_s: 0.01, bottom_roughness_m: [7e-4, 7e-4], eos: 'unesco',
+        active: ['S'], density_range_kg_m3: [1000, 1026], stratification_max_kg_m3: 12, stratified_area_m2: 5e5,
+        budgets: [{ name: 'S', balance_error: 1e-15 }] } } } };
+    render(<SummaryRows header={header} />);
+    expect(screen.getByText(/3D estratificado · 8 capas σ/)).toBeTruthy();
+    expect(screen.getByText('Balance de sal')).toBeTruthy();
+    expect(screen.getByText(/descarga en el fondo/)).toBeTruthy();
   });
 
   it('tide BC lists the domain sides and edits constituents', () => {

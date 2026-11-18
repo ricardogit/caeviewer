@@ -532,6 +532,61 @@ def _sw_material(spec: dict, node) -> None:
         tracers.append(t)
     if tracers:
         m['tracers'] = tracers
+    _sw_3d(m, p, lab)
+
+
+SW_CLOSURES = ('k_epsilon', 'constant')
+SW_EOS = ('unesco', 'linear')
+
+
+def _sw_3d(m: dict, p: dict, lab: str) -> None:
+    """3-D stratified σ-layer model (FASE 10.4) when ``vertical_layers`` ≥ 2: closure, ν_v / κ_v, bed roughness
+    z₀ [mm] (empty → from Manning), equation of state, initial T / S (surface value, optional bottom value at
+    ``profile_depth`` m → linear profile; both empty → not modelled), horizontal diffusivity of T, S."""
+    nl = p.get('vertical_layers')
+    if nl in (None, '') or int(float(nl)) <= 1:
+        return
+    nl = int(float(nl))
+    if nl > 100:
+        raise GraphSpecError(f'"{lab}": como máximo 100 capas σ.')
+    m['layers'] = nl
+    m['closure'] = p.get('closure') or 'k_epsilon'
+    if m['closure'] not in SW_CLOSURES:
+        raise GraphSpecError(f'"{lab}": cierre vertical «{m["closure"]}» desconocido (k_epsilon | constant).')
+    m['eos'] = p.get('eos') or 'unesco'
+    if m['eos'] not in SW_EOS:
+        raise GraphSpecError(f'"{lab}": ecuación de estado «{m["eos"]}» desconocida (unesco | linear).')
+    for key, what in (('nu_v', 'la viscosidad vertical (m²/s)'), ('kappa_v', 'la difusividad vertical (m²/s)'),
+                      ('D_h', 'la difusividad horizontal de T y S (m²/s)')):
+        if p.get(key) not in (None, ''):
+            m[key] = _num(p, key, lab, what, nonneg=True)
+    if m['closure'] == 'constant' and 'nu_v' not in m:
+        raise GraphSpecError(f'"{lab}": con mezcla vertical constante indique ν_v.')
+    if p.get('bottom_z0_mm') not in (None, ''):
+        m['bottom_roughness'] = _num(p, 'bottom_z0_mm', lab, 'la rugosidad del fondo z₀ (mm)', positive=True) / 1000
+    depth = _num(p, 'profile_depth', lab, 'la profundidad del perfil inicial (m)', default=20.0, positive=True)
+    for q, name in (('T', 'la temperatura'), ('S', 'la salinidad')):
+        top, bot = p.get(f'{q}_surface'), p.get(f'{q}_bottom')
+        if top in (None, ''):
+            if bot not in (None, ''):
+                raise GraphSpecError(f'"{lab}": indique {name} en superficie.')
+            continue
+        vt = _num(p, f'{q}_surface', lab, f'{name} en superficie', nonneg=(q == 'S'))
+        if bot in (None, ''):
+            val = vt
+        else:
+            vb = _num(p, f'{q}_bottom', lab, f'{name} en el fondo', nonneg=(q == 'S'))
+            val = vt if vb == vt else [[0.0, vt], [depth, vb]]
+        m['temperature' if q == 'T' else 'salinity'] = val
+
+
+def _sw_ts(e: dict, p: dict, lab: str, keys=('temperature', 'salinity')) -> None:
+    """Temperature / salinity of inflowing (BC: spec keys T_in / S_in — a BC ``temperature`` key is a thermal
+    condition) or discharged (outfall) water, 3-D model."""
+    for prop, key, what in (('temperature', keys[0], 'la temperatura (°C)'),
+                            ('salinity', keys[1], 'la salinidad (psu)')):
+        if p.get(prop) not in (None, ''):
+            e[key] = _num(p, prop, lab, what, nonneg=(prop == 'salinity'))
 
 
 def _concentrations(p: dict, lab: str):
@@ -570,6 +625,8 @@ def _sw_bc(node) -> dict:
     conc = _concentrations(p, lab)
     if conc is not None and t != 'coast':
         e['c_named'] = conc
+    if t != 'coast':
+        _sw_ts(e, p, lab, ('T_in', 'S_in'))
     if p.get('ramp_h') not in (None, ''):
         e['ramp_s'] = _num(p, 'ramp_h', lab, 'la rampa', nonneg=True) * 3600.0
     if t == 'tide':
@@ -640,6 +697,11 @@ def _sw_outfall(node) -> dict:
          'c_named': _concentrations(p, lab) or {}}
     if p.get('t_off') not in (None, ''):
         o['t_off_s'] = _num(p, 't_off', lab, 'la duración del vertido (h)', positive=True) * 3600.0
+    _sw_ts(o, p, lab)
+    if p.get('release') not in (None, ''):
+        if p['release'] not in ('bottom', 'surface', 'column'):
+            raise GraphSpecError(f'"{lab}": liberación «{p["release"]}» desconocida (bottom | surface | column).')
+        o['release'] = p['release']
     return {'outfall': o, 'label': lab}
 
 
@@ -683,6 +745,14 @@ def _finalize_shallow_water(spec: dict) -> bool:
             raise GraphSpecError(f'"{lab}": especie «{unknown[0]}» no definida en el material '
                                  f'({", ".join(names) or "sin especies"}).')
         return [float(named.get(n, 0.0)) for n in names]
+    m3 = spec['material'].get('layers')                    # T, S of inflows / outfalls: 3-D model only
+    for e in spec['bcs'] + [ld['outfall'] for ld in spec['loads'] if 'outfall' in ld]:
+        for keys, mk in ((('T_in', 'temperature'), 'temperature'), (('S_in', 'salinity'), 'salinity')):
+            for key in keys:
+                if key in e and not (m3 and spec['material'].get(mk) is not None):
+                    del e[key]
+        if not m3:
+            e.pop('release', None)
     for e in spec['bcs']:
         named = e.pop('c_named', None)
         if named is not None and names:
